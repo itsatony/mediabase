@@ -149,9 +149,15 @@ Current development status and upcoming milestones:
   - Proper PostgreSQL JSONB type handling
   - Comprehensive test suite
   - Integration tests with test database
-- [ ] ETL pipeline - Product Classification
-  -
-- [ ] ETL pipeline - Pathway Integration
+- [x] ETL pipeline - Gene-Product Classification (2025-02-07)
+  - UniProt API integration for product classification
+  - Smart caching with TTL for API requests
+  - Kinase and transcription factor detection
+  - GO term-based classification
+  - Async processing with aiohttp
+  - Comprehensive test coverage
+  - Integration tests with UniProt API
+- [ ] ETL pipeline - Processes & Pathways Integration
   -
 - [ ] ETL pipeline - Drug Integration
   -

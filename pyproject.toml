@@ -20,9 +20,11 @@ jupyterlab = "^4.0.0"
 rich = "^13.0.0"
 tqdm = "^4.65.0"
 requests = "^2.31.0"
+aiohttp = {extras = ["speedups"], version = "^3.9.1"}  # Added with speedups
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.3.0"
+pytest-asyncio = "^0.23.0"  # Added pytest-asyncio
 mypy = "^1.5.0"
 black = "^23.3.0"
 isort = "^5.12.0"
@@ -48,10 +50,12 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+asyncio_mode = "auto"  # Added asyncio mode configuration
 markers = [
-    "integration: marks tests that require integration with external services or databases",
-    "unit: marks unit tests",
-    "slow: marks tests that take longer than 1 second to complete"
+  "integration: marks tests that require integration with external services or databases",
+  "unit: marks unit tests",
+  "slow: marks tests that take longer than 1 second to complete",
+  "asyncio: mark test as async/await test"  # Added asyncio marker
 ]
 
 [tool.pylance]

@@ -177,6 +177,60 @@ After completing the setup, you can:
    poetry run pytest tests/etl/test_go_terms.py --cov=src.etl.go_terms
    ```
 
+### Running Pathway Enrichment
+
+1. Download and process Reactome pathways:
+   ```bash
+   poetry run python scripts/run_pathway_enrichment.py
+   ```
+
+   Options:
+   - `--batch-size`: Number of pathways to process per batch (default: 100)
+   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+   - `--force-download`: Force new download of Reactome data file
+
+2. Monitor progress:
+   ```bash
+   # Check database statistics
+   poetry run python scripts/manage_db.py
+   ```
+
+   Example output:
+   ```
+   Processing pathways: 100%|████████| 18619/18619 [02:15<00:00, 137.42it/s]
+   INFO: Pathway enrichment completed:
+   - Total genes processed: 18,619
+   - Genes with pathways: 15,234
+   - Average pathways per gene: 12.3
+   ```
+
+3. Run tests:
+   ```bash
+   # Run pathway tests
+   poetry run pytest tests/etl/test_pathways.py
+
+   # Run with coverage
+   poetry run pytest tests/etl/test_pathways.py --cov=src.etl.pathways
+   ```
+
+4. Verify pathway data:
+   ```bash
+   # Check a specific gene's pathways
+   psql -U your_user -d your_db -c "
+   SELECT gene_symbol, pathways 
+   FROM cancer_transcript_base 
+   WHERE gene_symbol = 'TP53';"
+   ```
+
+   Expected output format:
+   ```
+   gene_symbol |                        pathways
+   ------------+--------------------------------------------------------
+   TP53       | {"Apoptosis [Reactome:R-HSA-109581]",
+              |  "Cell Cycle [Reactome:R-HSA-1640170]",
+              |  "DNA Repair [Reactome:R-HSA-73894]"}
+   ```
+
 ### Running Drug Integration
 
 1. Download and process DrugCentral data:
@@ -277,6 +331,16 @@ Current development status and upcoming milestones:
   - Comprehensive test suite
   - Integration tests with test database
   - Added drug association view materialization
+- [x] Pathway Integration (2025-02-11)
+  - Automated Reactome data download with caching
+  - Gene to pathway/process mapping
+  - Standardized format: "Process Name [Reactome:ID]"
+  - Smart caching with TTL
+  - Batch database updates
+  - Comprehensive validation
+  - Progress tracking and statistics
+- [x] Added cache validity check (_is_cache_valid) to PathwayProcessor for consistent caching behavior (2025-02-11)
+- [x] Normalized gene_id by stripping version numbers to fix mismatch between NCBI and Ensembl references (2025-02-11)
 - [ ] ETL pipeline - Publication Integration
   -
 - [ ] Query optimization
@@ -342,6 +406,7 @@ MB_UNIPROT_API_URL=...          # UniProt API endpoint
 MB_PUBMED_API_URL=...           # PubMed E-utils API
 MB_PUBMED_API_KEY=...           # Your PubMed API key
 MB_PUBMED_EMAIL=...             # Your email for PubMed API
+MB_REACTOME_DOWNLOAD_URL=https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt
 
 # Cache and Processing
 MB_CACHE_DIR=/tmp/mediabase/cache  # Cache directory

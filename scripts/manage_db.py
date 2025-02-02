@@ -221,6 +221,187 @@ class DatabaseManager:
             logger.error(f"Schema creation failed: {e}")
             return False
 
+    def dump_database(self, output_file: str) -> bool:
+        """Dump database to a file."""
+        try:
+            import subprocess
+            
+            env = os.environ.copy()
+            env['PGPASSWORD'] = self.db_params['password']
+            
+            cmd = [
+                'pg_dump',
+                '-h', self.db_params['host'],
+                '-p', str(self.db_params['port']),
+                '-U', self.db_params['user'],
+                '-F', 'c',  # Custom format
+                '-f', output_file,
+                self.db_params['dbname']
+            ]
+            
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                return True
+            else:
+                logger.error(f"Dump failed: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Dump failed: {e}")
+            return False
+
+    def restore_database(self, input_file: str) -> bool:
+        """Restore database from a dump file."""
+        try:
+            # First ensure we're starting fresh
+            self._ensure_default_connection()
+            self.drop_database()
+            self.create_database()
+            
+            import subprocess
+            
+            env = os.environ.copy()
+            env['PGPASSWORD'] = self.db_params['password']
+            
+            cmd = [
+                'pg_restore',
+                '-h', self.db_params['host'],
+                '-p', str(self.db_params['port']),
+                '-U', self.db_params['user'],
+                '-d', self.db_params['dbname'],
+                input_file
+            ]
+            
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                return True
+            else:
+                logger.error(f"Restore failed: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Restore failed: {e}")
+            return False
+
+    def get_table_stats(self) -> Dict[str, Any]:
+        """Get statistics about the main table."""
+        try:
+            if self.cursor is None:
+                return {"row_count": 0, "size_mb": 0}
+            
+            # Get row count
+            self.cursor.execute(
+                "SELECT COUNT(*) FROM cancer_transcript_base"
+            )
+            result = self.cursor.fetchone()
+            row_count = result[0] if result else 0
+
+            # Get table size in MB
+            self.cursor.execute("""
+                SELECT pg_size_pretty(pg_total_relation_size('cancer_transcript_base')),
+                       pg_total_relation_size('cancer_transcript_base') / 1024.0 / 1024.0
+                FROM pg_catalog.pg_tables
+                WHERE tablename = 'cancer_transcript_base'
+            """)
+            result = self.cursor.fetchone()
+            size_mb = result[1] if result else 0
+
+            return {
+                "row_count": row_count,
+                "size_mb": round(size_mb, 2)
+            }
+        except psycopg2.Error:
+            return {"row_count": 0, "size_mb": 0}
+
+class DatabaseMenu:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+        self.choices = {
+            '1': ('Check database status', self.check_status),
+            '2': ('Reset database', self.reset_database),
+            '3': ('Backup database', self.backup_database),
+            '4': ('Restore database', self.restore_database),
+            '5': ('Exit', self.exit_program)
+        }
+
+    def display_menu(self):
+        console.clear()
+        console.print("[bold]Cancer Transcriptome Base - Database Management[/bold]\n")
+        for key, (option, _) in self.choices.items():
+            console.print(f"[bold]{key}[/bold]. {option}")
+        return console.input("\n[bold]Choose an option:[/bold] ")
+
+    def check_status(self):
+        if not self.db_manager.connect():
+            console.print("[red]Failed to connect to PostgreSQL.[/red]")
+            return
+
+        db_exists = self.db_manager.check_db_exists()
+        current_version = None
+        table_stats = {"row_count": 0, "size_mb": 0}
+
+        if db_exists and self.db_manager.connect(self.db_manager.db_params['dbname']):
+            current_version = self.db_manager.get_current_schema_version()
+            table_stats = self.db_manager.get_table_stats()
+
+        table = Table(title="Database Status")
+        table.add_column("Component")
+        table.add_column("Status")
+        table.add_row("Database", "[green]Exists[/green]" if db_exists else "[red]Missing[/red]")
+        table.add_row("Schema Version", str(current_version) if current_version else "[yellow]Unknown[/yellow]")
+        table.add_row("Records", f"{table_stats['row_count']:,}")
+        table.add_row("Table Size", f"{table_stats['size_mb']} MB")
+        console.print(table)
+        input("\nPress Enter to continue...")
+
+    def reset_database(self):
+        if Confirm.ask("Are you sure you want to reset the database? This will delete all data!"):
+            if self.db_manager.drop_database():
+                console.print("[green]Database dropped successfully[/green]")
+                if self.db_manager.create_database():
+                    console.print("[green]Database created successfully[/green]")
+                    if self.db_manager.connect(self.db_manager.db_params['dbname']):
+                        if self.db_manager.create_schema("v0.1.1"):
+                            console.print("[green]Schema created successfully[/green]")
+        input("\nPress Enter to continue...")
+
+    def backup_database(self):
+        output_file = console.input("Enter backup file path (default: backup.dump): ").strip() or "backup.dump"
+        if self.db_manager.dump_database(output_file):
+            console.print(f"[green]Database backed up successfully to {output_file}[/green]")
+        else:
+            console.print("[red]Backup failed[/red]")
+        input("\nPress Enter to continue...")
+
+    def restore_database(self):
+        input_file = console.input("Enter backup file path: ").strip()
+        if not input_file or not os.path.exists(input_file):
+            console.print("[red]Invalid backup file[/red]")
+        elif Confirm.ask("This will overwrite the current database. Continue?"):
+            if self.db_manager.restore_database(input_file):
+                console.print("[green]Database restored successfully[/green]")
+            else:
+                console.print("[red]Restore failed[/red]")
+        input("\nPress Enter to continue...")
+
+    def exit_program(self):
+        console.print("[bold]Goodbye![/bold]")
+        sys.exit(0)
+
+    def run(self):
+        # Run status check on startup
+        self.check_status()
+        
+        while True:
+            choice = self.display_menu()
+            if choice in self.choices:
+                self.choices[choice][1]()
+            else:
+                console.print("[red]Invalid choice[/red]")
+                input("\nPress Enter to continue...")
+
 def load_config() -> Dict[str, Any]:
     """Load database configuration from environment variables."""
     # Attempt to load .env file from project root
@@ -246,58 +427,32 @@ def load_config() -> Dict[str, Any]:
     }
 
 def interactive_setup(db_manager: DatabaseManager) -> None:
-    """Interactive database setup flow."""
-    console.print("[bold]Cancer Transcriptome Base - Database Setup[/bold]\n")
-
-    # Check initial connection
-    if not db_manager.connect():
-        console.print("[red]Failed to connect to PostgreSQL. Please check credentials.[/red]")
-        return
-
-    # Check if database exists
-    db_exists = db_manager.check_db_exists()
-    current_version = None
-
-    if db_exists:
-        if db_manager.connect(db_manager.db_params['dbname']):
-            current_version = db_manager.get_current_schema_version()
-            
-        table = Table(title="Database Status")
-        table.add_column("Component")
-        table.add_column("Status")
-        table.add_row("Database", "[green]Exists[/green]" if db_exists else "[red]Missing[/red]")
-        table.add_row("Schema Version", str(current_version) if current_version else "[yellow]Unknown[/yellow]")
-        console.print(table)
-        
-        if Confirm.ask("Database exists. Do you want to reset it?"):
-            if db_manager.drop_database():
-                console.print("[green]Database dropped successfully[/green]")
-                db_exists = False
-            else:
-                console.print("[red]Failed to drop database[/red]")
-                return
-
-    if not db_exists:
-        if db_manager.create_database():
-            console.print("[green]Database created successfully[/green]")
-            if db_manager.connect(db_manager.db_params['dbname']):
-                if db_manager.create_schema("v0.1.1"):
-                    console.print("[green]Schema created successfully[/green]")
-                else:
-                    console.print("[red]Schema creation failed[/red]")
-        else:
-            console.print("[red]Database creation failed[/red]")
+    """Interactive database management interface."""
+    menu = DatabaseMenu(db_manager)
+    menu.run()
 
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="Database management tool")
     parser.add_argument("--non-interactive", action="store_true", help="Run in non-interactive mode")
+    parser.add_argument("--backup", help="Backup database to specified file")
+    parser.add_argument("--restore", help="Restore database from specified file")
     args = parser.parse_args()
 
     config = load_config()
     db_manager = DatabaseManager(config)
 
-    if args.non_interactive:
+    if args.backup:
+        if db_manager.dump_database(args.backup):
+            console.print(f"[green]Database backed up to {args.backup}[/green]")
+            sys.exit(0)
+        sys.exit(1)
+    elif args.restore:
+        if db_manager.restore_database(args.restore):
+            console.print(f"[green]Database restored from {args.restore}[/green]")
+            sys.exit(0)
+        sys.exit(1)
+    elif args.non_interactive:
         if not db_manager.connect() or not db_manager.check_db_exists():
             sys.exit(1)
         sys.exit(0)

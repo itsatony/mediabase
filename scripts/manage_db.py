@@ -172,24 +172,37 @@ class DatabaseManager:
                 )
             """)
             
-            # Create main table based on latest schema (v0.1.2)
+            # Create main table based on latest schema (v0.1.3)
             self.cursor.execute("""
                 CREATE TABLE cancer_transcript_base (
+                    -- Core identifiers
                     transcript_id TEXT PRIMARY KEY,
                     gene_symbol TEXT,
                     gene_id TEXT,
+                    
+                    -- Genomic information
                     gene_type TEXT,
                     chromosome TEXT,
                     coordinates JSONB,
+                    
+                    -- Classifications
                     product_type TEXT[],
                     features JSONB DEFAULT '{}'::jsonb,
-                    molecular_functions TEXT[] DEFAULT '{}',
-                    cellular_location TEXT[],
+                    
+                    -- GO terms and functions
                     go_terms JSONB,
+                    molecular_functions TEXT[] DEFAULT '{}',
+                    cellular_location TEXT[] DEFAULT '{}',
+                    
+                    -- Pathways and interactions
                     pathways TEXT[],
                     drugs JSONB,
                     drug_scores JSONB,
+                    
+                    -- Literature
                     publications JSONB,
+                    
+                    -- Expression data
                     expression_fold_change FLOAT DEFAULT 1.0,
                     expression_freq JSONB DEFAULT '{"high": [], "low": []}'::jsonb,
                     cancer_types TEXT[] DEFAULT '{}'
@@ -204,13 +217,14 @@ class DatabaseManager:
                 CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
                 CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
                 CREATE INDEX idx_features ON cancer_transcript_base USING GIN(features);
-                CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions)
+                CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions);
+                CREATE INDEX idx_cellular_location ON cancer_transcript_base USING GIN(cellular_location)
             """)
 
             # Record schema version
             self.cursor.execute(
                 "INSERT INTO schema_version (version) VALUES (%s)",
-                ('v0.1.2',)
+                ('v0.1.3',)
             )
             return True
             

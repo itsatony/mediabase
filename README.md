@@ -106,7 +106,7 @@ This project creates a pre-joined database table optimized for LLM-agent queries
 
 After completing the setup, you can:
 
-1. Run the ETL pipeline:
+1. Run the ETL pipeline (will load and insert the inital transcript data):
    ```bash
    poetry run python scripts/run_etl.py
    ```
@@ -147,6 +147,61 @@ After completing the setup, you can:
 
    # Run with coverage
    poetry run pytest tests/etl/test_products.py --cov=src.etl.products
+   ```
+
+### Running GO Term Enrichment
+
+1. Download and process GO terms:
+   ```bash
+   poetry run python scripts/run_go_enrichment.py
+   ```
+
+   Options:
+   - `--batch-size`: Number of terms to process per batch (default: 100)
+   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+   - `--force-download`: Force new download of GO.obo file
+   - `--aspect`: Filter by aspect (molecular_function, biological_process, cellular_component)
+
+2. Monitor progress:
+   ```bash
+   # Check database statistics
+   poetry run python scripts/manage_db.py
+   ```
+
+3. Run tests:
+   ```bash
+   # Run GO term tests
+   poetry run pytest tests/etl/test_go_terms.py
+
+   # Run with coverage
+   poetry run pytest tests/etl/test_go_terms.py --cov=src.etl.go_terms
+   ```
+
+### Running Drug Integration
+
+1. Download and process DrugCentral data:
+   ```bash
+   poetry run python scripts/run_drug_integration.py
+   ```
+
+   Options:
+   - `--batch-size`: Number of drugs to process per batch (default: 100)
+   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+   - `--skip-scores`: Skip drug score calculation
+   - `--force-download`: Force new download of DrugCentral data
+
+2. View drug statistics:
+   ```bash
+   poetry run python scripts/analyze_drugs.py
+   ```
+
+3. Run tests:
+   ```bash
+   # Run drug integration tests
+   poetry run pytest tests/etl/test_drugs.py
+
+   # Run with coverage
+   poetry run pytest tests/etl/test_drugs.py --cov=src.etl.drugs
    ```
 
 ## Documentation
@@ -197,10 +252,31 @@ Current development status and upcoming milestones:
   - Added proper GIN indices for new columns
   - Migration path for existing data
   - Updated documentation
-- [ ] ETL pipeline - Processes & Pathways Integration
-  -
-- [ ] ETL pipeline - Drug Integration
-  -
+- [x] GO Terms & Enrichment (2025-02-09)
+  - Automated GO.obo and GOA file downloads with caching
+  - GO term hierarchy processing with networkx
+  - Ancestor computation and term enrichment
+  - Aspect-aware term classification
+  - Enhanced schema with dedicated arrays for:
+    - molecular_functions: Direct storage of molecular function terms
+    - cellular_location: Direct storage of cellular component terms
+  - Batch database updates with optimized PostgreSQL queries
+  - Proper GIN indices for efficient querying
+  - Comprehensive test suite
+  - Smart caching with TTL
+  - Rich CLI progress display with detailed statistics
+  - Proper error handling and recovery
+- [x] ETL pipeline - Drug Integration (2025-02-10)
+  - Automated DrugCentral data download and processing
+  - Smart drug-target relationship extraction
+  - Evidence-based scoring system
+  - Reference tracking and validation
+  - Batch database updates with temp tables
+  - Score calculation using PostgreSQL window functions
+  - Rich CLI progress display
+  - Comprehensive test suite
+  - Integration tests with test database
+  - Added drug association view materialization
 - [ ] ETL pipeline - Publication Integration
   -
 - [ ] Query optimization
@@ -284,6 +360,8 @@ MB_ALLOWED_ORIGINS=...           # CORS allowed origins
 
 - v0.1.0: Initial MVP plan with public data sources
 - v0.1.1: Added publications, patient fold-change support, and ETL sequence
+- v0.1.2: Enhanced UniProt feature storage and molecular function arrays
+- v0.1.3: Improved GO term storage with dedicated arrays and indices
 - Repository: [mediabase](https://github.com/itsatony/mediabase)
 
 ## Data Flow and Dependencies
@@ -303,7 +381,7 @@ graph TD
     L --> B
 ```
 
-## Enhanced Database Schema v0.1.1
+## Enhanced Database Schema v0.1.3
 
 ```sql
 CREATE TABLE cancer_transcript_base (
@@ -319,13 +397,15 @@ CREATE TABLE cancer_transcript_base (
     
     -- Classifications
     product_type TEXT[], -- ['enzyme', 'kinase', 'transcription_factor', etc]
-    cellular_location TEXT[], -- ['membrane', 'nucleus', 'cytoplasm', etc]
+    features JSONB DEFAULT '{}'::jsonb,
     
-    -- Biological context
+    -- GO terms and functions
     go_terms JSONB,    -- {go_id: {term: "", evidence: "", aspect: ""}}
-    pathways TEXT[],   -- array of pathway identifiers
+    molecular_functions TEXT[] DEFAULT '{}',  -- Array of molecular function terms
+    cellular_location TEXT[] DEFAULT '{}',    -- Array of cellular locations
     
-    -- Drug interactions
+    -- Pathways and interactions
+    pathways TEXT[],   -- array of pathway identifiers
     drugs JSONB,       -- {drug_id: {name: "", mechanism: "", evidence: ""}}
     drug_scores JSONB, -- {drug_id: score}
     
@@ -335,8 +415,6 @@ CREATE TABLE cancer_transcript_base (
     -- Expression data
     expression_fold_change FLOAT DEFAULT 1.0,  -- Patient-specific
     expression_freq JSONB DEFAULT '{"high": [], "low": []}',
-    
-    -- Cancer associations
     cancer_types TEXT[] DEFAULT '{}'
 );
 
@@ -346,6 +424,9 @@ CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id);
 CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs);
 CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
 CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
+CREATE INDEX idx_features ON cancer_transcript_base USING GIN(features);
+CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions);
+CREATE INDEX idx_cellular_location ON cancer_transcript_base USING GIN(cellular_location);
 ```
 
 ## Gene Product Types

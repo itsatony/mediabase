@@ -17,6 +17,7 @@ python-dotenv = "^1.0.0"
 fastapi = "^0.100.0"
 uvicorn = "^0.23.0"
 jupyterlab = "^4.0.0"
+rich = "^13.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.3.0"
@@ -45,3 +46,14 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+[tool.pylance]
+reportMissingImports = "warning"
+reportMissingModuleSource = "warning"
+
+[tool.pyright]
+include = ["src", "scripts"]
+exclude = ["**/__pycache__"]
+reportMissingImports = true
+reportMissingModuleSource = true
+useLibraryCodeForTypes = true

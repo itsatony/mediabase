@@ -268,3 +268,48 @@ DB_PASSWORD=password
 API_HOST=0.0.0.0
 API_PORT=8000
 EOL
+
+# Setup script
+cat > setup.sh << 'EOL'
+#!/bin/bash
+
+echo "Setting up Cancer Transcriptome Base project..."
+
+# Ensure we're in virtual environment
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "Please activate virtual environment first: source mbase/bin/activate"
+    exit 1
+fi
+
+# Check if PostgreSQL is installed
+if ! command -v psql &> /dev/null; then
+    echo "PostgreSQL is required but not found"
+    echo "Please install PostgreSQL first:"
+    echo "Ubuntu: sudo apt install postgresql postgresql-contrib"
+    echo "MacOS: brew install postgresql"
+    exit 1
+fi
+
+# Create required directories
+mkdir -p data/raw
+mkdir -p data/processed
+mkdir -p logs
+
+# Check if .env exists, if not copy from example
+if [ ! -f ".env" ]; then
+    echo "Creating .env file from template..."
+    cp .env.example .env
+    echo "Please edit .env file with your settings"
+fi
+
+# Initialize database
+echo "Setting up database..."
+python scripts/manage_db.py || { echo "Database setup failed"; exit 1; }
+
+echo "Project setup complete!"
+echo "Next steps:"
+echo "1. Edit .env file with your settings"
+echo "2. Run 'poetry run python scripts/run_etl.py' to populate the database"
+echo "3. Start the API with 'poetry run python -m src.api.server'"
+EOL
+chmod +x setup.sh

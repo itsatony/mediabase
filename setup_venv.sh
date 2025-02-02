@@ -5,7 +5,7 @@
 
 set -e  # Exit on error
 
-echo "Setting up virtual environment for Cancer Transcriptome Base..."
+echo "Setting up Cancer Transcriptome Base development environment..."
 
 # Check if python3 is installed
 if ! command -v python3 &> /dev/null; then
@@ -20,9 +20,11 @@ python3 -c "import venv" &> /dev/null || {
     exit 1
 }
 
-# Create virtual environment
-echo "Creating virtual environment 'mbase'..."
-python3 -m venv mbase
+# Check if virtualenv exists
+if [ ! -d "mbase" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv mbase || { echo "Failed to create virtual environment"; exit 1; }
+fi
 
 # Activate virtual environment
 echo "Activating virtual environment..."
@@ -32,14 +34,23 @@ source mbase/bin/activate
 echo "Upgrading pip..."
 pip install --upgrade pip
 
-# Install poetry
-echo "Installing poetry..."
-pip install poetry
+# Install poetry if not present
+if ! command -v poetry &> /dev/null; then
+    echo "Installing poetry..."
+    pip install poetry
+fi
 
-echo "Virtual environment setup complete!"
-echo ""
-echo "To activate the virtual environment, run:"
-echo "source mbase/bin/activate"
+# Install project dependencies
+echo "Installing project dependencies..."
+poetry install
+
+# Copy environment file if it doesn't exist
+if [ ! -f ".env" ]; then
+    echo "Creating .env file from template..."
+    cp .env.example .env
+fi
+
+echo "Setup complete! Activate the environment with: source mbase/bin/activate"
 echo ""
 echo "Next steps:"
 echo "1. Activate the virtual environment (command above)"

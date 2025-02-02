@@ -103,12 +103,17 @@ Comprehensive documentation is available in the `docs/` directory:
 - [API Documentation](docs/api.md)
 - [Deployment Guide](docs/deployment.md)
 
-## Project Status
+## Project Status and Progress
 
 Current development status and upcoming milestones:
 - [x] Initial project setup (2025-02-02)
 - [x] Basic schema design
-- [ ] Project structure implementation
+- [x] Project structure implementation
+- [x] DB manager script (connection, check, create, schema, reset) (2025-02-05)
+  - Database initialization and reset functionality
+  - Schema version tracking
+  - Interactive CLI with rich status display
+  - Environment-based configuration
 - [ ] Data source validation
 - [ ] ETL pipeline - Transcript module
 - [ ] ETL pipeline - Product Classification
@@ -119,6 +124,46 @@ Current development status and upcoming milestones:
 - [ ] LLM-agent integration tests
 - [ ] Documentation
 - [ ] Production deployment
+
+## Database Management
+
+The project includes a robust database management script (`scripts/manage_db.py`) that provides:
+
+### Features
+- PostgreSQL connection management
+- Database creation and reset capabilities
+- Schema version tracking
+- Rich interactive CLI interface
+- Non-interactive mode for automation
+
+### Usage
+
+1. Interactive Mode:
+   ```bash
+   poetry run python scripts/manage_db.py
+   ```
+   This will:
+   - Check database connection
+   - Display current database status
+   - Offer schema reset if database exists
+   - Create new database and schema if needed
+
+2. Non-interactive Mode:
+   ```bash
+   poetry run python scripts/manage_db.py --non-interactive
+   ```
+   Useful for scripts and CI/CD pipelines.
+
+### Environment Configuration
+
+Database settings are configured via environment variables:
+```bash
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=mediabase
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+```
 
 ## Version History
 

@@ -341,22 +341,38 @@ Current development status and upcoming milestones:
   - Progress tracking and statistics
 - [x] Added cache validity check (_is_cache_valid) to PathwayProcessor for consistent caching behavior (2025-02-11)
 - [x] Normalized gene_id by stripping version numbers to fix mismatch between NCBI and Ensembl references (2025-02-11)
+- [x] ETL pipeline - Drug Integration (2025-02-12)
+  - Added synergy-based scoring referencing pathways and GO terms
+  - Utilizes environment variables (e.g., MB_DRUG_PATHWAY_WEIGHT) for weighting
+  - Enhanced testing strategy to ensure accurate scoring
+- [x] ETL pipeline - Drug Integration Update (2025-02-13)
+  - Added batched drug score calculation
+  - Implemented synergy scoring based on pathway and GO term overlaps
+  - Added rich progress tracking and validation
+  - Fixed older DrugCentral data format compatibility
+  - Added comprehensive error handling and debugging
+  - Performance optimized through temporary tables and batching
+  - Database schema v0.1.3 compatibility ensured
+- [ ] AI Agent System Prompt Development
+  - Create comprehensive context guide for natural language queries
+  - Build oncology-specific terminology mapping (German/English)
+  - Document all available data relationships
+  - Collect and categorize example queries
+  - Create German-English medical term mapping
+  - Document query patterns and best practices
+  - Create mapping of colloquial to technical terms
 - [ ] ETL pipeline - Publication Integration
-  -
 - [ ] Query optimization
-  -
 - [ ] LLM-agent integration tests
-  -
 - [ ] Documentation
-  -
 - [ ] Production deployment
-  -
 
 ## Database Management
 
 The project includes a robust database management script (`scripts/manage_db.py`) that provides:
 
 ### Features
+
 - PostgreSQL connection management
 - Database creation and reset capabilities
 - Schema version tracking
@@ -841,3 +857,140 @@ The database is optimized for LLM-agent queries. Example usage patterns and comm
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+## Data Collection for AI Agent Prompt
+
+The following SQL queries can be used to collect unique values and statistics for the AI agent context:
+
+### Gene Types and Classifications
+```sql
+-- Get all unique gene types with counts
+SELECT 
+    gene_type,
+    COUNT(*) as count
+FROM cancer_transcript_base
+GROUP BY gene_type
+ORDER BY count DESC;
+
+-- Get unique product classifications
+SELECT 
+    DISTINCT unnest(product_type) as classification,
+    COUNT(*) as count
+FROM cancer_transcript_base
+GROUP BY classification
+ORDER BY count DESC;
+```
+
+### Pathway Information
+```sql
+-- Get unique pathways and their frequency
+WITH pathway_counts AS (
+    SELECT 
+        unnest(pathways) as pathway,
+        COUNT(*) as gene_count
+    FROM cancer_transcript_base
+    GROUP BY pathway
+)
+SELECT 
+    pathway,
+    gene_count,
+    REGEXP_REPLACE(pathway, '.*\[(.*)\]', '\1') as pathway_id
+FROM pathway_counts
+ORDER BY gene_count DESC;
+```
+
+### Drug Related Information
+```sql
+-- Get unique drug mechanisms and actions
+WITH drug_info AS (
+    SELECT 
+        d.key as drug_id,
+        d.value->>'mechanism' as mechanism,
+        d.value->>'action_type' as action_type
+    FROM cancer_transcript_base,
+    jsonb_each(drugs) d
+    WHERE drugs IS NOT NULL
+)
+SELECT 
+    DISTINCT mechanism,
+    action_type,
+    COUNT(*) as count
+FROM drug_info
+GROUP BY mechanism, action_type
+ORDER BY count DESC;
+
+-- Get drug evidence types
+SELECT DISTINCT 
+    d.value->'evidence'->>'type' as evidence_type,
+    COUNT(*) as count
+FROM cancer_transcript_base,
+jsonb_each(drugs) d
+WHERE drugs IS NOT NULL
+GROUP BY evidence_type
+ORDER BY count DESC;
+```
+
+### GO Terms and Functions
+```sql
+-- Get molecular functions distribution
+SELECT 
+    unnest(molecular_functions) as function,
+    COUNT(*) as count
+FROM cancer_transcript_base
+WHERE molecular_functions IS NOT NULL
+GROUP BY function
+ORDER BY count DESC;
+
+-- Get cellular locations
+SELECT 
+    unnest(cellular_location) as location,
+    COUNT(*) as count
+FROM cancer_transcript_base
+WHERE cellular_location IS NOT NULL
+GROUP BY location
+ORDER BY count DESC;
+
+-- Get GO term aspects and their frequency
+SELECT 
+    value->>'aspect' as aspect,
+    COUNT(*) as count
+FROM cancer_transcript_base,
+jsonb_each(go_terms) t
+WHERE go_terms IS NOT NULL
+GROUP BY aspect
+ORDER BY count DESC;
+```
+
+### Expression Statistics
+```sql
+-- Get expression fold change distribution
+SELECT 
+    CASE 
+        WHEN expression_fold_change > 2 THEN 'high'
+        WHEN expression_fold_change < 0.5 THEN 'low'
+        ELSE 'normal'
+    END as expression_level,
+    COUNT(*) as count
+FROM cancer_transcript_base
+GROUP BY expression_level
+ORDER BY count DESC;
+
+-- Get cancer types distribution
+SELECT 
+    unnest(cancer_types) as cancer_type,
+    COUNT(*) as count
+FROM cancer_transcript_base
+WHERE cancer_types IS NOT NULL
+GROUP BY cancer_type
+ORDER BY count DESC;
+```
+
+These queries will provide comprehensive data for building the AI agent's context understanding. Next steps:
+
+1. Run these queries against production data
+2. Document and categorize all unique values
+3. Create mappings between technical and colloquial terms
+4. Build German-English terminology mappings
+5. Document common query patterns
+6. Create example queries for each data category
+7. Build comprehensive prompt template

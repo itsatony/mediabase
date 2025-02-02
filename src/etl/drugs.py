@@ -10,6 +10,10 @@ import requests
 from tqdm import tqdm
 from psycopg2.extras import execute_batch
 from ..db.connection import get_db_connection
+from datetime import datetime, timedelta
+import hashlib
+from rich.console import Console
+from rich.table import Table
 
 logger = logging.getLogger(__name__)
 
@@ -34,39 +38,241 @@ class DrugProcessor:
         
         self.batch_size = config.get('batch_size', 1000)
         self.cache_ttl = config.get('cache_ttl', 86400)  # 24 hours default
+        self.drugcentral_url = config['drugcentral_url']
+        if not self.drugcentral_url:
+            raise ValueError("DrugCentral URL not configured")
+
+    def _get_cache_key(self, url: str) -> str:
+        """Generate a cache key from URL."""
+        return hashlib.sha256(url.encode()).hexdigest()
 
     def download_drugcentral(self) -> Path:
-        """Download and extract DrugCentral data.
-        
-        Returns:
-            Path: Path to the downloaded and extracted DrugCentral data file.
-        """
-        # Implementation similar to GO terms download
-        # Using requests with progress bar
-        # For now, return a dummy path for demonstration purposes
-        return self.drug_dir / 'drugcentral_data.csv'
+        """Download and extract DrugCentral data."""
+        cache_key = self._get_cache_key(self.drugcentral_url)
+        file_path = self.drug_dir / f"drugcentral_{cache_key}.tsv.gz"
+        meta_path = self.drug_dir / "meta.json"
+
+        # Check cache validity
+        if file_path.exists() and meta_path.exists():
+            try:
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
+                if cache_key in meta:
+                    cache_time = datetime.fromisoformat(meta[cache_key]['timestamp'])
+                    if datetime.now() - cache_time < timedelta(seconds=self.cache_ttl):
+                        logger.info(f"Using cached DrugCentral data: {file_path}")
+                        return file_path
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.debug(f"Cache metadata error: {e}")
+
+        logger.info("Downloading DrugCentral data...")
+        response = requests.get(self.drugcentral_url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+
+        with open(file_path, 'wb') as f, tqdm(
+            desc="Downloading",
+            total=total_size,
+            unit='iB',
+            unit_scale=True
+        ) as pbar:
+            for data in response.iter_content(chunk_size=1024):
+                size = f.write(data)
+                pbar.update(size)
+
+        # Update metadata
+        with open(meta_path, 'w') as f:
+            json.dump({
+                cache_key: {
+                    'timestamp': datetime.now().isoformat(),
+                    'file_path': str(file_path)
+                }
+            }, f)
+
+        return file_path
 
     def process_drug_targets(self, drug_data_path: Path) -> pd.DataFrame:
-        """Process drug target information from DrugCentral.
+        """Process drug target information from DrugCentral."""
+        logger.info("Processing DrugCentral target data...")
         
-        Returns:
-            DataFrame with columns:
-                - drug_id
-                - drug_name
-                - gene_symbol
-                - mechanism
-                - action_type
-                - evidence_type
-                - evidence_score
-                - reference_ids
-        """
-        # Load and process DrugCentral data
-        # Return standardized DataFrame
-        # Placeholder DataFrame to ensure function returns a DataFrame
-        return pd.DataFrame(columns=[
-            'drug_id', 'drug_name', 'gene_symbol', 'mechanism', 
-            'action_type', 'evidence_type', 'evidence_score', 'reference_ids'
-        ])
+        # First inspect the file format
+        try:
+            # Read first few lines to determine format
+            with gzip.open(drug_data_path, 'rt') as f:
+                header = f.readline().strip()
+                sample_line = f.readline().strip()
+                
+                # Clean up quotation marks from header
+                header = header.replace('"', '')
+                
+                # Always print header and sample for debugging
+                console = Console()
+                
+                # Create a table for better visualization
+                table = Table(title="DrugCentral Data Sample")
+                table.add_column("Type")
+                table.add_column("Content")
+                
+                table.add_row("Header (cleaned)", header)
+                table.add_row("Sample", sample_line)
+                console.print(table)
+                
+                # Split and analyze columns
+                header_cols = [col.strip() for col in header.split('\t')]
+                sample_cols = sample_line.split('\t')
+                
+                table = Table(title="Column Analysis")
+                table.add_column("Index")
+                table.add_column("Column Name")
+                table.add_column("Sample Value")
+                
+                for idx, (col, val) in enumerate(zip(header_cols, sample_cols)):
+                    table.add_row(str(idx), col, val.replace('"', ''))
+                console.print(table)
+                
+                # Count expected columns
+                expected_columns = len(header_cols)
+                logger.info(f"Found {expected_columns} columns in data file")
+                
+                # Map columns to our expected schema
+                column_mapping = {}
+                for idx, col in enumerate(header_cols):
+                    col_clean = col.strip().upper()
+                    # Map drug ID
+                    if col_clean == 'STRUCT_ID':
+                        column_mapping['drug_id'] = col
+                    # Map gene symbol
+                    elif col_clean == 'GENE':
+                        column_mapping['gene_symbol'] = col
+                    # Map drug name
+                    elif col_clean == 'DRUG_NAME':
+                        column_mapping['drug_name'] = col
+                    # Map action type
+                    elif col_clean == 'ACTION_TYPE':
+                        column_mapping['action_type'] = col
+                    # Map evidence type
+                    elif col_clean == 'ACT_TYPE':
+                        column_mapping['evidence_type'] = col
+                    # Map evidence score
+                    elif col_clean == 'ACT_VALUE':
+                        column_mapping['evidence_score'] = col
+                    # Map references
+                    elif col_clean == 'ACT_SOURCE':
+                        column_mapping['references'] = col
+                    # Map mechanism (if available)
+                    elif col_clean == 'MOA':
+                        column_mapping['mechanism'] = col
+                
+                logger.info("Column mapping found:")
+                for our_col, file_col in column_mapping.items():
+                    logger.info(f"  {our_col} -> {file_col}")
+                
+                required_cols = ['drug_id', 'gene_symbol']
+                missing = [col for col in required_cols if col not in column_mapping]
+                if missing:
+                    raise ValueError(
+                        f"Missing required columns: {missing}\n"
+                        f"Current mapping: {column_mapping}"
+                    )
+        
+        except Exception as e:
+            logger.error(f"Error inspecting drug data file: {e}")
+            raise
+            
+        df = pd.DataFrame()  # Initialize df to avoid unbound error
+        
+        try:
+            # Read with pandas, using our mapped columns
+            df = pd.read_csv(
+                drug_data_path,
+                sep='\t',
+                compression='gzip',
+                on_bad_lines='warn',
+                quoting=3,  # QUOTE_NONE
+                dtype=str,  # Read all as strings initially
+                na_values=['', 'NA', 'null', 'None'],
+                keep_default_na=True
+            )
+            
+            # Remove quotes from column names and values
+            df.columns = [col.strip('"') for col in df.columns]
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].str.strip('"')
+            
+            # Rename columns according to our mapping
+            df = df.rename(columns={v: k for k, v in column_mapping.items()})
+            
+            # Clean and standardize data
+            required_cols = ['drug_id', 'gene_symbol']
+            if not all(col in df.columns for col in required_cols):
+                raise ValueError(
+                    f"Missing required columns. Available columns: {df.columns.tolist()}\n"
+                    f"Mapping used: {column_mapping}"
+                )
+            
+            df = df.dropna(subset=['drug_id', 'gene_symbol'])
+            df['gene_symbol'] = df['gene_symbol'].str.upper()
+            df['drug_name'] = df['drug_name'].str.strip() if 'drug_name' in df.columns else df['drug_id']
+            
+            # Convert evidence score to float where possible
+            if 'evidence_score' in df.columns:
+                df['evidence_score'] = pd.to_numeric(df['evidence_score'], errors='coerce')
+            
+            # Fill missing values with defaults using get() to avoid KeyError
+            df['mechanism'] = df.get('mechanism', pd.Series('unknown')).fillna('unknown')
+            df['action_type'] = df.get('action_type', pd.Series('unknown')).fillna('unknown')
+            df['evidence_type'] = df.get('evidence_type', pd.Series('experimental')).fillna('experimental')
+            df['evidence_score'] = df.get('evidence_score', pd.Series(1.0)).fillna(1.0)
+            df['references'] = df.get('references', pd.Series('')).fillna('')
+            
+            # Process and validate each row
+            processed_data = []
+            for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing drug targets"):
+                try:
+                    processed_row = {
+                        'drug_id': str(row['drug_id']),
+                        'drug_name': str(row.get('drug_name', row['drug_id'])),
+                        'gene_symbol': str(row['gene_symbol']).upper(),
+                        'mechanism': str(row.get('mechanism', 'unknown')),
+                        'action_type': str(row.get('action_type', 'unknown')),
+                        'evidence_type': str(row.get('evidence_type', 'experimental')),
+                        'evidence_score': float(row.get('evidence_score', 1.0)),
+                        'reference_ids': str(row.get('references', '')).split('|') if row.get('references') else []
+                    }
+                    processed_data.append(processed_row)
+                except Exception as e:
+                    logger.debug(f"Error processing row: {e}\nRow data: {row}")
+                    continue
+
+            result_df = pd.DataFrame(processed_data)
+            
+            # Additional validation and logging
+            if result_df.empty:
+                raise ValueError("No valid drug target relationships found after processing")
+                
+            logger.info(f"Successfully processed {len(result_df):,} valid drug-target relationships")
+            logger.info(f"Found {result_df['drug_id'].nunique():,} unique drugs")
+            logger.info(f"Found {result_df['gene_symbol'].nunique():,} unique genes")
+            
+            # Sample validation with better formatting
+            logger.debug("\nSample of processed data:")
+            sample_data = result_df.head()
+            for idx, row in sample_data.iterrows():
+                logger.debug(f"\nRow {idx}:")
+                for col in row.index:
+                    logger.debug(f"  {col}: {row[col]}")
+            
+            return result_df
+            
+        except pd.errors.ParserError as e:
+            logger.error(f"Error parsing drug data file: {e}")
+            logger.error("This might indicate a corrupted download or wrong file format.")
+            logger.error("Please check the DrugCentral URL and try downloading again.")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error processing drug data: {e}")
+            logger.error(f"Available columns: {list(df.columns) if 'df' in locals() else 'No DataFrame available'}")
+            raise
 
     def integrate_drugs(self, drug_targets: pd.DataFrame) -> None:
         """Integrate drug information into transcript database."""
@@ -141,42 +347,165 @@ class DrugProcessor:
         )
 
     def calculate_drug_scores(self) -> None:
-        """Calculate drug scores based on evidence and interactions."""
+        """Calculate synergy-based drug scores using pathways and GO terms."""
         conn = get_db_connection(self.config)
         try:
             with conn.cursor() as cur:
-                # Sophisticated scoring algorithm
+                # Create temporary scoring tables
                 cur.execute("""
-                    WITH drug_scores AS (
-                        SELECT 
-                            gene_symbol,
-                            jsonb_object_agg(
-                                drug_id,
-                                (
-                                    CASE
-                                        WHEN ev->>'type' = 'experimental' THEN 1.0
-                                        WHEN ev->>'type' = 'computational' THEN 0.5
-                                        ELSE 0.3
-                                    END *
-                                    COALESCE((ev->>'score')::float, 0.5)
-                                )::float
-                            ) as scores
-                        FROM cancer_transcript_base,
-                        jsonb_each(drugs) as d(drug_id, drug_info),
-                        jsonb_each(drug_info->'evidence') as e(k, ev)
-                        GROUP BY gene_symbol
-                    )
-                    UPDATE cancer_transcript_base cb
-                    SET drug_scores = ds.scores
-                    FROM drug_scores ds
-                    WHERE cb.gene_symbol = ds.gene_symbol
+                    -- Table for storing intermediate pathway scores
+                    CREATE TEMP TABLE temp_pathway_scores (
+                        gene_symbol TEXT,
+                        drug_id TEXT,
+                        pathway_score FLOAT,
+                        PRIMARY KEY (gene_symbol, drug_id)
+                    );
+                    
+                    -- Table for storing intermediate GO term scores
+                    CREATE TEMP TABLE temp_go_scores (
+                        gene_symbol TEXT,
+                        drug_id TEXT,
+                        go_score FLOAT,
+                        PRIMARY KEY (gene_symbol, drug_id)
+                    );
+                    
+                    -- Table for final combined scores
+                    CREATE TEMP TABLE temp_final_scores (
+                        gene_symbol TEXT,
+                        drug_scores JSONB
+                    );
                 """)
                 
-            conn.commit()
-            logger.info("Drug scores calculation completed successfully")
-            
+                # Process in batches
+                batch_size = self.batch_size
+                offset = 0
+                total_processed = 0
+                
+                while True:
+                    # Get batch of genes with drugs
+                    cur.execute("""
+                        SELECT gene_symbol, drugs, pathways, go_terms
+                        FROM cancer_transcript_base
+                        WHERE drugs IS NOT NULL
+                        ORDER BY gene_symbol
+                        LIMIT %s OFFSET %s
+                    """, (batch_size, offset))
+                    
+                    rows = cur.fetchall()
+                    if not rows:
+                        break
+                        
+                    logger.info(f"Processing batch of {len(rows)} genes (offset {offset})")
+                    
+                    # Process pathway scores for this batch
+                    cur.execute("""
+                        INSERT INTO temp_pathway_scores
+                        WITH batch_genes AS (
+                            SELECT 
+                                t1.gene_symbol,
+                                t1.drugs,
+                                t1.pathways as source_pathways
+                            FROM cancer_transcript_base t1
+                            WHERE t1.gene_symbol = ANY(%s)
+                        )
+                        SELECT DISTINCT
+                            bg.gene_symbol,
+                            d.key as drug_id,
+                            COUNT(DISTINCT t2.gene_symbol)::float as pathway_score
+                        FROM batch_genes bg
+                        CROSS JOIN LATERAL jsonb_each(bg.drugs) d
+                        JOIN cancer_transcript_base t2 
+                        ON t2.pathways && bg.source_pathways
+                        AND t2.gene_type = 'protein_coding'
+                        GROUP BY bg.gene_symbol, d.key
+                    """, ([row[0] for row in rows],))
+                    
+                    # Process GO term scores for this batch
+                    cur.execute("""
+                        INSERT INTO temp_go_scores
+                        WITH batch_genes AS (
+                            SELECT 
+                                t1.gene_symbol,
+                                t1.drugs,
+                                t1.go_terms as source_terms
+                            FROM cancer_transcript_base t1
+                            WHERE t1.gene_symbol = ANY(%s)
+                        )
+                        SELECT DISTINCT
+                            bg.gene_symbol,
+                            d.key as drug_id,
+                            COUNT(DISTINCT t2.gene_symbol)::float as go_score
+                        FROM batch_genes bg
+                        CROSS JOIN LATERAL jsonb_each(bg.drugs) d
+                        JOIN cancer_transcript_base t2 
+                        ON EXISTS (
+                            SELECT 1
+                            FROM jsonb_object_keys(bg.source_terms) go_id
+                            WHERE t2.go_terms ? go_id
+                        )
+                        AND t2.gene_type = 'protein_coding'
+                        GROUP BY bg.gene_symbol, d.key
+                    """, ([row[0] for row in rows],))
+                    
+                    # Combine scores for this batch
+                    pathway_weight = float(self.config.get('drug_pathway_weight', 1.0))
+                    go_weight = pathway_weight * 0.5  # GO terms weighted at 50% of pathway weight
+                    
+                    cur.execute("""
+                        INSERT INTO temp_final_scores
+                        SELECT 
+                            ps.gene_symbol,
+                            jsonb_object_agg(
+                                ps.drug_id,
+                                (COALESCE(ps.pathway_score * %s, 0) + 
+                                 COALESCE(gs.go_score * %s, 0))::float
+                            ) as drug_scores
+                        FROM temp_pathway_scores ps
+                        LEFT JOIN temp_go_scores gs 
+                        ON ps.gene_symbol = gs.gene_symbol 
+                        AND ps.drug_id = gs.drug_id
+                        WHERE ps.gene_symbol = ANY(%s)
+                        GROUP BY ps.gene_symbol
+                    """, (pathway_weight, go_weight, [row[0] for row in rows]))
+                    
+                    # Update main table for this batch
+                    cur.execute("""
+                        UPDATE cancer_transcript_base cb
+                        SET drug_scores = fs.drug_scores
+                        FROM temp_final_scores fs
+                        WHERE cb.gene_symbol = fs.gene_symbol
+                    """)
+                    
+                    # Clear temporary tables for next batch
+                    cur.execute("""
+                        TRUNCATE temp_pathway_scores, temp_go_scores, temp_final_scores
+                    """)
+                    
+                    total_processed += len(rows)
+                    offset += batch_size
+                    
+                    # Commit each batch
+                    conn.commit()
+                    logger.info(f"Processed and committed {total_processed} genes so far")
+                
+                # Log final statistics
+                logger.info(f"Drug score calculation completed. Total genes processed: {total_processed}")
+                
+                # Sample verification
+                cur.execute("""
+                    SELECT gene_symbol, drug_scores 
+                    FROM cancer_transcript_base 
+                    WHERE drug_scores IS NOT NULL 
+                    LIMIT 3
+                """)
+                samples = cur.fetchall()
+                if samples:
+                    logger.debug("Sample drug scores:")
+                    for sample in samples:
+                        logger.debug(f"{sample[0]}: {sample[1]}")
+                
         except Exception as e:
-            logger.error(f"Drug scores calculation failed: {e}")
+            logger.error(f"Drug score calculation failed: {e}")
             conn.rollback()
             raise
         finally:
@@ -186,15 +515,28 @@ class DrugProcessor:
         """Run the complete drug processing pipeline."""
         try:
             # Download and extract data
+            logger.info("Starting drug processing pipeline...")
             drug_data_path = self.download_drugcentral()
             
-            # Process drug targets
+            # Process drug targets with validation
             drug_targets = self.process_drug_targets(drug_data_path)
+            if drug_targets.empty:
+                raise ValueError("No valid drug target relationships found")
+            
+            # Log sample of processed data
+            logger.info(
+                f"\nProcessed drug targets sample:\n"
+                f"Total relationships: {len(drug_targets):,}\n"
+                f"Unique drugs: {drug_targets['drug_id'].nunique():,}\n"
+                f"Unique genes: {drug_targets['gene_symbol'].nunique():,}\n"
+            )
             
             # Integrate with transcript data
+            logger.info("Integrating drug data with transcripts...")
             self.integrate_drugs(drug_targets)
             
             # Calculate drug scores
+            logger.info("Calculating drug interaction scores...")
             self.calculate_drug_scores()
             
             logger.info("Drug processing pipeline completed successfully")

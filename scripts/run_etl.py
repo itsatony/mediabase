@@ -27,7 +27,7 @@ def load_config():
         'batch_size': int(os.getenv('MB_BATCH_SIZE', '1000')),
         'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
         'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),
-        'dbname': os.getenv('MB_POSTGRES_DB', 'mediabase'),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase'),
         'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
         'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
     }

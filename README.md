@@ -121,6 +121,34 @@ After completing the setup, you can:
    poetry run jupyter lab notebooks/01_data_exploration.ipynb
    ```
 
+### Running Gene Product Classification
+
+1. Download and process UniProt data:
+   ```bash
+   poetry run python scripts/download_uniprot_data.py
+   ```
+
+2. Run the classification:
+   ```bash
+   poetry run python scripts/run_product_classification.py
+   ```
+
+   Options:
+   - `--batch-size`: Number of genes to process per batch (default: 100)
+   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+
+3. Run tests:
+   ```bash
+   # Run all product classification tests
+   poetry run pytest tests/etl/test_products.py
+
+   # Run only integration tests
+   poetry run pytest tests/etl/test_integration_products.py
+
+   # Run with coverage
+   poetry run pytest tests/etl/test_products.py --cov=src.etl.products
+   ```
+
 ## Documentation
 
 Comprehensive documentation is available in the `docs/` directory:
@@ -150,13 +178,25 @@ Current development status and upcoming milestones:
   - Comprehensive test suite
   - Integration tests with test database
 - [x] ETL pipeline - Gene-Product Classification (2025-02-07)
-  - UniProt API integration for product classification
-  - Smart caching with TTL for API requests
-  - Kinase and transcription factor detection
-  - GO term-based classification
-  - Async processing with aiohttp
-  - Comprehensive test coverage
-  - Integration tests with UniProt API
+  - Automated UniProt data download and processing
+  - Smart caching with gzip compression
+  - Robust product classification based on:
+    - UniProt features
+    - GO terms
+    - Keywords
+    - Function descriptions
+  - Batch database updates with temp tables
+  - Comprehensive test suite with mocks
+  - Integration tests with test database
+  - Rich CLI progress display
+  - Environment-based configuration
+- [x] Database Schema Update (2025-02-08)
+  - Enhanced schema to v0.1.2
+  - Added comprehensive UniProt feature storage
+  - Added molecular functions array
+  - Added proper GIN indices for new columns
+  - Migration path for existing data
+  - Updated documentation
 - [ ] ETL pipeline - Processes & Pathways Integration
   -
 - [ ] ETL pipeline - Drug Integration
@@ -237,7 +277,7 @@ MB_MEMORY_LIMIT=8192              # Memory limit in MB
 # Security
 MB_API_KEY=...                   # API key for authentication
 MB_JWT_SECRET=...                # JWT secret for tokens
-MB_ALLOWED_ORIGINS=...          # CORS allowed origins
+MB_ALLOWED_ORIGINS=...           # CORS allowed origins
 ```
 
 ## Version History
@@ -307,6 +347,54 @@ CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs);
 CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
 CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
 ```
+
+## Gene Product Types
+
+The system uses a comprehensive classification system for gene products based on molecular function and biological role:
+
+### Primary Classifications
+
+- transcription_factor
+- kinase
+- phosphatase
+- protease
+- ion_channel
+- receptor
+- transporter
+- enzyme
+- chaperone
+- structural_protein
+- signaling_molecule
+- hormone
+- growth_factor
+- cytokine
+- antibody
+- storage_protein
+- motor_protein
+- adhesion_molecule
+- cell_surface_protein
+- extracellular_matrix
+- dna_binding
+- rna_binding
+- metal_binding
+- lipid_binding
+- carrier_protein
+- regulatory_protein
+
+### Functional Modifiers (can be combined with primary types)
+
+- membrane_associated
+- secreted
+- nuclear
+- mitochondrial
+- cytoplasmic
+- vesicular
+- catalytic
+- regulatory
+- scaffold
+- adapter
+
+## Enhanced Database Schema v0.1.2
 
 ## ETL Pipeline Implementation
 

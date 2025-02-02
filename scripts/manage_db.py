@@ -172,7 +172,7 @@ class DatabaseManager:
                 )
             """)
             
-            # Create main table based on README schema
+            # Create main table based on latest schema (v0.1.2)
             self.cursor.execute("""
                 CREATE TABLE cancer_transcript_base (
                     transcript_id TEXT PRIMARY KEY,
@@ -182,6 +182,8 @@ class DatabaseManager:
                     chromosome TEXT,
                     coordinates JSONB,
                     product_type TEXT[],
+                    features JSONB DEFAULT '{}'::jsonb,
+                    molecular_functions TEXT[] DEFAULT '{}',
                     cellular_location TEXT[],
                     go_terms JSONB,
                     pathways TEXT[],
@@ -189,36 +191,72 @@ class DatabaseManager:
                     drug_scores JSONB,
                     publications JSONB,
                     expression_fold_change FLOAT DEFAULT 1.0,
-                    expression_freq JSONB DEFAULT '{"high": [], "low": []}',
+                    expression_freq JSONB DEFAULT '{"high": [], "low": []}'::jsonb,
                     cancer_types TEXT[] DEFAULT '{}'
                 )
             """)
 
-            # Create indices
-            self.cursor.execute(
-                "CREATE INDEX idx_gene_symbol ON cancer_transcript_base(gene_symbol)"
-            )
-            self.cursor.execute(
-                "CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id)"
-            )
-            self.cursor.execute(
-                "CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs)"
-            )
-            self.cursor.execute(
-                "CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type)"
-            )
-            self.cursor.execute(
-                "CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways)"
-            )
+            # Create all indices
+            self.cursor.execute("""
+                CREATE INDEX idx_gene_symbol ON cancer_transcript_base(gene_symbol);
+                CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id);
+                CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs);
+                CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
+                CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
+                CREATE INDEX idx_features ON cancer_transcript_base USING GIN(features);
+                CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions)
+            """)
 
             # Record schema version
             self.cursor.execute(
                 "INSERT INTO schema_version (version) VALUES (%s)",
-                (version,)
+                ('v0.1.2',)
             )
             return True
+            
         except psycopg2.Error as e:
             logger.error(f"Schema creation failed: {e}")
+            return False
+
+    def update_schema_to_v012(self) -> bool:
+        """Update schema to version 0.1.2."""
+        try:
+            if self.cursor is None:
+                return False
+                
+            # Add new columns and modify existing ones
+            self.cursor.execute("""
+                ALTER TABLE cancer_transcript_base
+                ADD COLUMN IF NOT EXISTS features JSONB DEFAULT '{}'::jsonb,
+                ADD COLUMN IF NOT EXISTS molecular_functions TEXT[] DEFAULT '{}';
+                
+                -- Create new indices
+                CREATE INDEX IF NOT EXISTS idx_features 
+                ON cancer_transcript_base USING GIN(features);
+                CREATE INDEX IF NOT EXISTS idx_molecular_functions 
+                ON cancer_transcript_base USING GIN(molecular_functions);
+            """)
+            
+            # Update schema version
+            self.cursor.execute(
+                "INSERT INTO schema_version (version) VALUES (%s)",
+                ('v0.1.2',)
+            )
+            return True
+            
+        except psycopg2.Error as e:
+            logger.error(f"Schema update failed: {e}")
+            return False
+
+    def reset_database(self) -> bool:
+        """Reset database to latest schema version."""
+        try:
+            if self.drop_database() and self.create_database():
+                if self.connect(self.db_params['dbname']):
+                    return self.create_schema('v0.1.2')
+            return False
+        except Exception as e:
+            logger.error(f"Reset failed: {e}")
             return False
 
     def dump_database(self, output_file: str) -> bool:

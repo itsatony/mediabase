@@ -73,7 +73,33 @@ This project creates a pre-joined database table optimized for LLM-agent queries
 
 3. Run tests:
    ```bash
+   # Run all tests
    poetry run pytest
+
+   # Run specific test module
+   poetry run pytest tests/etl/test_transcript.py
+
+   # Run only integration tests
+   poetry run pytest -m integration
+
+   # Run with coverage report
+   poetry run pytest --cov=src
+
+   # Run with verbose output
+   poetry run pytest -v
+   ```
+
+4. Before running tests, ensure your test database is configured:
+   ```bash
+   # Set up test environment variables
+   export MB_POSTGRES_HOST=localhost
+   export MB_POSTGRES_PORT=5432
+   export MB_POSTGRES_NAME=mediabase_test
+   export MB_POSTGRES_USER=postgres
+   export MB_POSTGRES_PASSWORD=postgres
+   
+   # Initialize test database
+   poetry run python scripts/manage_db.py --non-interactive
    ```
 
 ## Quick Start
@@ -114,8 +140,15 @@ Current development status and upcoming milestones:
   - Schema version tracking
   - Interactive CLI with rich status display
   - Environment-based configuration
-- [ ] ETL pipeline - Transcript module
-  -
+- [x] ETL pipeline - Transcript module (2025-02-06)
+  - GTF file download and caching with TTL
+  - Transcript data extraction and processing
+  - Coordinate parsing and validation
+  - Batch database loading
+  - Smart caching with metadata tracking
+  - Proper PostgreSQL JSONB type handling
+  - Comprehensive test suite
+  - Integration tests with test database
 - [ ] ETL pipeline - Product Classification
   -
 - [ ] ETL pipeline - Pathway Integration

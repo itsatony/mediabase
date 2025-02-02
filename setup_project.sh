@@ -221,39 +221,62 @@ cat > pyproject.toml << 'EOL'
 [tool.poetry]
 name = "cancer-transcriptome-base"
 version = "0.1.0"
-description = "Cancer Transcriptome Base for LLM-agent assistance"
+description = "A comprehensive database system for cancer transcriptome analysis with LLM-agent assistance"
 authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
 pandas = "^2.0.0"
+numpy = "^1.24.0"
 psycopg2-binary = "^2.9.5"
-pyyaml = "^6.0"
+gtfparse = "^1.3.0"
+sqlalchemy = "^2.0.0"
+python-dotenv = "^1.0.0"
+fastapi = "^0.100.0"
+uvicorn = "^0.23.0"
+jupyterlab = "^4.0.0"
+rich = "^13.0.0"
 
-[tool.poetry.dev-dependencies]
-pytest = "^7.3.1"
-pytest-cov = "^4.0.0"
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.3.0"
+mypy = "^1.5.0"
 black = "^23.3.0"
-mypy = "^1.3.0"
-pylint = "^2.17.3"
+isort = "^5.12.0"
+flake8 = "^6.0.0"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 88
-include = '\.pyi?$'
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
 
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
+strict = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+[tool.pylance]
+reportMissingImports = "warning"
+reportMissingModuleSource = "warning"
+
+[tool.pyright]
+include = ["src", "scripts"]
+exclude = ["**/__pycache__"]
+reportMissingImports = true
+reportMissingModuleSource = true
+useLibraryCodeForTypes = true
 EOL
 
 cat > .env.example << 'EOL'

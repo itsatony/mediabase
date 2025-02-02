@@ -156,13 +156,41 @@ The project includes a robust database management script (`scripts/manage_db.py`
 
 ### Environment Configuration
 
-Database settings are configured via environment variables:
+The project uses environment variables for configuration. Copy `.env.example` to `.env` and configure:
+
 ```bash
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=mediabase
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
+# Database Configuration
+MB_POSTGRES_HOST=localhost        # PostgreSQL host
+MB_POSTGRES_PORT=5432            # PostgreSQL port
+MB_POSTGRES_DB=mediabase         # Database name
+MB_POSTGRES_USER=postgres        # Database user
+MB_POSTGRES_PASSWORD=postgres    # Database password
+
+# API Configuration
+MB_API_HOST=0.0.0.0             # API server host
+MB_API_PORT=8000                # API server port
+MB_API_DEBUG=true               # Enable debug mode
+
+# Data Sources
+MB_GENCODE_GTF_URL=...          # Gencode GTF data URL
+MB_DRUGCENTRAL_DATA_URL=...     # DrugCentral database URL
+MB_GOTERM_DATA_URL=...          # GO terms OBO file URL
+MB_UNIPROT_API_URL=...          # UniProt API endpoint
+MB_PUBMED_API_URL=...           # PubMed E-utils API
+MB_PUBMED_API_KEY=...           # Your PubMed API key
+MB_PUBMED_EMAIL=...             # Your email for PubMed API
+
+# Cache and Processing
+MB_CACHE_DIR=/tmp/mediabase/cache  # Cache directory
+MB_CACHE_TTL=86400                 # Cache TTL in seconds
+MB_MAX_WORKERS=4                   # Max parallel workers
+MB_BATCH_SIZE=1000                # Batch size for processing
+MB_MEMORY_LIMIT=8192              # Memory limit in MB
+
+# Security
+MB_API_KEY=...                   # API key for authentication
+MB_JWT_SECRET=...                # JWT secret for tokens
+MB_ALLOWED_ORIGINS=...          # CORS allowed origins
 ```
 
 ## Version History

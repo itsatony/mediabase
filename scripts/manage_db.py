@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 from rich.table import Table
 import os
+from dotenv import load_dotenv
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -84,16 +85,62 @@ class DatabaseManager:
             logger.error(f"Database creation failed: {e}")
             return False
 
-    def drop_database(self) -> bool:
-        """Drop the database."""
+    def _ensure_default_connection(self) -> bool:
+        """Ensure connection to default postgres database."""
         try:
-            if self.cursor is None:
-                return False
-            self.cursor.execute(
-                f"DROP DATABASE IF EXISTS {self.db_params['dbname']}"
-            )
+            # Close any existing connection
+            if self.cursor is not None:
+                self.cursor.close()
+            if self.conn is not None:
+                self.conn.close()
+                self.conn = None
+            self.cursor = None
+            
+            # Connect to default postgres database
+            conn = cast(pg_connection, psycopg2.connect(
+                host=self.db_params['host'],
+                port=self.db_params['port'],
+                user=self.db_params['user'],
+                password=self.db_params['password'],
+                dbname='postgres'
+            ))
+            conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            self.conn = conn
+            self.cursor = self.conn.cursor()
             return True
         except psycopg2.Error as e:
+            logger.error(f"Failed to connect to default database: {e}")
+            return False
+
+    def drop_database(self) -> bool:
+        """Drop the database with improved connection handling."""
+        try:
+            # First ensure we're connected to postgres database
+            if not self._ensure_default_connection():
+                return False
+
+            if self.cursor is None:
+                return False
+
+            # Force close other connections
+            self.cursor.execute(f"""
+                SELECT pg_terminate_backend(pid) 
+                FROM pg_stat_activity 
+                WHERE datname = %s AND pid != pg_backend_pid()
+            """, (self.db_params['dbname'],))
+            
+            # Small delay to ensure connections are closed
+            import time
+            time.sleep(1)
+            
+            # Try to drop the database
+            self.cursor.execute(f"DROP DATABASE IF EXISTS {self.db_params['dbname']}")
+            return True
+            
+        except psycopg2.Error as e:
+            if "ERROR: database" in str(e) and "does not exist" in str(e):
+                # If database doesn't exist, that's fine
+                return True
             logger.error(f"Database drop failed: {e}")
             return False
 
@@ -176,12 +223,26 @@ class DatabaseManager:
 
 def load_config() -> Dict[str, Any]:
     """Load database configuration from environment variables."""
+    # Attempt to load .env file from project root
+    project_root = Path(__file__).parent.parent
+    env_path = project_root / '.env'
+    load_dotenv(env_path)
+
+    # Check if required environment variables are set
+    required_vars = ['MB_POSTGRES_HOST', 'MB_POSTGRES_PORT', 'MB_POSTGRES_NAME', 
+                    'MB_POSTGRES_USER', 'MB_POSTGRES_PASSWORD']
+    missing_vars = [var for var in required_vars if var not in os.environ]
+    if missing_vars:
+        console.print(f"[red]Missing required environment variables: {', '.join(missing_vars)}[/red]")
+        sys.exit(1)
+
+    # Now get environment variables with fallbacks
     return {
-        "host": os.getenv("POSTGRES_HOST", "localhost"),
-        "port": int(os.getenv("POSTGRES_PORT", "5432")),
-        "dbname": os.getenv("POSTGRES_DB", "mediabase"),
-        "user": os.getenv("POSTGRES_USER", "postgres"),
-        "password": os.getenv("POSTGRES_PASSWORD", "postgres")
+        "host": os.environ.get("MB_POSTGRES_HOST", "localhost"),
+        "port": int(os.environ.get("MB_POSTGRES_PORT", "5432")),
+        "dbname": os.environ.get("MB_POSTGRES_NAME", "mediabase"),
+        "user": os.environ.get("MB_POSTGRES_USER", "postgres"),
+        "password": os.environ.get("MB_POSTGRES_PASSWORD", "postgres")
     }
 
 def interactive_setup(db_manager: DatabaseManager) -> None:

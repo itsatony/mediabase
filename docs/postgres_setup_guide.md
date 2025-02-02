@@ -58,11 +58,11 @@ The project includes several scripts for database management in the `scripts/db`
 Update your `.env` file with these settings:
 
 ```ini
-DB_HOST=localhost
-DB_PORT=5435
-DB_NAME=mbase
-DB_USER=mbase_user
-DB_PASSWORD=mbase_secret
+MB_POSTGRES_HOST=localhost
+MB_POSTGRES_PORT=5432
+MB_POSTGRES_DB=mediabase
+MB_POSTGRES_USER=postgres
+MB_POSTGRES_PASSWORD=postgres
 ```
 
 ## Verification

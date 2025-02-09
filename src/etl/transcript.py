@@ -121,62 +121,176 @@ class TranscriptProcessor:
         self._update_cache_meta(cache_key, gtf_path)
         return gtf_path
 
+    def _inspect_gtf_structure(self, df: pd.DataFrame) -> None:
+        """Inspect and log GTF file structure for debugging."""
+        logger.info(f"GTF DataFrame columns: {df.columns.tolist()}")
+        logger.info(f"Number of records: {len(df)}")
+        # Log sample of first row for debugging
+        if not df.empty:
+            logger.info(f"First row sample: {df.iloc[0].to_dict()}")
+
+    def _get_attributes_column(self, df: pd.DataFrame) -> str:
+        """Identify the correct attributes column name.
+        
+        Args:
+            df: GTF DataFrame
+            
+        Returns:
+            str: Name of the attributes column
+            
+        Raises:
+            ValueError: If attributes column cannot be found
+        """
+        # Common variations of attributes column name
+        possible_names = ['attribute', 'attributes', 'attribute_string', 'info']
+        
+        for name in possible_names:
+            if name in df.columns:
+                return name
+                
+        # If not found in common names, try to identify by content
+        for col in df.columns:
+            sample = df[col].iloc[0] if not df.empty else ""
+            if isinstance(sample, str) and ';' in sample and '=' in sample:
+                return col
+                
+        raise ValueError(
+            "Could not identify attributes column. Available columns: "
+            f"{', '.join(df.columns)}"
+        )
+
+    def extract_alt_ids(self, row: pd.Series) -> Dict[str, Dict[str, str]]:
+        """Extract alternative IDs from GTF attributes.
+        
+        Args:
+            row: DataFrame row with GTF data
+            
+        Returns:
+            Dict containing alternative transcript and gene IDs
+        """
+        alt_transcript_ids: Dict[str, str] = {}
+        alt_gene_ids: Dict[str, str] = {}
+        
+        try:
+            # Direct column access for ID fields
+            # Process transcript IDs
+            for col in row.index:
+                # Handle transcript IDs
+                if col.startswith('transcript_id_'):
+                    source = col.split('transcript_id_')[1]
+                    if bool(pd.notna(row[col])) and row[col] is not None:
+                        alt_transcript_ids[source] = str(row[col])
+                # Handle gene IDs
+                elif col.startswith('gene_id_'):
+                    source = col.split('gene_id_')[1]
+                    if bool(pd.notna(row[col])):
+                        alt_gene_ids[source] = str(row[col])
+            
+            # Add standard identifiers if available
+            if 'hgnc_id' in row and pd.notna(row['hgnc_id']):
+                alt_gene_ids['HGNC'] = str(row['hgnc_id'])
+            if 'havana_gene' in row and pd.notna(row['havana_gene']):
+                alt_gene_ids['HAVANA'] = str(row['havana_gene'])
+            if 'havana_transcript' in row and pd.notna(row['havana_transcript']):
+                alt_transcript_ids['HAVANA'] = str(row['havana_transcript'])
+            if 'ccdsid' in row and pd.notna(row['ccdsid']):
+                alt_transcript_ids['CCDS'] = str(row['ccdsid'])
+                
+        except Exception as e:
+            logger.debug(  # Changed to debug level since this is expected for some rows
+                f"Could not extract alternative IDs for transcript "
+                f"{row.get('transcript_id', 'UNKNOWN')}: {str(e)}"
+            )
+        
+        return {
+            'alt_transcript_ids': alt_transcript_ids,
+            'alt_gene_ids': alt_gene_ids
+        }
+
     def process_gtf(self, gtf_path: Path) -> pd.DataFrame:
         """Process GTF file into transcript records."""
         logger.info("Reading GTF file...")
         df = read_gtf(str(gtf_path))
+        
+        # Inspect DataFrame structure
+        self._inspect_gtf_structure(df)
+        
+        # Validate DataFrame
         if not isinstance(df, pd.DataFrame):
-            raise TypeError("Expected a pandas DataFrame")
+            raise TypeError("read_gtf did not return a pandas DataFrame")
+        
+        # Required columns for basic processing
+        required_cols = ['feature', 'transcript_id', 'gene_id', 'gene_name', 
+                        'gene_type', 'seqname', 'start', 'end', 'strand']
+        
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns in GTF file: {missing_cols}"
+            )
         
         # Filter for transcript entries
         transcript_mask = df['feature'] == 'transcript'
-        transcripts: pd.DataFrame = df.loc[transcript_mask].copy()
+        transcripts = df.loc[transcript_mask].copy()
         
-        # Extract coordinates with proper typing
+        if transcripts.empty:
+            raise ValueError("No transcript records found in GTF file")
+            
+        logger.info(f"Processing {len(transcripts)} transcript records...")
+        
+        # Extract coordinates with proper typing and validation
         def create_coordinates(row: pd.Series) -> Dict[str, int]:
-            return {
-                'start': int(row['start']),
-                'end': int(row['end']),
-                'strand': 1 if row['strand'] == '+' else -1
-            }
+            try:
+                return {
+                    'start': int(row['start']),
+                    'end': int(row['end']),
+                    'strand': 1 if row['strand'] == '+' else -1
+                }
+            except (ValueError, TypeError) as e:
+                logger.warning(
+                    f"Invalid coordinate values for transcript "
+                    f"{row.get('transcript_id', 'UNKNOWN')}: {e}"
+                )
+                return {'start': 0, 'end': 0, 'strand': 0}
         
-        # Extract alternative IDs
-        def extract_alt_ids(row: pd.Series) -> Dict[str, Dict[str, str]]:
-            alt_transcript_ids = {}
-            alt_gene_ids = {}
-            
-            # Process additional IDs from attributes
-            attributes = row['attribute'].split(';')
-            for attr in attributes:
-                if 'transcript_id_' in attr:
-                    source = attr.split('transcript_id_')[1].split('=')[0].strip()
-                    value = attr.split('=')[1].strip().strip('"')
-                    alt_transcript_ids[source] = value
-                elif 'gene_id_' in attr:
-                    source = attr.split('gene_id_')[1].split('=')[0].strip()
-                    value = attr.split('=')[1].strip().strip('"')
-                    alt_gene_ids[source] = value
-            
-            return {
-                'alt_transcript_ids': alt_transcript_ids,
-                'alt_gene_ids': alt_gene_ids
-            }
+        # Process coordinates and alternative IDs
+        try:
+            transcripts['coordinates'] = transcripts.apply(
+                create_coordinates, axis=1
+            )
+            transcripts['alt_ids'] = transcripts.apply(
+                self.extract_alt_ids, axis=1
+            )
+        except Exception as e:
+            raise ValueError(f"Error processing transcript data: {e}") from e
         
-        transcripts['coordinates'] = transcripts.apply(create_coordinates, axis=1)
-        transcripts['alt_ids'] = transcripts.apply(extract_alt_ids, axis=1)
-
         # Select and rename columns with proper typing
-        result = pd.DataFrame({
-            'transcript_id': transcripts['transcript_id'].astype(str),
-            'gene_symbol': transcripts['gene_name'].astype(str),
-            'gene_id': transcripts['gene_id'].astype(str),
-            'gene_type': transcripts['gene_type'].astype(str),
-            'chromosome': transcripts['seqname'].astype(str),
-            'coordinates': transcripts['coordinates'].tolist(),
-            'alt_transcript_ids': transcripts['alt_ids'].apply(lambda x: x['alt_transcript_ids']).tolist(),
-            'alt_gene_ids': transcripts['alt_ids'].apply(lambda x: x['alt_gene_ids']).tolist()
-        })
-
+        try:
+            result = pd.DataFrame({
+                'transcript_id': transcripts['transcript_id'].astype(str),
+                'gene_symbol': transcripts['gene_name'].astype(str),
+                'gene_id': transcripts['gene_id'].astype(str),
+                'gene_type': transcripts['gene_type'].astype(str),
+                'chromosome': transcripts['seqname'].astype(str),
+                'coordinates': transcripts['coordinates'].tolist(),
+                'alt_transcript_ids': transcripts['alt_ids'].apply(
+                    lambda x: x['alt_transcript_ids']
+                ).tolist(),
+                'alt_gene_ids': transcripts['alt_ids'].apply(
+                    lambda x: x['alt_gene_ids']
+                ).tolist()
+            })
+        except Exception as e:
+            raise ValueError(
+                f"Error creating final DataFrame: {e}"
+            ) from e
+        
+        logger.info(
+            f"Processed {len(result)} transcripts with "
+            f"{result['alt_transcript_ids'].apply(len).sum()} "
+            "alternative transcript IDs"
+        )
+        
         return result
 
     def prepare_transcript_records(

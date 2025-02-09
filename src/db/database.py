@@ -146,25 +146,18 @@ class DatabaseManager:
         register_adapter(dict, adapt_dict)
     
     def connect(self, db_name: Optional[str] = None) -> bool:
-        """Establish database connection.
-        
-        Args:
-            db_name: Optional database name override
-            
-        Returns:
-            bool: True if connection successful
-        """
+        """Establish database connection."""
         try:
             params = self.db_config.copy()
             if db_name:
                 params['dbname'] = db_name
             
-            # Close existing connection if any
-            self.close()
+            # Only close if connection exists and is open
+            if self.conn and not self.conn.closed:
+                self.close()
             
             # Create new connection
             conn = cast(pg_connection, psycopg2.connect(**params))
-            
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             self.conn = conn
             self.cursor = self.conn.cursor()
@@ -432,6 +425,33 @@ class DatabaseManager:
                 
         except Exception as e:
             logger.error(f"Restore failed: {e}")
+            return False
+
+    def check_column_exists(self, table: str, column: str) -> bool:
+        """Check if a column exists in the specified table.
+        
+        Args:
+            table: Table name to check
+            column: Column name to check
+            
+        Returns:
+            bool: True if column exists, False otherwise
+        """
+        try:
+            if not self.cursor:
+                raise RuntimeError("No database cursor available")
+                
+            self.cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = %s 
+                AND column_name = %s
+            """, (table, column))
+            
+            return bool(self.cursor.fetchone())
+            
+        except Exception as e:
+            logger.error(f"Error checking column existence: {e}")
             return False
 
 def get_db_manager(config: Dict[str, Any]) -> DatabaseManager:

@@ -58,6 +58,15 @@ class GOTermProcessor:
             'GO:0005575',  # cellular_component
         }
 
+    def _ensure_connection(self) -> None:
+        """Ensure database connection is active."""
+        if not self.db_manager.conn or self.db_manager.conn.closed:
+            logger.info("Reconnecting to database...")
+            self.db_manager.connect()
+        if not self.db_manager.cursor or self.db_manager.cursor.closed:
+            if self.db_manager.conn:
+                self.db_manager.cursor = self.db_manager.conn.cursor()
+
     def _get_cache_key(self, url: str) -> str:
         """Generate a cache key from URL."""
         return hashlib.sha256(url.encode()).hexdigest()
@@ -224,6 +233,7 @@ class GOTermProcessor:
 
     def enrich_transcripts(self) -> None:
         """Enrich transcript data with GO term hierarchies."""
+        self._ensure_connection()
         if not self.go_graph:
             raise ValueError("GO graph not loaded")
 
@@ -305,7 +315,7 @@ class GOTermProcessor:
             
         except Exception as e:
             logger.error(f"GO term enrichment failed: {e}")
-            if self.db_manager.conn is not None:
+            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
 
@@ -340,6 +350,43 @@ class GOTermProcessor:
     def _update_batch(self, cur, updates: List[Tuple[str, str]]) -> None:
         """Update a batch of enriched GO terms."""
         try:
+            # First ensure schema is at correct version
+            if not self.db_manager.check_column_exists('cancer_transcript_base', 'source_references'):
+                # Add required columns for v0.1.4
+                cur.execute("""
+                    ALTER TABLE cancer_transcript_base 
+                    ADD COLUMN IF NOT EXISTS molecular_functions TEXT[] DEFAULT '{}',
+                    ADD COLUMN IF NOT EXISTS cellular_location TEXT[] DEFAULT '{}',
+                    ADD COLUMN IF NOT EXISTS alt_transcript_ids JSONB DEFAULT '{}'::jsonb,
+                    ADD COLUMN IF NOT EXISTS alt_gene_ids JSONB DEFAULT '{}'::jsonb,
+                    ADD COLUMN IF NOT EXISTS uniprot_ids TEXT[] DEFAULT '{}',
+                    ADD COLUMN IF NOT EXISTS ncbi_ids TEXT[] DEFAULT '{}',
+                    ADD COLUMN IF NOT EXISTS refseq_ids TEXT[] DEFAULT '{}',
+                    ADD COLUMN IF NOT EXISTS source_references JSONB DEFAULT '{
+                        "go_terms": [],
+                        "uniprot": [],
+                        "drugs": [],
+                        "pathways": []
+                    }'::jsonb;
+
+                    -- Add indices for new columns
+                    CREATE INDEX IF NOT EXISTS idx_molecular_functions 
+                    ON cancer_transcript_base USING GIN(molecular_functions);
+                    
+                    CREATE INDEX IF NOT EXISTS idx_cellular_location 
+                    ON cancer_transcript_base USING GIN(cellular_location);
+                    
+                    CREATE INDEX IF NOT EXISTS idx_source_references 
+                    ON cancer_transcript_base USING GIN(source_references);
+                    
+                    CREATE INDEX IF NOT EXISTS idx_alt_ids 
+                    ON cancer_transcript_base USING GIN(alt_transcript_ids, alt_gene_ids);
+                """)
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+                    logger.info("Schema updated to include required columns")
+                    
+            # Proceed with update using simpler query first
             result = execute_batch(
                 cur,
                 """
@@ -356,26 +403,7 @@ class GOTermProcessor:
                             SELECT array_agg(DISTINCT value->>'term')
                             FROM jsonb_each(go_terms::jsonb) AS t(key, value)
                             WHERE (value->>'aspect')::text = 'cellular_component'
-                        ) AS cellular_location,
-                        (
-                            SELECT jsonb_set(
-                                COALESCE(source_references, '{}'::jsonb),
-                                '{go_terms}',
-                                (
-                                    SELECT jsonb_agg(
-                                        jsonb_build_object(
-                                            'pmid', value->'evidence'->>'pmid',
-                                            'year', value->'evidence'->>'year',
-                                            'evidence_type', value->'evidence'->>'type',
-                                            'citation_count', value->'evidence'->>'citations',
-                                            'source_db', 'GO'
-                                        )
-                                    )
-                                    FROM jsonb_each(go_terms::jsonb)
-                                    WHERE value->'evidence'->>'pmid' IS NOT NULL
-                                )
-                            )
-                        ) AS source_references
+                        ) AS cellular_location
                     FROM (
                         SELECT 
                             unnest(%s::text[]) AS gene_symbol,
@@ -386,12 +414,11 @@ class GOTermProcessor:
                 SET 
                     go_terms = te.go_terms,
                     molecular_functions = COALESCE(te.molecular_functions, '{}'),
-                    cellular_location = COALESCE(te.cellular_location, '{}'),
-                    source_references = te.source_references
+                    cellular_location = COALESCE(te.cellular_location, '{}')
                 FROM term_extraction te
                 WHERE ctb.gene_symbol = te.gene_symbol
                 AND ctb.gene_type = 'protein_coding'
-                RETURNING ctb.gene_symbol, ctb.go_terms IS NOT NULL as updated
+                RETURNING ctb.gene_symbol, ctb.go_terms IS NOT NULL as updated;
                 """,
                 [(
                     [u[1] for u in batch],  # gene_symbols
@@ -399,6 +426,34 @@ class GOTermProcessor:
                 ) for batch in [updates]],
                 page_size=self.batch_size
             )
+
+            # Update source_references in a separate query to handle any remaining schema issues
+            cur.execute("""
+                UPDATE cancer_transcript_base
+                SET source_references = source_references || 
+                    jsonb_build_object(
+                        'go_terms',
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(
+                                    jsonb_build_object(
+                                        'pmid', NULL,
+                                        'year', NULL,
+                                        'evidence_type', value->>'evidence',
+                                        'source_db', 'GO'
+                                    )
+                                )
+                                FROM jsonb_each(go_terms)
+                            ),
+                            '[]'::jsonb
+                        )
+                    )
+                WHERE go_terms IS NOT NULL;
+            """)
+            
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+            
             return result
             
         except Exception as e:
@@ -414,7 +469,7 @@ class GOTermProcessor:
         sample_entries: List[List[str]] = []
         
         with gzip.open(goa_path, 'rt') as f:
-            for line in tqdm(f, desc="Processing GOA entries"):
+            for line in tqdm(f, 'Processing GOA entries'):
                 if line.startswith('!'):
                     continue
                 
@@ -556,6 +611,7 @@ class GOTermProcessor:
 
     def populate_initial_terms(self) -> None:
         """Populate initial GO terms from GOA data."""
+        self._ensure_connection()
         # Download and process GOA file
         goa_path = self.download_goa()
         gene_go_terms = self.process_goa_file(goa_path)
@@ -643,25 +699,33 @@ class GOTermProcessor:
             
         except Exception as e:
             logger.error(f"Initial GO terms population failed: {e}")
-            if self.db_manager.conn is not None:
+            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
-        finally:
-            if self.db_manager.conn is not None:
-                self.db_manager.conn.close()
 
     def run(self) -> None:
         """Run the complete GO term enrichment pipeline."""
         try:
-            # First load GO graph
+            self._ensure_connection()
+            
+            # First check schema version
+            current_version = self.db_manager.get_current_version()
+            if current_version != 'v0.1.4':
+                logger.info(f"Current schema version {current_version} needs update to v0.1.4")
+                if not self.db_manager.migrate_to_version('v0.1.4'):
+                    raise RuntimeError("Failed to migrate database schema to v0.1.4")
+                logger.info("Schema successfully updated to v0.1.4")
+            
+            # Then proceed with normal pipeline
             obo_path = self.download_obo()
             self.load_go_graph(obo_path)
             
-            # Then populate initial terms from GOA
             logger.info("Populating initial GO terms from GOA...")
             self.populate_initial_terms()
             
-            # Finally enrich with ancestors
+            # Ensure connection is still valid before enrichment
+            self._ensure_connection()
+            
             logger.info("Enriching GO terms with ancestors...")
             self.enrich_transcripts()
             
@@ -670,3 +734,8 @@ class GOTermProcessor:
         except Exception as e:
             logger.error(f"GO term processing failed: {e}")
             raise
+        finally:
+            # Only close connection when completely done
+            if hasattr(self, 'db_manager'):
+                self.db_manager.close()
+

@@ -137,7 +137,7 @@ def run_etl(args: argparse.Namespace) -> None:
                 from src.etl.go_terms import GOTermProcessor
                 go_processor = GOTermProcessor(config)
                 go_processor.run()
-                console.print("[green]GO term enrichment completed[/bold green]")
+                console.print("[green]GO term enrichment completed[/green]")
             
             elif module == 'pathways':
                 console.print("[bold green]Running pathway enrichment...[/bold green]")
@@ -186,7 +186,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Run ETL pipeline')
     parser.add_argument(
         '--module', 
-        choices=['all', 'transcript', 'products', 'pathways', 'drugs'],
+        choices=['all', 'transcript', 'products', 'go_terms', 'pathways', 'drugs'],
         default='all',
         help='ETL module to run'
     )

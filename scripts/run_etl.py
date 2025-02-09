@@ -44,7 +44,48 @@ def load_config() -> Dict[str, Any]:
 
 def run_etl(args: argparse.Namespace) -> None:
     """Run ETL pipeline with specified modules."""
-    config = load_config()
+    # Create unified configuration
+    config = {
+        # Database configuration
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase'),
+        'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres'),
+        
+        # ETL configuration
+        'batch_size': args.batch_size,
+        'cache_dir': os.getenv('MB_CACHE_DIR', '/tmp/mediabase/cache'),
+        'force_download': args.force_download,
+        
+        # Data source URLs
+        'gtf_url': os.getenv('MB_GENCODE_GTF_URL', 'ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.annotation.gtf.gz'),
+        'go_obo_url': 'http://purl.obolibrary.org/obo/go.obo',
+        'go_basic_url': 'http://purl.obolibrary.org/obo/go/go-basic.obo',
+        'reactome_url': os.getenv('MB_REACTOME_DOWNLOAD_URL', 'https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt'),
+        'drugcentral_url': os.getenv('MB_DRUGCENTRAL_DATA_URL', 'https://unmtid-shinyapps.net/download/DrugCentral/20231006/drugcentral-pgdump_20231006.sql.gz')
+    }
+
+    # Validate required URLs
+    required_urls = {
+        'transcript': ['gtf_url'],
+        'go_terms': ['go_obo_url', 'go_basic_url'],
+        'pathways': ['reactome_url'],
+        'drugs': ['drugcentral_url']
+    }
+
+    if args.module != 'all':
+        # Check only URLs needed for specified module
+        for url in required_urls.get(args.module, []):
+            if not config.get(url):
+                raise ValueError(f"Missing required URL configuration: {url}")
+    else:
+        # Check all URLs when running all modules
+        for urls in required_urls.values():
+            for url in urls:
+                if not config.get(url):
+                    raise ValueError(f"Missing required URL configuration: {url}")
+    
     db_manager = get_db_manager(config)
     
     try:
@@ -143,11 +184,35 @@ def run_etl(args: argparse.Namespace) -> None:
 def main() -> None:
     """Main entry point for ETL pipeline."""
     parser = argparse.ArgumentParser(description='Run ETL pipeline')
-    parser.add_argument('--module', 
-                       choices=['all', 'transcript', 'products', 'pathways', 'drugs'],
-                       default='all',
-                       help='ETL module to run')
+    parser.add_argument(
+        '--module', 
+        choices=['all', 'transcript', 'products', 'pathways', 'drugs'],
+        default='all',
+        help='ETL module to run'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=1000,
+        help='Batch size for processing (default: 1000)'
+    )
+    parser.add_argument(
+        '--force-download',
+        action='store_true',
+        help='Force download of source data files'
+    )
+    parser.add_argument(
+        '--log-level',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        default='INFO',
+        help='Set logging level'
+    )
+    
     args = parser.parse_args()
+    
+    # Configure logging based on argument
+    logging.getLogger().setLevel(args.log_level)
+    
     run_etl(args)
 
 if __name__ == '__main__':

@@ -121,7 +121,17 @@ class DatabaseManager:
         Args:
             config: Database configuration dictionary with connection parameters
         """
-        self.config = config
+        # Ensure we have the required database configuration
+        self.db_config = {
+            'host': config.get('host', 'localhost'),
+            'port': config.get('port', 5432),
+            'dbname': config.get('dbname', 'mediabase'),
+            'user': config.get('user', 'postgres'),
+            'password': config.get('password', 'postgres')
+        }
+        # Store other config options separately
+        self.config = {k: v for k, v in config.items() 
+                      if k not in self.db_config}
         self.conn: Optional[pg_connection] = None
         self.cursor: Optional[pg_cursor] = None
         self._register_adapters()
@@ -145,7 +155,7 @@ class DatabaseManager:
             bool: True if connection successful
         """
         try:
-            params = self.config.copy()
+            params = self.db_config.copy()
             if db_name:
                 params['dbname'] = db_name
             
@@ -153,13 +163,7 @@ class DatabaseManager:
             self.close()
             
             # Create new connection
-            conn = cast(pg_connection, psycopg2.connect(
-                host=params['host'],
-                port=params['port'],
-                user=params['user'],
-                password=params['password'],
-                dbname=params.get('dbname', 'postgres')
-            ))
+            conn = cast(pg_connection, psycopg2.connect(**params))
             
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             self.conn = conn

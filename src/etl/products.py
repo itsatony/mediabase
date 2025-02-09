@@ -134,120 +134,127 @@ class ProductClassifier:
         try:
             if not db_manager.cursor:
                 raise RuntimeError("No database connection")
-                
-            # Create temporary table for batch updates
-            db_manager.cursor.execute("""
-                CREATE TEMP TABLE temp_gene_data (
-                    gene_symbol TEXT PRIMARY KEY,
-                    product_type TEXT[],
-                    features JSONB,
-                    molecular_functions TEXT[]
-                ) ON COMMIT DROP
-            """)
             
-            # Only fetch valid gene symbols
+            # Get valid gene symbols first
             db_manager.cursor.execute(r"""
                 SELECT DISTINCT gene_symbol 
                 FROM cancer_transcript_base 
                 WHERE gene_symbol ~ '^[A-Z][A-Z0-9\-]{0,254}$'
             """)
             genes = [row[0] for row in db_manager.cursor.fetchall()]
-            
             logger.info(f"Processing {len(genes)} genes for classification")
             
             # Process in batches
-            batch = []
             batch_size = self.config.get('batch_size', 100)
+            total_batches = (len(genes) + batch_size - 1) // batch_size
             
-            for gene in genes:
-                try:
-                    # Get UniProt data
-                    data = self._data.get(gene, {})
-                    
-                    # Process classifications
-                    classifications = self.classify_product(gene)
-                    
-                    # Process features
-                    features = {}
-                    for idx, feature in enumerate(data.get('features', [])):
-                        # Parse feature string into structured data
-                        parts = feature.split(None, 2)  # Split into type and description
-                        if len(parts) >= 2:
-                            feature_type = parts[0]
-                            feature_id = f"{feature_type}_{idx}"
-                            features[feature_id] = {
-                                "type": feature_type,
-                                "description": parts[1],
-                                "evidence": "UniProt",  # Default evidence source
-                            }
-                            if len(parts) > 2:
-                                features[feature_id]["additional_info"] = parts[2]
-                    
-                    # Process molecular functions from GO terms
-                    molecular_functions = []
-                    for go_term in data.get('go_terms', []):
-                        if 'molecular_function' in go_term.get('aspect', '').lower():
-                            molecular_functions.append(go_term['term'])
-                    
-                    if classifications or features or molecular_functions:
-                        batch.append((
-                            gene,
-                            classifications,
-                            json.dumps(features) if features else '{}',
-                            molecular_functions
-                        ))
-                        
-                    if len(batch) >= batch_size:
-                        self._update_batch(db_manager.cursor, batch)
-                        batch = []
-                        logger.debug(f"Processed batch of {batch_size} genes")
-                        
-                except Exception as e:
-                    logger.error(f"Error processing gene {gene}: {e}")
-            
-            # Process remaining batch
-            if batch:
-                self._update_batch(db_manager.cursor, batch)
-                logger.debug(f"Processed remaining {len(batch)} genes")
-            
+            # Create the temp table outside the batch loop
             if db_manager.conn:
-                db_manager.conn.commit()
+                db_manager.conn.rollback()  # Clean slate
+                
+            db_manager.cursor.execute("""
+                DROP TABLE IF EXISTS temp_gene_data;
+                CREATE TEMP TABLE temp_gene_data (
+                    gene_symbol TEXT PRIMARY KEY,
+                    product_type TEXT[],
+                    features JSONB,
+                    molecular_functions TEXT[]
+                );
+            """)
+            
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, len(genes))
+                batch_genes = genes[start_idx:end_idx]
+                
+                try:
+                    # Clear temp table for this batch
+                    db_manager.cursor.execute("TRUNCATE TABLE temp_gene_data")
+                    
+                    # Process genes in current batch
+                    batch_data = []
+                    for gene in batch_genes:
+                        try:
+                            data = self._data.get(gene, {})
+                            classifications = self.classify_product(gene)
+                            
+                            # Process features
+                            features = {}
+                            for idx, feature in enumerate(data.get('features', [])):
+                                parts = feature.split(None, 2)
+                                if len(parts) >= 2:
+                                    feature_type = parts[0]
+                                    feature_id = f"{feature_type}_{idx}"
+                                    features[feature_id] = {
+                                        "type": feature_type,
+                                        "description": parts[1],
+                                        "evidence": "UniProt",
+                                    }
+                                    if len(parts) > 2:
+                                        features[feature_id]["additional_info"] = parts[2]
+                            
+                            # Process molecular functions
+                            molecular_functions = []
+                            for go_term in data.get('go_terms', []):
+                                if 'molecular_function' in go_term.get('aspect', '').lower():
+                                    molecular_functions.append(go_term['term'])
+                            
+                            if classifications or features or molecular_functions:
+                                batch_data.append((
+                                    gene,
+                                    classifications,
+                                    json.dumps(features) if features else '{}',
+                                    molecular_functions
+                                ))
+                                
+                        except Exception as e:
+                            logger.error(f"Error processing gene {gene}: {e}")
+                            continue
+                    
+                    # Insert batch data into temp table
+                    if batch_data:
+                        execute_batch(
+                            db_manager.cursor,
+                            "INSERT INTO temp_gene_data VALUES (%s, %s, %s::jsonb, %s)",
+                            batch_data,
+                            page_size=1000
+                        )
+                        
+                        # Update main table from temp table
+                        db_manager.cursor.execute("""
+                            UPDATE cancer_transcript_base cb
+                            SET 
+                                product_type = tgd.product_type,
+                                features = tgd.features,
+                                molecular_functions = tgd.molecular_functions
+                            FROM temp_gene_data tgd
+                            WHERE cb.gene_symbol = tgd.gene_symbol
+                        """)
+                        
+                        # Commit the batch
+                        if db_manager.conn:
+                            db_manager.conn.commit()
+                            
+                    logger.info(f"Processed batch {batch_idx + 1}/{total_batches} ({len(batch_data)} genes)")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+                    if db_manager.conn:
+                        db_manager.conn.rollback()
+                    continue
+                    
             logger.info("Database update completed successfully")
             
         except Exception as e:
+            logger.error(f"Database update failed: {e}")
             if db_manager.conn:
                 db_manager.conn.rollback()
-            logger.error(f"Database update failed: {e}")
             raise
         finally:
+            # Clean up
+            if db_manager.cursor:
+                db_manager.cursor.execute("DROP TABLE IF EXISTS temp_gene_data")
             db_manager.close()
-    
-    def _update_batch(self, cur, batch: List[tuple[str, List[str], str, List[str]]]) -> None:
-        """Update a batch of gene data.
-        
-        Args:
-            cur: Database cursor
-            batch: List of (gene_symbol, classifications, features_json, molecular_functions) tuples
-        """
-        # Insert into temp table
-        cur.executemany(
-            "INSERT INTO temp_gene_data VALUES (%s, %s, %s::jsonb, %s)",
-            batch
-        )
-        
-        # Update main table from temp table
-        cur.execute("""
-            UPDATE cancer_transcript_base cb
-            SET 
-                product_type = tgd.product_type,
-                features = tgd.features,
-                molecular_functions = tgd.molecular_functions
-            FROM temp_gene_data tgd
-            WHERE cb.gene_symbol = tgd.gene_symbol
-        """)
-        
-        # Clear temp table
-        cur.execute("TRUNCATE temp_gene_data")
 
 class ProductProcessor:
     """Process and load product classifications into the database."""

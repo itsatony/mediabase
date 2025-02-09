@@ -9,7 +9,7 @@ import hashlib
 from datetime import datetime, timedelta
 import json
 from tqdm import tqdm
-from ..db.connection import get_db_connection
+from ..db.database import get_db_manager
 from psycopg2.extras import execute_batch
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ class PathwayProcessor:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.batch_size = config.get('batch_size', 1000)
         self.cache_ttl = config.get('cache_ttl', 86400)  # 24 hours default
+        self.db_manager = get_db_manager(config)
         
     def _get_cache_key(self, url: str) -> str:
         """Generate a cache key from URL."""
@@ -271,126 +272,183 @@ class PathwayProcessor:
             logger.warning("No pathway data to process!")
             return
             
-        conn = get_db_connection(self.config)
+        if not self.db_manager.cursor:
+            raise RuntimeError("No database connection")
+            
         try:
-            with conn.cursor() as cur:
-                # Get current database state
-                cur.execute("""
-                    SELECT 
-                        COUNT(*) as total,
-                        COUNT(CASE WHEN pathways IS NOT NULL AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways
-                    FROM cancer_transcript_base 
-                    WHERE gene_type = 'protein_coding'
-                """)
-                before_stats = cur.fetchone()
-                if before_stats:
-                    logger.info(
-                        f"\nBefore enrichment:\n"
-                        f"- Total genes in DB: {before_stats[0]:,}\n"
-                        f"- Genes with pathways: {before_stats[1]:,}"
-                    )
-                else:
-                    logger.warning("No data found in the database for enrichment statistics.")
-                
-                # Get NCBI ID to gene symbol mapping
-                ncbi_mapping = self._get_ncbi_mapping(cur)
-                
-                # Sample of mappings for verification
-                sample_mappings = list(ncbi_mapping.items())[:5]
+            cur = self.db_manager.cursor
+            
+            # Get initial statistics
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN pathways IS NOT NULL AND array_length(pathways, 1) > 0 
+                         THEN 1 END) as with_pathways
+                FROM cancer_transcript_base 
+                WHERE gene_type = 'protein_coding'
+            """)
+            before_stats = cur.fetchone()
+            if before_stats:
                 logger.info(
-                    f"\nSample NCBI ID mappings:\n" + 
-                    "\n".join(f"NCBI:{ncbi} -> {symbol}" for ncbi, symbol in sample_mappings)
+                    f"\nBefore enrichment:\n"
+                    f"- Total genes in DB: {before_stats[0]:,}\n"
+                    f"- Genes with pathways: {before_stats[1]:,}"
+                )
+            else:
+                logger.warning("No data found in the database for enrichment statistics.")
+            
+            # Get NCBI ID to gene symbol mapping
+            ncbi_mapping = self._get_ncbi_mapping(cur)
+            
+            # Now map pathways using NCBI IDs
+            updates = []
+            processed = 0
+            matched = 0
+            
+            for ncbi_id, pathways in gene_pathways.items():
+                if ncbi_id in ncbi_mapping:
+                    matched += 1
+                    gene_symbol = ncbi_mapping[ncbi_id]
+                    pathway_list = list(pathways)
+                    updates.append((pathway_list, gene_symbol))
+                    
+                    if len(updates) >= self.batch_size:
+                        self._update_batch(cur, updates)
+                        if self.db_manager.conn is not None:
+                            self.db_manager.conn.commit()
+                        processed += len(updates)
+                        updates = []
+            
+            if updates:
+                self._update_batch(cur, updates)
+                if self.db_manager.conn is not None:
+                    self.db_manager.conn.commit()
+                processed += len(updates)
+                
+            # Log statistics with better error handling
+            cur.execute("""
+                SELECT 
+                    COUNT(*) as total_genes,
+                    COUNT(CASE WHEN array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
+                    COALESCE(AVG(array_length(pathways, 1)), 0) as avg_pathways
+                FROM cancer_transcript_base
+                WHERE gene_type = 'protein_coding'
+            """)
+            stats = cur.fetchone()
+            
+            if stats:
+                logger.info(
+                    f"\nEnrichment Results:\n"
+                    f"- Total genes processed: {stats[0]:,}\n"
+                    f"- NCBI IDs matched: {matched:,}\n"
+                    f"- Updates processed: {processed:,}\n"
+                    f"- Final genes with pathways: {stats[1]:,}\n"
+                    f"- Average pathways per gene: {stats[2]:.1f}"
                 )
                 
-                # Now map pathways using NCBI IDs
-                updates = []
-                processed = 0
-                matched = 0
-                
-                for ncbi_id, pathways in gene_pathways.items():
-                    if ncbi_id in ncbi_mapping:
-                        matched += 1
-                        gene_symbol = ncbi_mapping[ncbi_id]
-                        pathway_list = list(pathways)
-                        updates.append((pathway_list, gene_symbol))
-                        
-                        if len(updates) >= self.batch_size:
-                            self._update_batch(cur, updates)
-                            conn.commit()
-                            processed += len(updates)
-                            updates = []
-                
-                if updates:
-                    self._update_batch(cur, updates)
-                    conn.commit()
-                    processed += len(updates)
-                    
-                # Log statistics with better error handling
-                cur.execute("""
-                    SELECT 
-                        COUNT(*) as total_genes,
-                        COUNT(CASE WHEN array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
-                        COALESCE(AVG(array_length(pathways, 1)), 0) as avg_pathways
-                    FROM cancer_transcript_base
-                    WHERE gene_type = 'protein_coding'
-                """)
-                stats = cur.fetchone()
-                
-                if stats:
-                    logger.info(
-                        f"\nEnrichment Results:\n"
-                        f"- Total genes processed: {stats[0]:,}\n"
-                        f"- NCBI IDs matched: {matched:,}\n"
-                        f"- Updates processed: {processed:,}\n"
-                        f"- Final genes with pathways: {stats[1]:,}\n"
-                        f"- Average pathways per gene: {stats[2]:.1f}"
-                    )
-                    
-                    # Sample verification
-                    cur.execute("""
-                        SELECT gene_symbol, pathways, gene_id 
-                        FROM cancer_transcript_base 
-                        WHERE array_length(pathways, 1) > 0 
-                        LIMIT 1
-                    """)
-                    sample = cur.fetchone()
-                    if sample:
-                        logger.info(
-                            f"\nSample gene with pathways:\n"
-                            f"Gene: {sample[0]} (ID: {sample[2]})\n"
-                            f"Number of pathways: {len(sample[1])}\n"
-                            f"First pathway: {sample[1][0] if sample[1] else 'None'}"
-                        )
-                    
         except Exception as e:
             logger.error(f"Pathway enrichment failed: {e}")
-            conn.rollback()
+            if self.db_manager.conn is not None:
+                self.db_manager.conn.rollback()
             raise
         finally:
-            conn.close()
+            if self.db_manager.conn is not None:
+                self.db_manager.conn.close()
 
     def _update_batch(self, cur, updates: List[Tuple[List[str], str]]) -> None:
         """Update a batch of pathway data."""
         logger.debug(f"Processing batch update with {len(updates)} entries")
         
-        # Show sample of updates
-        if updates and logger.level <= logging.DEBUG:
-            sample = updates[0]
-            logger.debug(
-                f"Sample update:\n"
-                f"Gene Symbol: {sample[1]}\n"
-                f"Pathway count: {len(sample[0])}\n"
-                f"First pathway: {sample[0][0] if sample[0] else 'None'}"
-            )
-        
         execute_batch(
             cur,
             """
+            WITH pathway_update AS (
+                SELECT 
+                    u.gene_symbol,
+                    u.pathways,
+                    jsonb_build_array(
+                        jsonb_build_object(
+                            'pmid', p.pmid,
+                            'year', p.year,
+                            'evidence_type', p.evidence_type,
+                            'citation_count', p.citations,
+                            'source_db', 'Reactome'
+                        )
+                    ) as pathway_refs
+                FROM (
+                    SELECT 
+                        gene_symbol::text,
+                        pathways::text[],
+                        unnest(regexp_matches(unnest(pathways), 'R-HSA-[0-9]+', 'g')) as pathway_id
+                    FROM unnest(%s::text[], %s::text[]) as u(pathways, gene_symbol)
+                ) u
+                JOIN reactome.pathway_publications p ON u.pathway_id = p.pathway_id
+            )
             UPDATE cancer_transcript_base
-            SET pathways = %s
-            WHERE gene_symbol = %s
+            SET 
+                pathways = pu.pathways,
+                source_references = jsonb_set(
+                    COALESCE(source_references, '{}'::jsonb),
+                    '{pathways}',
+                    pu.pathway_refs
+                )
+            FROM pathway_update pu
+            WHERE cancer_transcript_base.gene_symbol = pu.gene_symbol
             AND gene_type = 'protein_coding'
-            RETURNING gene_symbol, array_length(pathways, 1) as pathway_count
             """,
-            updates
+            updates,
+            page_size=self.batch_size
         )
+
+    def run(self) -> None:
+        """Run the complete pathway enrichment pipeline.
+        
+        This method orchestrates:
+        1. Download and process Reactome data
+        2. Map gene IDs
+        3. Enrich transcripts with pathway information
+        4. Update source references
+        """
+        try:
+            logger.info("Starting pathway enrichment pipeline...")
+            
+            # Verify database schema version
+            if not self.db_manager.cursor:
+                raise RuntimeError("No database connection")
+                
+            self.db_manager.cursor.execute("SELECT version FROM schema_version")
+            version = self.db_manager.cursor.fetchone()
+            if not version or version[0] != 'v0.1.4':
+                raise RuntimeError("Database schema must be v0.1.4")
+            
+            # Run enrichment
+            self.enrich_transcripts()
+            
+            # Verify results
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(CASE WHEN pathways IS NOT NULL 
+                              AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
+                        COUNT(CASE WHEN source_references->'pathways' != '[]'::jsonb 
+                              THEN 1 END) as with_refs
+                    FROM cancer_transcript_base
+                """)
+                stats = self.db_manager.cursor.fetchone()
+                if stats:
+                    logger.info(
+                        f"Pipeline completed:\n"
+                        f"- Total records: {stats[0]:,}\n"
+                        f"- Records with pathways: {stats[1]:,}\n"
+                        f"- Records with pathway references: {stats[2]:,}"
+                    )
+            
+        except Exception as e:
+            logger.error(f"Pathway enrichment pipeline failed: {e}")
+            if self.db_manager.conn is not None:
+                self.db_manager.conn.rollback()
+            raise
+        finally:
+            if self.db_manager.conn is not None:
+                self.db_manager.conn.close()

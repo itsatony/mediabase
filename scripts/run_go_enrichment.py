@@ -106,33 +106,35 @@ def main():
     # Load configuration
     config = load_config()
     
-    # Override config with command line arguments
-    if args.batch_size:
-        config['batch_size'] = args.batch_size
-    if args.force_download:
-        config['cache_ttl'] = 0
-    if args.aspect:
-        config['aspect'] = args.aspect
-    
     try:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console
         ) as progress:
-            # Initialize processor
-            progress.add_task("Initializing GO term processor...", total=None)
+            task = progress.add_task("Initializing GO term processor...", total=None)
             processor = GOTermProcessor(config)
             
-            # Run the pipeline
-            progress.add_task("Running GO term enrichment pipeline...", total=None)
+            # Verify schema version
+            if processor.db_manager.get_current_version() != 'v0.1.4':
+                raise RuntimeError("Database schema must be v0.1.4")
+            
+            progress.update(task, description="Running GO term enrichment pipeline...")
             processor.run()
+            
+            # Verify source references
+            if processor.db_manager.cursor:
+                processor.db_manager.cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM cancer_transcript_base 
+                    WHERE source_references->'go_terms' != '[]'::jsonb
+                """)
+                result = processor.db_manager.cursor.fetchone()
+                ref_count = result[0] if result else 0
+                console.print(f"\n[green]Added GO term references to {ref_count:,} records[/green]")
             
         console.print("\n[green]GO term enrichment completed successfully![/green]")
         
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Process interrupted by user[/yellow]")
-        sys.exit(1)
     except Exception as e:
         console.print(f"\n[red]Error: {str(e)}[/red]")
         logger.exception("Pipeline failed")

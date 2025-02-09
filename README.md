@@ -17,7 +17,7 @@ This project creates a pre-joined database table optimized for LLM-agent queries
 ### Prerequisites
 
 - Python 3.10 or higher
-- Python venv module (`python3-venv` package)
+- Poetry for dependency management
 - Git
 - PostgreSQL 12+
 
@@ -27,30 +27,26 @@ This project creates a pre-joined database table optimized for LLM-agent queries
    ```bash
    git clone https://github.com/itsatony/mediabase.git
    cd mediabase
-   ```
 
-2. Set up the virtual environment:
-   ```bash
-   # Make the setup script executable
-   chmod +x setup_venv.sh
-   
-   # Run the setup script
-   ./setup_venv.sh
-   
-   # Activate the virtual environment
-   source mbase/bin/activate
-   ```
+2. Set up using poetry:
+    ```bash
+    # Install poetry if not already installed
+    curl -sSL https://install.python-poetry.org | python3 -
 
-3. Initialize the project:
-   ```bash
-   # Make the setup script executable
-   chmod +x setup_project.sh
-   
-   # Run the project setup script
-   ./setup_project.sh
-   ```
+    # Configure poetry to create virtual environment in project directory
+    poetry config virtualenvs.in-project true
 
-4. Configure the environment:
+    # Initialize poetry project 
+    poetry init
+
+    # Install project dependencies
+    poetry install
+
+    # Activate the poetry environment
+    poetry shell
+    ```
+
+3. Configure the environment:
    ```bash
    # Copy the example environment file
    cp .env.example .env
@@ -353,11 +349,42 @@ Current development status and upcoming milestones:
   - Added comprehensive error handling and debugging
   - Performance optimized through temporary tables and batching
   - Database schema v0.1.3 compatibility ensured
-- [ ] STEP_AO: Update Database Schema (version and migrate) to:
-  - [ ] add columns for other IDs we need to store (e.g. Ensembl, RefSeq, etc.) for easier joining and lookups later
-  - [ ] allow for add publication references specific for each datasource we use (and that provides proof/references pubmedids) as string arrays
-  - [ ] while we're at it, update our ETL scripts to add the pubmed/other references to the new database columns
-- [ ] STEP_AP: AI Agent System Prompt Development
+- [x] STEP_AO: Code Cleanup
+  - Consolidated database functionality:
+    - Merged all database operations into a single DatabaseManager class
+    - Centralized schema version control and migrations
+    - Improved connection handling and type safety
+    - Added comprehensive error handling
+    - Implemented proper cursor lifecycle management
+    - Added rich status display capabilities
+    - Enhanced backup and restore functionality
+  - Standardized ETL module database access
+    - All ETL modules now use DatabaseManager consistently
+    - Improved connection pooling and resource management
+    - Added batch processing capabilities
+    - Enhanced error recovery mechanisms
+- [x] STEP_AP: Enhanced ID Storage and Source References Implementation (2025-02-03)
+  - Added comprehensive ID storage support:
+    - Alternative transcript IDs (RefSeq, UCSC, etc.)
+    - Alternative gene IDs (NCBI, Ensembl, etc.)
+    - UniProt IDs
+    - NCBI/Entrez IDs
+    - RefSeq IDs
+  - Implemented source-specific publication references:
+    - GO term evidence with PubMed references
+    - Drug-target relationships with literature support
+    - Pathway evidence with citations
+    - UniProt feature annotations with references
+  - Enhanced database schema (v0.1.4):
+    - Added JSONB columns for flexible ID storage
+    - Structured source_references for better organization
+    - Optimized indices for efficient querying
+  - Updated ETL modules:
+    - Improved ID extraction in TranscriptProcessor
+    - Enhanced publication tracking in all processors
+    - Standardized database access patterns
+    - Added comprehensive validation
+- [ ] STEP_AQ: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
   - Build oncology-specific terminology mapping (German/English)
   - Document all available data relationships
@@ -365,40 +392,67 @@ Current development status and upcoming milestones:
   - Create German-English medical term mapping
   - Document query patterns and best practices
   - Create mapping of colloquial to technical terms
-- [ ] STEP_AQ: Query optimization
-- [ ] STEP_AR: LLM-agent integration tests
-- [ ] STEP_AS: Documentation
-- [ ] STEP_AT: Production deployment
+- [ ] STEP_BA: Query optimization
+- [ ] STEP_BB: LLM-agent integration tests
+- [ ] STEP_BC: Documentation
+- [ ] STEP_BD: Production deployment
 
 ## Database Management
 
-The project includes a robust database management script (`scripts/manage_db.py`) that provides:
+The project uses a centralized DatabaseManager class that provides:
 
 ### Features
 
-- PostgreSQL connection management
-- Database creation and reset capabilities
-- Schema version tracking
+- Comprehensive PostgreSQL connection management
+- Schema version tracking and migrations
 - Rich interactive CLI interface
-- Non-interactive mode for automation
+- Automated backup and restore
+- Connection pooling
+- Type-safe database operations
+- Comprehensive error handling
 
 ### Usage
 
-1. Interactive Mode:
-   ```bash
-   poetry run python scripts/manage_db.py
+1. Basic database operations:
+   ```python
+   from src.db.database import get_db_manager
+   
+   # Initialize database manager
+   db_manager = get_db_manager({
+       'host': 'localhost',
+       'port': 5432,
+       'dbname': 'mediabase',
+       'user': 'postgres',
+       'password': 'postgres'
+   })
+   
+   # Check database status
+   db_manager.display_status()
+   
+   # Perform database operations
+   if db_manager.cursor:
+       db_manager.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
+       count = db_manager.cursor.fetchone()[0]
    ```
-   This will:
-   - Check database connection
-   - Display current database status
-   - Offer schema reset if database exists
-   - Create new database and schema if needed
 
-2. Non-interactive Mode:
-   ```bash
-   poetry run python scripts/manage_db.py --non-interactive
+2. Schema management:
+   ```python
+   # Get current version
+   current_version = db_manager.get_current_version()
+   
+   # Migrate to latest version
+   latest_version = list(SCHEMA_VERSIONS.keys())[-1]
+   db_manager.migrate_to_version(latest_version)
    ```
-   Useful for scripts and CI/CD pipelines.
+
+3. Backup and restore:
+   ```python
+   # Create backup
+   db_manager.dump_database('backup.dump')
+   
+   # Restore from backup
+   db_manager.restore_database('backup.dump')
+   ```
 
 ### Environment Configuration
 
@@ -446,6 +500,7 @@ MB_ALLOWED_ORIGINS=...           # CORS allowed origins
 - v0.1.1: Added publications, patient fold-change support, and ETL sequence
 - v0.1.2: Enhanced UniProt feature storage and molecular function arrays
 - v0.1.3: Improved GO term storage with dedicated arrays and indices
+- v0.1.4: Enhanced ID storage and source-specific references
 - Repository: [mediabase](https://github.com/itsatony/mediabase)
 
 ## Data Flow and Dependencies
@@ -465,7 +520,7 @@ graph TD
     L --> B
 ```
 
-## Enhanced Database Schema v0.1.3
+## Enhanced Database Schema v0.1.4
 
 ```sql
 CREATE TABLE cancer_transcript_base (
@@ -499,7 +554,22 @@ CREATE TABLE cancer_transcript_base (
     -- Expression data
     expression_fold_change FLOAT DEFAULT 1.0,  -- Patient-specific
     expression_freq JSONB DEFAULT '{"high": [], "low": []}',
-    cancer_types TEXT[] DEFAULT '{}'
+    cancer_types TEXT[] DEFAULT '{}',
+
+    -- Alternative IDs
+    alt_transcript_ids JSONB DEFAULT '{}'::jsonb,  -- {source: id}
+    alt_gene_ids JSONB DEFAULT '{}'::jsonb,        -- {source: id}
+    uniprot_ids TEXT[] DEFAULT '{}',
+    ncbi_ids TEXT[] DEFAULT '{}',
+    refseq_ids TEXT[] DEFAULT '{}',
+
+    -- Source-specific references
+    source_references JSONB DEFAULT '{
+        "go_terms": [],
+        "uniprot": [],
+        "drugs": [],
+        "pathways": []
+    }'::jsonb
 );
 
 -- Indices
@@ -511,6 +581,12 @@ CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
 CREATE INDEX idx_features ON cancer_transcript_base USING GIN(features);
 CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions);
 CREATE INDEX idx_cellular_location ON cancer_transcript_base USING GIN(cellular_location);
+CREATE INDEX idx_alt_transcript_ids ON cancer_transcript_base USING GIN(alt_transcript_ids);
+CREATE INDEX idx_alt_gene_ids ON cancer_transcript_base USING GIN(alt_gene_ids);
+CREATE INDEX idx_uniprot_ids ON cancer_transcript_base USING GIN(uniprot_ids);
+CREATE INDEX idx_ncbi_ids ON cancer_transcript_base USING GIN(ncbi_ids);
+CREATE INDEX idx_refseq_ids ON cancer_transcript_base USING GIN(refseq_ids);
+CREATE INDEX idx_source_references ON cancer_transcript_base USING GIN(source_references);
 ```
 
 ## Gene Product Types

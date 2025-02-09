@@ -1,13 +1,20 @@
 """Gene product classification module for cancer transcriptome base."""
 
+# Standard library imports
 import logging
 import gzip
 import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from src.utils import validate_gene_symbol
-from src.db.connection import get_db_connection
+
+# Third party imports
+import pandas as pd
+from psycopg2.extras import execute_batch
+
+# Local imports
+from ..utils import validate_gene_symbol
+from ..db.database import get_db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -123,93 +130,97 @@ class ProductClassifier:
 
     def update_database_classifications(self) -> None:
         """Update product classifications and features in the database."""
-        conn = get_db_connection(self.db_config)
+        db_manager = get_db_manager(self.db_config)
         try:
-            with conn.cursor() as cur:
-                # Create temporary table for batch updates
-                cur.execute("""
-                    CREATE TEMP TABLE temp_gene_data (
-                        gene_symbol TEXT PRIMARY KEY,
-                        product_type TEXT[],
-                        features JSONB,
-                        molecular_functions TEXT[]
-                    ) ON COMMIT DROP
-                """)
+            if not db_manager.cursor:
+                raise RuntimeError("No database connection")
                 
-                # Only fetch valid gene symbols
-                cur.execute(r"""
-                    SELECT DISTINCT gene_symbol 
-                    FROM cancer_transcript_base 
-                    WHERE gene_symbol ~ '^[A-Z][A-Z0-9\-]{0,254}$'
-                """)
-                genes = [row[0] for row in cur.fetchall()]
-                
-                logger.info(f"Processing {len(genes)} genes for classification")
-                
-                # Process in batches
-                batch = []
-                batch_size = self.config.get('batch_size', 100)
-                
-                for gene in genes:
-                    try:
-                        # Get UniProt data
-                        data = self._data.get(gene, {})
+            # Create temporary table for batch updates
+            db_manager.cursor.execute("""
+                CREATE TEMP TABLE temp_gene_data (
+                    gene_symbol TEXT PRIMARY KEY,
+                    product_type TEXT[],
+                    features JSONB,
+                    molecular_functions TEXT[]
+                ) ON COMMIT DROP
+            """)
+            
+            # Only fetch valid gene symbols
+            db_manager.cursor.execute(r"""
+                SELECT DISTINCT gene_symbol 
+                FROM cancer_transcript_base 
+                WHERE gene_symbol ~ '^[A-Z][A-Z0-9\-]{0,254}$'
+            """)
+            genes = [row[0] for row in db_manager.cursor.fetchall()]
+            
+            logger.info(f"Processing {len(genes)} genes for classification")
+            
+            # Process in batches
+            batch = []
+            batch_size = self.config.get('batch_size', 100)
+            
+            for gene in genes:
+                try:
+                    # Get UniProt data
+                    data = self._data.get(gene, {})
+                    
+                    # Process classifications
+                    classifications = self.classify_product(gene)
+                    
+                    # Process features
+                    features = {}
+                    for idx, feature in enumerate(data.get('features', [])):
+                        # Parse feature string into structured data
+                        parts = feature.split(None, 2)  # Split into type and description
+                        if len(parts) >= 2:
+                            feature_type = parts[0]
+                            feature_id = f"{feature_type}_{idx}"
+                            features[feature_id] = {
+                                "type": feature_type,
+                                "description": parts[1],
+                                "evidence": "UniProt",  # Default evidence source
+                            }
+                            if len(parts) > 2:
+                                features[feature_id]["additional_info"] = parts[2]
+                    
+                    # Process molecular functions from GO terms
+                    molecular_functions = []
+                    for go_term in data.get('go_terms', []):
+                        if 'molecular_function' in go_term.get('aspect', '').lower():
+                            molecular_functions.append(go_term['term'])
+                    
+                    if classifications or features or molecular_functions:
+                        batch.append((
+                            gene,
+                            classifications,
+                            json.dumps(features) if features else '{}',
+                            molecular_functions
+                        ))
                         
-                        # Process classifications
-                        classifications = self.classify_product(gene)
+                    if len(batch) >= batch_size:
+                        self._update_batch(db_manager.cursor, batch)
+                        batch = []
+                        logger.debug(f"Processed batch of {batch_size} genes")
                         
-                        # Process features
-                        features = {}
-                        for idx, feature in enumerate(data.get('features', [])):
-                            # Parse feature string into structured data
-                            parts = feature.split(None, 2)  # Split into type and description
-                            if len(parts) >= 2:
-                                feature_type = parts[0]
-                                feature_id = f"{feature_type}_{idx}"
-                                features[feature_id] = {
-                                    "type": feature_type,
-                                    "description": parts[1],
-                                    "evidence": "UniProt",  # Default evidence source
-                                }
-                                if len(parts) > 2:
-                                    features[feature_id]["additional_info"] = parts[2]
-                        
-                        # Process molecular functions from GO terms
-                        molecular_functions = []
-                        for go_term in data.get('go_terms', []):
-                            if 'molecular_function' in go_term.get('aspect', '').lower():
-                                molecular_functions.append(go_term['term'])
-                        
-                        if classifications or features or molecular_functions:
-                            batch.append((
-                                gene,
-                                classifications,
-                                json.dumps(features) if features else '{}',
-                                molecular_functions
-                            ))
-                            
-                        if len(batch) >= batch_size:
-                            self._update_batch(cur, batch)
-                            batch = []
-                            logger.debug(f"Processed batch of {batch_size} genes")
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing gene {gene}: {e}")
-                
-                # Process remaining batch
-                if batch:
-                    self._update_batch(cur, batch)
-                    logger.debug(f"Processed remaining {len(batch)} genes")
-                
-                conn.commit()
-                logger.info("Database update completed successfully")
-                
+                except Exception as e:
+                    logger.error(f"Error processing gene {gene}: {e}")
+            
+            # Process remaining batch
+            if batch:
+                self._update_batch(db_manager.cursor, batch)
+                logger.debug(f"Processed remaining {len(batch)} genes")
+            
+            if db_manager.conn:
+                db_manager.conn.commit()
+            logger.info("Database update completed successfully")
+            
         except Exception as e:
+            if db_manager.conn:
+                db_manager.conn.rollback()
             logger.error(f"Database update failed: {e}")
-            conn.rollback()
             raise
         finally:
-            conn.close()
+            db_manager.close()
     
     def _update_batch(self, cur, batch: List[tuple[str, List[str], str, List[str]]]) -> None:
         """Update a batch of gene data.
@@ -237,3 +248,90 @@ class ProductClassifier:
         
         # Clear temp table
         cur.execute("TRUNCATE temp_gene_data")
+
+class ProductProcessor:
+    """Process and load product classifications into the database."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        """Initialize product processor with configuration."""
+        self.config = config
+        self.db_manager = get_db_manager(config)
+        self.batch_size = config.get('batch_size', 1000)
+        self.classifier = ProductClassifier(config)
+
+    def run(self) -> None:
+        """Run the complete product classification pipeline.
+        
+        This method orchestrates:
+        1. Product classification
+        2. Database updates
+        3. Feature extraction
+        """
+        try:
+            logger.info("Starting product classification pipeline...")
+            
+            # Run classification
+            self.classifier.update_database_classifications()
+            
+            # Verify results
+            if not self.db_manager.cursor:
+                raise RuntimeError("No database connection")
+                
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN product_type IS NOT NULL 
+                              AND array_length(product_type, 1) > 0 
+                         THEN 1 END) as classified,
+                    COUNT(CASE WHEN features IS NOT NULL 
+                              AND features != '{}'::jsonb 
+                         THEN 1 END) as with_features
+                FROM cancer_transcript_base
+                WHERE gene_type = 'protein_coding'
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                logger.info(
+                    f"Classification completed:\n"
+                    f"- Total genes processed: {stats[0]:,}\n"
+                    f"- Genes classified: {stats[1]:,}\n"
+                    f"- Genes with features: {stats[2]:,}"
+                )
+            
+            logger.info("Product classification pipeline completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Product classification pipeline failed: {e}")
+            if self.db_manager.conn is not None:
+                self.db_manager.conn.rollback()
+            raise
+        finally:
+            if self.db_manager.conn is not None:
+                self.db_manager.conn.close()
+
+    def load_classifications(self, records: List[tuple]) -> None:
+        """Load product classification records into database."""
+        try:
+            if not self.db_manager.cursor:
+                raise RuntimeError("No database connection")
+                
+            execute_batch(
+                self.db_manager.cursor,
+                """
+                UPDATE cancer_transcript_base
+                SET product_type = %s
+                WHERE gene_symbol = %s
+                """,
+                records,
+                page_size=self.batch_size
+            )
+            
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+                
+        except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
+            logger.error(f"Error loading classifications: {e}")
+            raise

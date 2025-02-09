@@ -54,12 +54,34 @@ def main():
             TextColumn("[progress.description]{task.description}"),
             console=console
         ) as progress:
-            # Initialize and run processor
-            progress.add_task("Initializing pathway processor...", total=None)
+            task = progress.add_task("Initializing pathway processor...", total=None)
             processor = PathwayProcessor(config)
             
-            progress.add_task("Processing pathways...", total=None)
-            processor.enrich_transcripts()
+            # Verify schema version
+            if not processor.db_manager.cursor:
+                raise RuntimeError("No database connection")
+                
+            version_query = processor.db_manager.cursor.execute(
+                "SELECT version FROM schema_version"
+            )
+            version = version_query.fetchone() if version_query else None
+            if not version or version[0] != 'v0.1.4':
+                raise RuntimeError("Database schema must be v0.1.4")
+            
+            progress.update(task, description="Processing pathways...")
+            processor.run()
+            
+            # Verify results with proper null checks
+            if processor.db_manager.cursor:
+                processor.db_manager.cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM cancer_transcript_base 
+                    WHERE source_references->>'pathways' IS NOT NULL
+                    AND source_references->>'pathways' != '[]'
+                """)
+                result = processor.db_manager.cursor.fetchone()
+                ref_count = result[0] if result else 0
+                console.print(f"\n[green]Added pathway references to {ref_count:,} records[/green]")
             
         console.print("\n[green]Pathway enrichment completed successfully![/green]")
         

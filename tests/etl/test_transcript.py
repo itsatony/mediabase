@@ -1,10 +1,9 @@
-"""Tests for transcript ETL pipeline."""
+"""Test suite for transcript processing with new schema support."""
 
 import pytest
-from pathlib import Path
-import pandas as pd
+from unittest.mock import Mock, patch
 from src.etl.transcript import TranscriptProcessor
-import os
+import pandas as pd
 
 @pytest.fixture
 def test_config():
@@ -34,6 +33,25 @@ def sample_gtf_data(tmp_path) -> Path:
     gtf_file = tmp_path / "test.gtf"
     gtf_file.write_text(gtf_content)
     return gtf_file
+
+@pytest.fixture
+def mock_gtf_data():
+    """Provide test GTF data with alternative IDs."""
+    return pd.DataFrame({
+        'feature': ['transcript', 'transcript'],
+        'transcript_id': ['ENST01', 'ENST02'],
+        'gene_id': ['ENSG01', 'ENSG02'],
+        'gene_name': ['GENE1', 'GENE2'],
+        'gene_type': ['protein_coding', 'protein_coding'],
+        'seqname': ['chr1', 'chr2'],
+        'start': [1000, 2000],
+        'end': [2000, 3000],
+        'strand': ['+', '-'],
+        'attribute': [
+            'transcript_id_refseq=NM_001; gene_id_ncbi=9876',
+            'transcript_id_ucsc=uc001; gene_id_ncbi=5432'
+        ]
+    })
 
 def test_process_gtf(sample_gtf_data, test_config):
     """Test GTF processing functionality."""
@@ -73,6 +91,19 @@ def test_validate_transcript_data(test_config):
     invalid_data = valid_data.copy()
     invalid_data.loc[0, 'transcript_id'] = 'invalid_id'
     assert not processor.validate_data(invalid_data)
+
+def test_extract_alt_ids(mock_gtf_data):
+    """Test extraction of alternative IDs from GTF attributes."""
+    processor = TranscriptProcessor({'cache_dir': '/tmp'})
+    df = processor.process_gtf(mock_gtf_data)
+    
+    # Check first record's alternative IDs
+    assert df.iloc[0]['alt_transcript_ids'] == {'refseq': 'NM_001'}
+    assert df.iloc[0]['alt_gene_ids'] == {'ncbi': '9876'}
+    
+    # Check second record's alternative IDs
+    assert df.iloc[1]['alt_transcript_ids'] == {'ucsc': 'uc001'}
+    assert df.iloc[1]['alt_gene_ids'] == {'ncbi': '5432'}
 
 @pytest.mark.integration
 def test_full_pipeline(test_config):

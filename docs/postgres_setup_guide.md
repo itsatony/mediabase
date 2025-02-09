@@ -1,11 +1,14 @@
 # PostgreSQL Setup Guide
 
-This guide explains how to set up a PostgreSQL container for the Cancer Transcriptome Base project.
-
 ## Prerequisites
 
-- [Podman](https://podman.io/) installed (or Docker)
-- Sufficient disk space for the database volume
+- PostgreSQL 12 or higher
+- Python 3.10 or higher
+- Poetry for dependency management
+
+## Database Management
+
+The project now uses a centralized DatabaseManager for all database operations:
 
 ## Container Setup
 
@@ -121,3 +124,83 @@ cat backup.sql | podman exec -i mbase_postgres psql -U mbase_user -d mbase
    - Check logs: `podman logs mbase_postgres`
    - Verify volume permissions
    - Ensure sufficient disk space
+
+## Schema Management
+
+### Version 0.1.4 Features
+
+The latest schema version (0.1.4) introduces:
+
+1. Alternative ID Storage
+   - Flexible JSONB storage for transcript and gene IDs
+   - Array storage for standardized IDs (UniProt, NCBI, RefSeq)
+   - Optimized GIN indices for efficient querying
+
+2. Source-specific References
+   - Structured JSONB storage for publication references
+   - Organized by data source (GO terms, drugs, pathways, UniProt)
+   - Enhanced evidence tracking with metadata
+
+### Upgrading to v0.1.4
+
+1. Automatic migration:
+   ```bash
+   poetry run python scripts/manage_db.py --migrate v0.1.4
+   ```
+
+2. Manual migration:
+   ```sql
+   -- Add new columns
+   ALTER TABLE cancer_transcript_base
+   ADD COLUMN alt_transcript_ids JSONB DEFAULT '{}'::jsonb,
+   ADD COLUMN alt_gene_ids JSONB DEFAULT '{}'::jsonb,
+   ADD COLUMN uniprot_ids TEXT[] DEFAULT '{}',
+   ADD COLUMN ncbi_ids TEXT[] DEFAULT '{}',
+   ADD COLUMN refseq_ids TEXT[] DEFAULT '{}',
+   ADD COLUMN source_references JSONB DEFAULT '{
+       "go_terms": [],
+       "uniprot": [],
+       "drugs": [],
+       "pathways": []
+   }'::jsonb;
+
+   -- Create indices
+   CREATE INDEX idx_alt_transcript_ids ON cancer_transcript_base USING GIN(alt_transcript_ids);
+   CREATE INDEX idx_alt_gene_ids ON cancer_transcript_base USING GIN(alt_gene_ids);
+   CREATE INDEX idx_uniprot_ids ON cancer_transcript_base USING GIN(uniprot_ids);
+   CREATE INDEX idx_ncbi_ids ON cancer_transcript_base USING GIN(ncbi_ids);
+   CREATE INDEX idx_refseq_ids ON cancer_transcript_base USING GIN(refseq_ids);
+   CREATE INDEX idx_source_references ON cancer_transcript_base USING GIN(source_references);
+
+   -- Drop obsolete column
+   ALTER TABLE cancer_transcript_base DROP COLUMN publications;
+   ```
+
+### Maintenance
+
+Regular maintenance tasks for the new schema:
+
+1. Index maintenance:
+   ```sql
+   REINDEX INDEX idx_alt_transcript_ids;
+   REINDEX INDEX idx_alt_gene_ids;
+   REINDEX INDEX idx_source_references;
+   ```
+
+2. JSONB storage optimization:
+   ```sql
+   VACUUM ANALYZE cancer_transcript_base;
+   ```
+
+3. Monitor index usage:
+   ```sql
+   SELECT 
+       schemaname || '.' || relname as table_name,
+       indexrelname as index_name,
+       idx_scan as number_of_scans,
+       idx_tup_read as tuples_read,
+       idx_tup_fetch as tuples_fetched
+   FROM pg_stat_user_indexes
+   WHERE schemaname = 'public'
+   ORDER BY idx_scan DESC;
+   ```

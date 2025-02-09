@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 from psycopg2.extras import execute_batch
-from ..db.connection import get_db_connection
+from ..db.database import get_db_manager
 from datetime import datetime, timedelta
 import hashlib
 from rich.console import Console
@@ -41,6 +41,7 @@ class DrugProcessor:
         self.drugcentral_url = config['drugcentral_url']
         if not self.drugcentral_url:
             raise ValueError("DrugCentral URL not configured")
+        self.db_manager = get_db_manager(config)
 
     def _get_cache_key(self, url: str) -> str:
         """Generate a cache key from URL."""
@@ -276,71 +277,92 @@ class DrugProcessor:
 
     def integrate_drugs(self, drug_targets: pd.DataFrame) -> None:
         """Integrate drug information into transcript database."""
-        conn = get_db_connection(self.config)
-        try:
-            with conn.cursor() as cur:
-                # Create temporary table for efficient updates
-                cur.execute("""
-                    CREATE TEMP TABLE temp_drug_data (
-                        gene_symbol TEXT,
-                        drug_data JSONB
-                    ) ON COMMIT DROP
-                """)
-                
-                # Process drugs by gene
-                updates = []
-                for gene, group in drug_targets.groupby('gene_symbol'):
-                    drug_info = {}
-                    for _, row in group.iterrows():
-                        drug_info[row['drug_id']] = {
-                            'name': row['drug_name'],
-                            'mechanism': row['mechanism'],
-                            'action_type': row['action_type'],
-                            'evidence': {
-                                'type': row['evidence_type'],
-                                'score': row['evidence_score'],
-                                'references': row['reference_ids']
-                            }
-                        }
-                    
-                    updates.append((
-                        gene,
-                        json.dumps(drug_info)
-                    ))
-                    
-                    if len(updates) >= self.batch_size:
-                        self._update_batch(cur, updates)
-                        updates = []
-                
-                # Process remaining updates
-                if updates:
-                    self._update_batch(cur, updates)
-                
-                # Update main table from temp table
-                cur.execute("""
-                    UPDATE cancer_transcript_base cb
-                    SET drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data
-                    FROM temp_drug_data tdd
-                    WHERE cb.gene_symbol = tdd.gene_symbol
-                """)
-                
-            conn.commit()
-            logger.info("Drug data integration completed successfully")
+        if not self.db_manager.cursor:
+            raise RuntimeError("No database connection")
             
+        try:
+            # Create temporary table for efficient updates
+            self.db_manager.cursor.execute("""
+                CREATE TEMP TABLE temp_drug_data (
+                    gene_symbol TEXT,
+                    drug_data JSONB,
+                    drug_references JSONB
+                ) ON COMMIT DROP
+            """)
+            
+            # Process drugs by gene
+            updates = []
+            for gene, group in drug_targets.groupby('gene_symbol'):
+                drug_info = {}
+                references = []
+                
+                for _, row in group.iterrows():
+                    drug_info[row['drug_id']] = {
+                        'name': row['drug_name'],
+                        'mechanism': row['mechanism'],
+                        'action_type': row['action_type'],
+                        'evidence': {
+                            'type': row['evidence_type'],
+                            'score': row['evidence_score']
+                        }
+                    }
+                    
+                    # Process references into the new format
+                    if row['reference_ids']:
+                        for ref_id in row['reference_ids']:
+                            if ref_id.isdigit():  # Basic validation for PMID
+                                references.append({
+                                    'pmid': ref_id,
+                                    'year': None,  # Would need additional lookup
+                                    'evidence_type': row['evidence_type'],
+                                    'citation_count': None,  # Would need additional lookup
+                                    'source_db': 'DrugCentral'
+                                })
+                
+                updates.append((
+                    gene,
+                    json.dumps(drug_info),
+                    json.dumps(references)
+                ))
+                
+                if len(updates) >= self.batch_size:
+                    self._update_batch(self.db_manager.cursor, updates)
+                    updates = []
+            
+            # Process remaining updates
+            if updates:
+                self._update_batch(self.db_manager.cursor, updates)
+            
+            # Update main table from temp table
+            self.db_manager.cursor.execute("""
+                UPDATE cancer_transcript_base cb
+                SET 
+                    drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data,
+                    source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{}'::jsonb),
+                        '{drugs}',
+                        tdd.drug_references
+                    )
+                FROM temp_drug_data tdd
+                WHERE cb.gene_symbol = tdd.gene_symbol
+            """)
+            
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+                
         except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
             logger.error(f"Drug data integration failed: {e}")
-            conn.rollback()
             raise
-        finally:
-            conn.close()
 
-    def _update_batch(self, cur, updates: List[Tuple[str, str]]) -> None:
+    def _update_batch(self, cur, updates: List[Tuple[str, str, str]]) -> None:
         """Update a batch of drug data."""
         execute_batch(
             cur,
             """
-            INSERT INTO temp_drug_data (gene_symbol, drug_data)
-            VALUES (%s, %s::jsonb)
+            INSERT INTO temp_drug_data (gene_symbol, drug_data, drug_references)
+            VALUES (%s, %s::jsonb, %s::jsonb)
             """,
             updates,
             page_size=self.batch_size
@@ -348,168 +370,204 @@ class DrugProcessor:
 
     def calculate_drug_scores(self) -> None:
         """Calculate synergy-based drug scores using pathways and GO terms."""
-        conn = get_db_connection(self.config)
+        if not self.db_manager.cursor:
+            raise RuntimeError("No database connection")
+            
         try:
-            with conn.cursor() as cur:
-                # Create temporary scoring tables
-                cur.execute("""
-                    -- Table for storing intermediate pathway scores
-                    CREATE TEMP TABLE temp_pathway_scores (
-                        gene_symbol TEXT,
-                        drug_id TEXT,
-                        pathway_score FLOAT,
-                        PRIMARY KEY (gene_symbol, drug_id)
-                    );
-                    
-                    -- Table for storing intermediate GO term scores
-                    CREATE TEMP TABLE temp_go_scores (
-                        gene_symbol TEXT,
-                        drug_id TEXT,
-                        go_score FLOAT,
-                        PRIMARY KEY (gene_symbol, drug_id)
-                    );
-                    
-                    -- Table for final combined scores
-                    CREATE TEMP TABLE temp_final_scores (
-                        gene_symbol TEXT,
-                        drug_scores JSONB
-                    );
-                """)
+            # Create temporary scoring tables
+            self.db_manager.cursor.execute("""
+                -- Table for storing intermediate pathway scores
+                CREATE TEMP TABLE temp_pathway_scores (
+                    gene_symbol TEXT,
+                    drug_id TEXT,
+                    pathway_score FLOAT,
+                    PRIMARY KEY (gene_symbol, drug_id)
+                );
                 
-                # Process in batches
-                batch_size = self.batch_size
-                offset = 0
-                total_processed = 0
+                -- Table for storing intermediate GO term scores
+                CREATE TEMP TABLE temp_go_scores (
+                    gene_symbol TEXT,
+                    drug_id TEXT,
+                    go_score FLOAT,
+                    PRIMARY KEY (gene_symbol, drug_id)
+                );
                 
-                while True:
-                    # Get batch of genes with drugs
-                    cur.execute("""
-                        SELECT gene_symbol, drugs, pathways, go_terms
-                        FROM cancer_transcript_base
-                        WHERE drugs IS NOT NULL
-                        ORDER BY gene_symbol
-                        LIMIT %s OFFSET %s
-                    """, (batch_size, offset))
+                -- Table for final combined scores
+                CREATE TEMP TABLE temp_final_scores (
+                    gene_symbol TEXT,
+                    drug_scores JSONB
+                );
+            """)
+            
+            # Process in batches
+            batch_size = self.batch_size
+            offset = 0
+            total_processed = 0
+            
+            while True:
+                # Get batch of genes with drugs
+                self.db_manager.cursor.execute("""
+                    SELECT gene_symbol, drugs, pathways, go_terms
+                    FROM cancer_transcript_base
+                    WHERE drugs IS NOT NULL
+                    ORDER BY gene_symbol
+                    LIMIT %s OFFSET %s
+                """, (batch_size, offset))
+                
+                rows = self.db_manager.cursor.fetchall()
+                if not rows:
+                    break
                     
-                    rows = cur.fetchall()
-                    if not rows:
-                        break
-                        
-                    logger.info(f"Processing batch of {len(rows)} genes (offset {offset})")
-                    
-                    # Process pathway scores for this batch
-                    cur.execute("""
-                        INSERT INTO temp_pathway_scores
-                        WITH batch_genes AS (
-                            SELECT 
-                                t1.gene_symbol,
-                                t1.drugs,
-                                t1.pathways as source_pathways
-                            FROM cancer_transcript_base t1
-                            WHERE t1.gene_symbol = ANY(%s)
-                        )
-                        SELECT DISTINCT
-                            bg.gene_symbol,
-                            d.key as drug_id,
-                            COUNT(DISTINCT t2.gene_symbol)::float as pathway_score
-                        FROM batch_genes bg
-                        CROSS JOIN LATERAL jsonb_each(bg.drugs) d
-                        JOIN cancer_transcript_base t2 
-                        ON t2.pathways && bg.source_pathways
-                        AND t2.gene_type = 'protein_coding'
-                        GROUP BY bg.gene_symbol, d.key
-                    """, ([row[0] for row in rows],))
-                    
-                    # Process GO term scores for this batch
-                    cur.execute("""
-                        INSERT INTO temp_go_scores
-                        WITH batch_genes AS (
-                            SELECT 
-                                t1.gene_symbol,
-                                t1.drugs,
-                                t1.go_terms as source_terms
-                            FROM cancer_transcript_base t1
-                            WHERE t1.gene_symbol = ANY(%s)
-                        )
-                        SELECT DISTINCT
-                            bg.gene_symbol,
-                            d.key as drug_id,
-                            COUNT(DISTINCT t2.gene_symbol)::float as go_score
-                        FROM batch_genes bg
-                        CROSS JOIN LATERAL jsonb_each(bg.drugs) d
-                        JOIN cancer_transcript_base t2 
-                        ON EXISTS (
-                            SELECT 1
-                            FROM jsonb_object_keys(bg.source_terms) go_id
-                            WHERE t2.go_terms ? go_id
-                        )
-                        AND t2.gene_type = 'protein_coding'
-                        GROUP BY bg.gene_symbol, d.key
-                    """, ([row[0] for row in rows],))
-                    
-                    # Combine scores for this batch
-                    pathway_weight = float(self.config.get('drug_pathway_weight', 1.0))
-                    go_weight = pathway_weight * 0.5  # GO terms weighted at 50% of pathway weight
-                    
-                    cur.execute("""
-                        INSERT INTO temp_final_scores
+                logger.info(f"Processing batch of {len(rows)} genes (offset {offset})")
+                
+                # Process pathway scores for this batch
+                self.db_manager.cursor.execute("""
+                    INSERT INTO temp_pathway_scores
+                    WITH batch_genes AS (
                         SELECT 
-                            ps.gene_symbol,
-                            jsonb_object_agg(
-                                ps.drug_id,
-                                (COALESCE(ps.pathway_score * %s, 0) + 
-                                 COALESCE(gs.go_score * %s, 0))::float
-                            ) as drug_scores
-                        FROM temp_pathway_scores ps
-                        LEFT JOIN temp_go_scores gs 
-                        ON ps.gene_symbol = gs.gene_symbol 
-                        AND ps.drug_id = gs.drug_id
-                        WHERE ps.gene_symbol = ANY(%s)
-                        GROUP BY ps.gene_symbol
-                    """, (pathway_weight, go_weight, [row[0] for row in rows]))
-                    
-                    # Update main table for this batch
-                    cur.execute("""
-                        UPDATE cancer_transcript_base cb
-                        SET drug_scores = fs.drug_scores
-                        FROM temp_final_scores fs
-                        WHERE cb.gene_symbol = fs.gene_symbol
-                    """)
-                    
-                    # Clear temporary tables for next batch
-                    cur.execute("""
-                        TRUNCATE temp_pathway_scores, temp_go_scores, temp_final_scores
-                    """)
-                    
-                    total_processed += len(rows)
-                    offset += batch_size
-                    
-                    # Commit each batch
-                    conn.commit()
-                    logger.info(f"Processed and committed {total_processed} genes so far")
+                            t1.gene_symbol,
+                            t1.drugs,
+                            t1.pathways as source_pathways
+                        FROM cancer_transcript_base t1
+                        WHERE t1.gene_symbol = ANY(%s)
+                    )
+                    SELECT DISTINCT
+                        bg.gene_symbol,
+                        d.key as drug_id,
+                        COUNT(DISTINCT t2.gene_symbol)::float as pathway_score
+                    FROM batch_genes bg
+                    CROSS JOIN LATERAL jsonb_each(bg.drugs) d
+                    JOIN cancer_transcript_base t2 
+                    ON t2.pathways && bg.source_pathways
+                    AND t2.gene_type = 'protein_coding'
+                    GROUP BY bg.gene_symbol, d.key
+                """, ([row[0] for row in rows],))
                 
-                # Log final statistics
-                logger.info(f"Drug score calculation completed. Total genes processed: {total_processed}")
+                # Process GO term scores for this batch
+                self.db_manager.cursor.execute("""
+                    INSERT INTO temp_go_scores
+                    WITH batch_genes AS (
+                        SELECT 
+                            t1.gene_symbol,
+                            t1.drugs,
+                            t1.go_terms as source_terms
+                        FROM cancer_transcript_base t1
+                        WHERE t1.gene_symbol = ANY(%s)
+                    )
+                    SELECT DISTINCT
+                        bg.gene_symbol,
+                        d.key as drug_id,
+                        COUNT(DISTINCT t2.gene_symbol)::float as go_score
+                    FROM batch_genes bg
+                    CROSS JOIN LATERAL jsonb_each(bg.drugs) d
+                    JOIN cancer_transcript_base t2 
+                    ON EXISTS (
+                        SELECT 1
+                        FROM jsonb_object_keys(bg.source_terms) go_id
+                        WHERE t2.go_terms ? go_id
+                    )
+                    AND t2.gene_type = 'protein_coding'
+                    GROUP BY bg.gene_symbol, d.key
+                """, ([row[0] for row in rows],))
                 
-                # Sample verification
-                cur.execute("""
-                    SELECT gene_symbol, drug_scores 
-                    FROM cancer_transcript_base 
-                    WHERE drug_scores IS NOT NULL 
-                    LIMIT 3
+                # Combine scores for this batch
+                pathway_weight = float(self.config.get('drug_pathway_weight', 1.0))
+                go_weight = pathway_weight * 0.5  # GO terms weighted at 50% of pathway weight
+                
+                self.db_manager.cursor.execute("""
+                    INSERT INTO temp_final_scores
+                    SELECT 
+                        ps.gene_symbol,
+                        jsonb_object_agg(
+                            ps.drug_id,
+                            (COALESCE(ps.pathway_score * %s, 0) + 
+                             COALESCE(gs.go_score * %s, 0))::float
+                        ) as drug_scores
+                    FROM temp_pathway_scores ps
+                    LEFT JOIN temp_go_scores gs 
+                    ON ps.gene_symbol = gs.gene_symbol 
+                    AND ps.drug_id = gs.drug_id
+                    WHERE ps.gene_symbol = ANY(%s)
+                    GROUP BY ps.gene_symbol
+                """, (pathway_weight, go_weight, [row[0] for row in rows]))
+                
+                # Update main table for this batch
+                self.db_manager.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET drug_scores = fs.drug_scores
+                    FROM temp_final_scores fs
+                    WHERE cb.gene_symbol = fs.gene_symbol
                 """)
-                samples = cur.fetchall()
-                if samples:
-                    logger.debug("Sample drug scores:")
-                    for sample in samples:
-                        logger.debug(f"{sample[0]}: {sample[1]}")
                 
+                # Clear temporary tables for next batch
+                self.db_manager.cursor.execute("""
+                    TRUNCATE temp_pathway_scores, temp_go_scores, temp_final_scores
+                """)
+                
+                total_processed += len(rows)
+                offset += batch_size
+                
+                # Commit each batch
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+                logger.info(f"Processed and committed {total_processed} genes so far")
+            
+            # Log final statistics
+            logger.info(f"Drug score calculation completed. Total genes processed: {total_processed}")
+            
+            # Sample verification
+            self.db_manager.cursor.execute("""
+                SELECT gene_symbol, drug_scores 
+                FROM cancer_transcript_base 
+                WHERE drug_scores IS NOT NULL 
+                LIMIT 3
+            """)
+            samples = self.db_manager.cursor.fetchall()
+            if samples:
+                logger.debug("Sample drug scores:")
+                for sample in samples:
+                    logger.debug(f"{sample[0]}: {sample[1]}")
+            
         except Exception as e:
             logger.error(f"Drug score calculation failed: {e}")
-            conn.rollback()
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
             raise
         finally:
-            conn.close()
+            if self.db_manager.conn:
+                self.db_manager.conn.close()
+
+    def load_drugs(self, records: List[tuple]) -> None:
+        """Load drug records into database."""
+        try:
+            if not self.db_manager.cursor:
+                raise RuntimeError("No database connection")
+                
+            # Clear existing drug data
+            self.db_manager.cursor.execute(
+                "UPDATE cancer_transcript_base SET drugs = '{}'::jsonb"
+            )
+            
+            # Insert new records
+            execute_batch(
+                self.db_manager.cursor,
+                """
+                UPDATE cancer_transcript_base
+                SET drugs = drugs || %s::jsonb
+                WHERE gene_symbol = %s
+                """,
+                records,
+                page_size=self.batch_size
+            )
+            
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+                
+        except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
+            logger.error(f"Error loading drugs: {e}")
+            raise
 
     def run(self) -> None:
         """Run the complete drug processing pipeline."""

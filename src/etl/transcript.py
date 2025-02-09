@@ -1,18 +1,21 @@
 """Transcript ETL module for processing gene transcript data."""
 
+# Standard library imports
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-import pandas as pd
-import numpy as np
-from gtfparse import read_gtf
-import psycopg2
-from psycopg2.extras import execute_batch
-from ..utils.validation import validate_transcript_data
-from ..db.connection import get_db_connection
-import hashlib
 from datetime import datetime, timedelta
+from gtfparse import read_gtf
+import hashlib
 import json
+
+# Third party imports
+import pandas as pd
+from psycopg2.extras import execute_batch
+
+# Local imports
+from ..utils.validation import validate_transcript_data
+from ..db.database import get_db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,7 @@ class TranscriptProcessor:
         # Add cache control settings
         self.cache_ttl = int(config.get('cache_ttl', 86400))  # 24 hours default
         self.cache_meta_file = self.cache_dir / "gtf_meta.json"
+        self.db_manager = get_db_manager(self.db_config)
 
     def _get_cache_key(self, url: str) -> str:
         """Generate a cache key from URL."""
@@ -136,7 +140,30 @@ class TranscriptProcessor:
                 'strand': 1 if row['strand'] == '+' else -1
             }
         
+        # Extract alternative IDs
+        def extract_alt_ids(row: pd.Series) -> Dict[str, Dict[str, str]]:
+            alt_transcript_ids = {}
+            alt_gene_ids = {}
+            
+            # Process additional IDs from attributes
+            attributes = row['attribute'].split(';')
+            for attr in attributes:
+                if 'transcript_id_' in attr:
+                    source = attr.split('transcript_id_')[1].split('=')[0].strip()
+                    value = attr.split('=')[1].strip().strip('"')
+                    alt_transcript_ids[source] = value
+                elif 'gene_id_' in attr:
+                    source = attr.split('gene_id_')[1].split('=')[0].strip()
+                    value = attr.split('=')[1].strip().strip('"')
+                    alt_gene_ids[source] = value
+            
+            return {
+                'alt_transcript_ids': alt_transcript_ids,
+                'alt_gene_ids': alt_gene_ids
+            }
+        
         transcripts['coordinates'] = transcripts.apply(create_coordinates, axis=1)
+        transcripts['alt_ids'] = transcripts.apply(extract_alt_ids, axis=1)
 
         # Select and rename columns with proper typing
         result = pd.DataFrame({
@@ -145,7 +172,9 @@ class TranscriptProcessor:
             'gene_id': transcripts['gene_id'].astype(str),
             'gene_type': transcripts['gene_type'].astype(str),
             'chromosome': transcripts['seqname'].astype(str),
-            'coordinates': transcripts['coordinates'].tolist()
+            'coordinates': transcripts['coordinates'].tolist(),
+            'alt_transcript_ids': transcripts['alt_ids'].apply(lambda x: x['alt_transcript_ids']).tolist(),
+            'alt_gene_ids': transcripts['alt_ids'].apply(lambda x: x['alt_gene_ids']).tolist()
         })
 
         return result
@@ -153,7 +182,7 @@ class TranscriptProcessor:
     def prepare_transcript_records(
         self,
         df: pd.DataFrame
-    ) -> List[Tuple[str, str, str, str, str, Dict[str, Any]]]:
+    ) -> List[Tuple[str, str, str, str, str, Dict[str, Any], Dict[str, str], Dict[str, str]]]:
         """Prepare transcript records for database insertion.
         
         Args:
@@ -170,47 +199,49 @@ class TranscriptProcessor:
                 row['gene_id'],
                 row['gene_type'],
                 row['chromosome'],
-                row['coordinates']
+                row['coordinates'],
+                row['alt_transcript_ids'],
+                row['alt_gene_ids']
             )
             records.append(record)
         return records
 
     def load_transcripts(self, records: List[Tuple]) -> None:
-        """Load transcript records into database.
-        
-        Args:
-            records: List of transcript record tuples
-        """
-        conn = get_db_connection(self.db_config)  # Use db_config instead of config
+        """Load transcript records into database."""
         try:
-            with conn.cursor() as cur:
-                # Clear existing data
-                cur.execute("TRUNCATE TABLE cancer_transcript_base")
+            if not self.db_manager.cursor:
+                raise RuntimeError("No database connection")
                 
-                # Insert new records
-                execute_batch(
-                    cur,
-                    """
-                    INSERT INTO cancer_transcript_base (
-                        transcript_id,
-                        gene_symbol,
-                        gene_id,
-                        gene_type,
-                        chromosome,
-                        coordinates
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    records,
-                    page_size=self.batch_size
-                )
-            conn.commit()
-            logger.info(f"Loaded {len(records)} transcript records")
+            # Clear existing data
+            self.db_manager.cursor.execute("TRUNCATE TABLE cancer_transcript_base")
+            
+            # Insert new records
+            execute_batch(
+                self.db_manager.cursor,
+                """
+                INSERT INTO cancer_transcript_base (
+                    transcript_id,
+                    gene_symbol,
+                    gene_id,
+                    gene_type,
+                    chromosome,
+                    coordinates,
+                    alt_transcript_ids,
+                    alt_gene_ids
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                records,
+                page_size=self.batch_size
+            )
+            
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+                
         except Exception as e:
-            conn.rollback()
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
             logger.error(f"Error loading transcripts: {e}")
             raise
-        finally:
-            conn.close()
 
     def validate_data(self, df: pd.DataFrame) -> bool:
         """Validate processed transcript data.

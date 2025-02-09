@@ -269,15 +269,15 @@ Comprehensive documentation is available in the `docs/` directory:
 ## Project Status and Progress
 
 Current development status and upcoming milestones:
-- [x] Initial project setup (2025-02-02)
-- [x] Basic schema design
-- [x] Project structure implementation
-- [x] DB manager script (connection, check, create, schema, reset) (2025-02-05)
+- [x] STEP_AA: Initial project setup (2025-02-02)
+- [x] STEP_AB: Basic schema design
+- [x] STEP_AC: Project structure implementation
+- [x] STEP_AD: DB manager script (connection, check, create, schema, reset) (2025-02-02)
   - Database initialization and reset functionality
   - Schema version tracking
   - Interactive CLI with rich status display
   - Environment-based configuration
-- [x] ETL pipeline - Transcript module (2025-02-06)
+- [x] STEP_AE: ETL pipeline - Transcript module (2025-02-02)
   - GTF file download and caching with TTL
   - Transcript data extraction and processing
   - Coordinate parsing and validation
@@ -286,7 +286,7 @@ Current development status and upcoming milestones:
   - Proper PostgreSQL JSONB type handling
   - Comprehensive test suite
   - Integration tests with test database
-- [x] ETL pipeline - Gene-Product Classification (2025-02-07)
+- [x] STEP_AF: ETL pipeline - Gene-Product Classification (2025-02-02)
   - Automated UniProt data download and processing
   - Smart caching with gzip compression
   - Robust product classification based on:
@@ -299,14 +299,14 @@ Current development status and upcoming milestones:
   - Integration tests with test database
   - Rich CLI progress display
   - Environment-based configuration
-- [x] Database Schema Update (2025-02-08)
+- [x] STEP_AG: Database Schema Update (2025-02-02)
   - Enhanced schema to v0.1.2
   - Added comprehensive UniProt feature storage
   - Added molecular functions array
   - Added proper GIN indices for new columns
   - Migration path for existing data
   - Updated documentation
-- [x] GO Terms & Enrichment (2025-02-09)
+- [x] STEP_AH: GO Terms & Enrichment (2025-02-02)
   - Automated GO.obo and GOA file downloads with caching
   - GO term hierarchy processing with networkx
   - Ancestor computation and term enrichment
@@ -320,7 +320,7 @@ Current development status and upcoming milestones:
   - Smart caching with TTL
   - Rich CLI progress display with detailed statistics
   - Proper error handling and recovery
-- [x] ETL pipeline - Drug Integration (2025-02-10)
+- [x] STEP_AI: ETL pipeline - Drug Integration (2025-02-02)
   - Automated DrugCentral data download and processing
   - Smart drug-target relationship extraction
   - Evidence-based scoring system
@@ -331,7 +331,7 @@ Current development status and upcoming milestones:
   - Comprehensive test suite
   - Integration tests with test database
   - Added drug association view materialization
-- [x] Pathway Integration (2025-02-11)
+- [x] STEP_AJ: Pathway Integration (2025-02-02)
   - Automated Reactome data download with caching
   - Gene to pathway/process mapping
   - Standardized format: "Process Name [Reactome:ID]"
@@ -339,13 +339,13 @@ Current development status and upcoming milestones:
   - Batch database updates
   - Comprehensive validation
   - Progress tracking and statistics
-- [x] Added cache validity check (_is_cache_valid) to PathwayProcessor for consistent caching behavior (2025-02-11)
-- [x] Normalized gene_id by stripping version numbers to fix mismatch between NCBI and Ensembl references (2025-02-11)
-- [x] ETL pipeline - Drug Integration (2025-02-12)
+- [x] STEP_AK: Added cache validity check (_is_cache_valid) to PathwayProcessor for consistent caching behavior (2025-02-02)
+- [x] STEP_AL: Normalized gene_id by stripping version numbers to fix mismatch between NCBI and Ensembl references (2025-02-02)
+- [x] STEP_AM: ETL pipeline - Drug Integration (2025-02-02)
   - Added synergy-based scoring referencing pathways and GO terms
   - Utilizes environment variables (e.g., MB_DRUG_PATHWAY_WEIGHT) for weighting
   - Enhanced testing strategy to ensure accurate scoring
-- [x] ETL pipeline - Drug Integration Update (2025-02-13)
+- [x] STEP_AN: ETL pipeline - Drug Integration Update (2025-02-02)
   - Added batched drug score calculation
   - Implemented synergy scoring based on pathway and GO term overlaps
   - Added rich progress tracking and validation
@@ -353,7 +353,11 @@ Current development status and upcoming milestones:
   - Added comprehensive error handling and debugging
   - Performance optimized through temporary tables and batching
   - Database schema v0.1.3 compatibility ensured
-- [ ] AI Agent System Prompt Development
+- [ ] STEP_AO: Update Database Schema (version and migrate) to:
+  - [ ] add columns for other IDs we need to store (e.g. Ensembl, RefSeq, etc.) for easier joining and lookups later
+  - [ ] allow for add publication references specific for each datasource we use (and that provides proof/references pubmedids) as string arrays
+  - [ ] while we're at it, update our ETL scripts to add the pubmed/other references to the new database columns
+- [ ] STEP_AP: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
   - Build oncology-specific terminology mapping (German/English)
   - Document all available data relationships
@@ -361,11 +365,10 @@ Current development status and upcoming milestones:
   - Create German-English medical term mapping
   - Document query patterns and best practices
   - Create mapping of colloquial to technical terms
-- [ ] ETL pipeline - Publication Integration
-- [ ] Query optimization
-- [ ] LLM-agent integration tests
-- [ ] Documentation
-- [ ] Production deployment
+- [ ] STEP_AQ: Query optimization
+- [ ] STEP_AR: LLM-agent integration tests
+- [ ] STEP_AS: Documentation
+- [ ] STEP_AT: Production deployment
 
 ## Database Management
 
@@ -792,54 +795,114 @@ ORDER BY sum(gene_count) DESC;
 ## Project Structure
 
 ```tree
-mediabase/
-├── .github/
-│   └── workflows/
-│       └── tests.yml
-├── src/
-│   ├── etl/
-│   │   ├── __init__.py
-│   │   ├── transcript.py
-│   │   ├── products.py
-│   │   ├── pathways.py
-│   │   ├── drugs.py
-│   │   └── publications.py
-│   ├── db/
-│   │   ├── __init__.py
-│   │   ├── schema.py
-│   │   ├── migrations/
-│   │   └── connection.py
-│   ├── utils/
-│   │   ├── __init__.py
-│   │   ├── logging.py
-│   │   └── validation.py
-│   └── api/
-│       ├── __init__.py
-│       └── queries.py
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py
-│   ├── test_etl/
-│   ├── test_db/
-│   └── test_api/
-├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   └── 02_query_examples.ipynb
-├── config/
-│   ├── __init__.py
-│   ├── settings.py
-│   └── logging.yml
-├── scripts/
-│   ├── setup_db.py
-│   └── run_etl.py
-├── docs/
-│   ├── architecture.md
-│   ├── api.md
-│   └── deployment.md
-├── .env.example
-├── pyproject.toml
+/home/itsatony/code/mediabase
+├── config
+│   ├── database.yml
+│   ├── __init__.py
+│   ├── logging.yml
+│   └── settings.py
+├── docs
+│   ├── api.md
+│   ├── architecture.md
+│   ├── deployment.md
+│   ├── __init__.py
+│   └── postgres_setup_guide.md
+├── __init__.py
+├── LICENSE
+├── notebooks
+│   ├── 01_data_exploration.ipynb
+│   ├── 02_query_examples.ipynb
+│   └── __init__.py
 ├── poetry.lock
-└── README.md
+├── __pycache__
+│   └── __init__.cpython-312.pyc
+├── pyproject.toml
+├── pytest.ini
+├── README.md
+├── scripts
+│   ├── download_uniprot_data.py
+│   ├── __init__.py
+│   ├── manage_db.py
+│   ├── run_drug_integration.py
+│   ├── run_etl.py
+│   ├── run_go_enrichment.py
+│   ├── run_pathway_enrichment.py
+│   └── run_product_classification.py
+├── src
+│   ├── api
+│   │   ├── __init__.py
+│   │   └── queries.py
+│   ├── db
+│   │   ├── adapters.py
+│   │   ├── connection.py
+│   │   ├── __init__.py
+│   │   ├── migrations
+│   │   │   └── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── adapters.cpython-312.pyc
+│   │   │   ├── connection.cpython-312.pyc
+│   │   │   └── __init__.cpython-312.pyc
+│   │   └── schema.py
+│   ├── etl
+│   │   ├── drugs.py
+│   │   ├── go_terms.py
+│   │   ├── __init__.py
+│   │   ├── pathways.py
+│   │   ├── products.py
+│   │   ├── publications.py
+│   │   ├── __pycache__
+│   │   │   ├── drugs.cpython-312.pyc
+│   │   │   ├── go_terms.cpython-312.pyc
+│   │   │   ├── __init__.cpython-312.pyc
+│   │   │   ├── pathways.cpython-312.pyc
+│   │   │   ├── products.cpython-312.pyc
+│   │   │   └── transcript.cpython-312.pyc
+│   │   └── transcript.py
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   └── __init__.cpython-312.pyc
+│   └── utils
+│       ├── __init__.py
+│       ├── logging.py
+│       ├── __pycache__
+│       │   ├── __init__.cpython-312.pyc
+│       │   └── validation.cpython-312.pyc
+│       └── validation.py
+└── tests
+    ├── conftest.py
+    ├── etl
+    │   ├── __pycache__
+    │   │   ├── test_integration_products.cpython-312-pytest-7.4.4.pyc
+    │   │   └── test_transcript.cpython-312-pytest-7.4.4.pyc
+    │   ├── test_drugs.py
+    │   ├── test_go_terms.py
+    │   ├── test_integration_products.py
+    │   ├── test_products.py
+    │   └── test_transcript.py
+    ├── __init__.py
+    ├── __pycache__
+    │   ├── conftest.cpython-312-pytest-7.4.4.pyc
+    │   └── __init__.cpython-312.pyc
+    ├── test_api
+    │   ├── __init__.py
+    │   ├── __pycache__
+    │   │   ├── __init__.cpython-312.pyc
+    │   │   └── test_basic.cpython-312-pytest-7.4.4.pyc
+    │   └── test_basic.py
+    ├── test_db
+    │   ├── __init__.py
+    │   ├── __pycache__
+    │   │   ├── __init__.cpython-312.pyc
+    │   │   └── test_basic.cpython-312-pytest-7.4.4.pyc
+    │   └── test_basic.py
+    ├── test_etl
+    │   ├── __init__.py
+    │   ├── __pycache__
+    │   │   ├── __init__.cpython-312.pyc
+    │   │   └── test_basic.cpython-312-pytest-7.4.4.pyc
+    │   └── test_basic.py
+    └── utils
+        └── test_validation.py
 ```
 
 ## LLM-Agent Integration

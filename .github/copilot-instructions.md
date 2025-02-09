@@ -4,6 +4,13 @@ Be the smartest, most complete, most far-thinking and diligent developer ever.
 
 For everything you do, document each step and key improvement in the README.md file under the appropriate section - usually "## Project Status and Progress".
 
+## Environment
+
+We are using poetry for managing dependencies.
+
+We are using python >=3.10 for development.
+
+
 ## Code Style Guide
 
 ### General Principles

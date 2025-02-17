@@ -36,7 +36,7 @@ class DrugProcessor:
         self.drug_dir = self.cache_dir / 'drugcentral'
         self.drug_dir.mkdir(exist_ok=True)
         
-        self.batch_size = config.get('batch_size', 1000)
+        self.batch_size = config.get('batch_size', 100)  # Changed from 1000 to 100
         self.cache_ttl = config.get('cache_ttl', 86400)  # 24 hours default
         self.drugcentral_url = config['drugcentral_url']
         if not self.drugcentral_url:
@@ -281,87 +281,139 @@ class DrugProcessor:
             raise RuntimeError("No database connection")
             
         try:
-            # Create temporary table for efficient updates
-            self.db_manager.cursor.execute("""
-                CREATE TEMP TABLE temp_drug_data (
-                    gene_symbol TEXT,
-                    drug_data JSONB,
-                    drug_references JSONB
-                ) ON COMMIT DROP
-            """)
-            
-            # Process drugs by gene
-            updates = []
-            for gene, group in drug_targets.groupby('gene_symbol'):
-                drug_info = {}
-                references = []
-                
-                for _, row in group.iterrows():
-                    drug_info[row['drug_id']] = {
-                        'name': row['drug_name'],
-                        'mechanism': row['mechanism'],
-                        'action_type': row['action_type'],
-                        'evidence': {
-                            'type': row['evidence_type'],
-                            'score': row['evidence_score']
-                        }
-                    }
-                    
-                    # Process references into the new format
-                    if row['reference_ids']:
-                        for ref_id in row['reference_ids']:
-                            if ref_id.isdigit():  # Basic validation for PMID
-                                references.append({
-                                    'pmid': ref_id,
-                                    'year': None,  # Would need additional lookup
-                                    'evidence_type': row['evidence_type'],
-                                    'citation_count': None,  # Would need additional lookup
-                                    'source_db': 'DrugCentral'
-                                })
-                
-                updates.append((
-                    gene,
-                    json.dumps(drug_info),
-                    json.dumps(references)
-                ))
-                
-                if len(updates) >= self.batch_size:
-                    self._update_batch(self.db_manager.cursor, updates)
-                    updates = []
-            
-            # Process remaining updates
-            if updates:
-                self._update_batch(self.db_manager.cursor, updates)
-            
-            # Update main table from temp table
-            self.db_manager.cursor.execute("""
-                UPDATE cancer_transcript_base cb
-                SET 
-                    drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data,
-                    source_references = jsonb_set(
-                        COALESCE(cb.source_references, '{}'::jsonb),
-                        '{drugs}',
-                        tdd.drug_references
-                    )
-                FROM temp_drug_data tdd
-                WHERE cb.gene_symbol = tdd.gene_symbol
-            """)
-            
             if self.db_manager.conn:
-                self.db_manager.conn.commit()
+                # Set appropriate isolation level for DDL operations
+                old_isolation_level = self.db_manager.conn.isolation_level
+                self.db_manager.conn.set_isolation_level(0)  # AUTOCOMMIT for temp table creation
                 
+                # Create temporary table with enhanced reference support
+                self.db_manager.cursor.execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS temp_drug_data (
+                        gene_symbol TEXT,
+                        drug_data JSONB,
+                        drug_references JSONB
+                    ) ON COMMIT PRESERVE ROWS
+                """)
+                
+                # Reset isolation level for transaction
+                if self.db_manager.conn:
+                    self.db_manager.conn.set_isolation_level(old_isolation_level)
+                
+                # Start transaction for data processing
+                self.db_manager.cursor.execute("BEGIN")
+                
+                # Clear any existing data in temp table
+                self.db_manager.cursor.execute("TRUNCATE temp_drug_data")
+                
+                # Process drugs by gene
+                updates = []
+                for gene, group in drug_targets.groupby('gene_symbol'):
+                    drug_info = {}
+                    references = []
+                    
+                    for _, row in group.iterrows():
+                        drug_info[row['drug_id']] = {
+                            'name': row['drug_name'],
+                            'mechanism': row['mechanism'],
+                            'action_type': row['action_type'],
+                            'evidence': {
+                                'type': row['evidence_type'],
+                                'score': float(row['evidence_score'])
+                            }
+                        }
+                        
+                        # Process references
+                        if row['reference_ids']:
+                            for ref_id in row['reference_ids']:
+                                if ref_id and isinstance(ref_id, str):
+                                    ref_id = ref_id.strip()
+                                    
+                                    # Skip non-PMID references but log them
+                                    if not ref_id.isdigit():
+                                        logger.debug(f"Skipping non-PMID reference: {ref_id}")
+                                        continue
+                                        
+                                    # Drug-specific reference
+                                    references.append({
+                                        'pmid': ref_id,
+                                        'year': None,  # Would need PubMed lookup
+                                        'evidence_type': row['evidence_type'],
+                                        'citation_count': None,
+                                        'source_db': 'DrugCentral',
+                                        'drug_id': row['drug_id']
+                                    })
+                    
+                    updates.append((
+                        gene,
+                        json.dumps(drug_info),
+                        json.dumps(references)
+                    ))
+                    
+                    if len(updates) >= self.batch_size:
+                        self._update_batch(self.db_manager.cursor, updates)
+                        updates = []
+                        
+                        # Commit each batch to avoid memory issues
+                        if self.db_manager.conn:
+                            self.db_manager.conn.commit()
+                            self.db_manager.cursor.execute("BEGIN")
+                
+                # Process remaining updates
+                if updates:
+                    self._update_batch(self.db_manager.cursor, updates)
+                
+                # Update main table from temp table with enhanced reference handling
+                logger.debug("Updating main table from temporary table...")
+                self.db_manager.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET 
+                        drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data,
+                        source_references = jsonb_set(
+                            COALESCE(cb.source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
+                            '{drugs}',
+                            tdd.drug_references,
+                            true
+                        )
+                    FROM temp_drug_data tdd
+                    WHERE cb.gene_symbol = tdd.gene_symbol
+                """)
+                
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+                    
+                # Drop temporary table
+                self.db_manager.cursor.execute("DROP TABLE IF EXISTS temp_drug_data")
+                
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+                    
         except Exception as e:
             if self.db_manager.conn:
                 self.db_manager.conn.rollback()
             logger.error(f"Drug data integration failed: {e}")
             raise
+        finally:
+            # Clean up
+            try:
+                if self.db_manager.cursor:
+                    self.db_manager.cursor.execute("DROP TABLE IF EXISTS temp_drug_data")
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+            except Exception as e:
+                logger.warning(f"Cleanup failed: {e}")
 
     def _update_batch(self, cur, updates: List[Tuple[str, str, str]]) -> None:
         """Update a batch of drug data."""
         execute_batch(
             cur,
             """
-            INSERT INTO temp_drug_data (gene_symbol, drug_data, drug_references)
+            INSERT INTO temp_drug_data 
+            (gene_symbol, drug_data, drug_references)
             VALUES (%s, %s::jsonb, %s::jsonb)
             """,
             updates,

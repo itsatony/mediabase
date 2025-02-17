@@ -412,37 +412,58 @@ class PathwayProcessor:
         try:
             logger.info("Starting pathway enrichment pipeline...")
             
-            # Verify database schema version
+            # More thorough schema verification
             if not self.db_manager.cursor:
                 raise RuntimeError("No database connection")
                 
+            # Check schema version
             self.db_manager.cursor.execute("SELECT version FROM schema_version")
             version = self.db_manager.cursor.fetchone()
-            if not version or version[0] != 'v0.1.4':
-                raise RuntimeError("Database schema must be v0.1.4")
+            if not version:
+                raise RuntimeError("Could not determine schema version")
+                
+            if version[0] != 'v0.1.4':
+                logger.info(f"Current schema version {version[0]} needs update to v0.1.4")
+                if not self.db_manager.migrate_to_version('v0.1.4'):
+                    raise RuntimeError("Failed to migrate database schema to v0.1.4")
+                logger.info("Schema successfully updated to v0.1.4")
+                
+            # Verify required columns exist
+            required_columns = [
+                'pathways',
+                'source_references',
+                'gene_symbol',
+                'gene_type'
+            ]
             
-            # Run enrichment
+            for column in required_columns:
+                if not self.db_manager.check_column_exists('cancer_transcript_base', column):
+                    raise RuntimeError(
+                        f"Required column '{column}' missing. "
+                        "Schema must be properly upgraded to v0.1.4"
+                    )
+            
+            # Run enrichment after schema verification
             self.enrich_transcripts()
             
             # Verify results
-            if self.db_manager.cursor:
-                self.db_manager.cursor.execute("""
-                    SELECT 
-                        COUNT(*) as total,
-                        COUNT(CASE WHEN pathways IS NOT NULL 
-                              AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
-                        COUNT(CASE WHEN source_references->'pathways' != '[]'::jsonb 
-                              THEN 1 END) as with_refs
-                    FROM cancer_transcript_base
-                """)
-                stats = self.db_manager.cursor.fetchone()
-                if stats:
-                    logger.info(
-                        f"Pipeline completed:\n"
-                        f"- Total records: {stats[0]:,}\n"
-                        f"- Records with pathways: {stats[1]:,}\n"
-                        f"- Records with pathway references: {stats[2]:,}"
-                    )
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN pathways IS NOT NULL 
+                          AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
+                    COUNT(CASE WHEN source_references->'pathways' != '[]'::jsonb 
+                          THEN 1 END) as with_refs
+                FROM cancer_transcript_base
+            """)
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                logger.info(
+                    f"Pipeline completed:\n"
+                    f"- Total records: {stats[0]:,}\n"
+                    f"- Records with pathways: {stats[1]:,}\n"
+                    f"- Records with pathway references: {stats[2]:,}"
+                )
             
         except Exception as e:
             logger.error(f"Pathway enrichment pipeline failed: {e}")

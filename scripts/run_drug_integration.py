@@ -63,7 +63,7 @@ def main() -> None:
         'drugcentral_url': os.getenv('MB_DRUGCENTRAL_DATA_URL'),
         'cache_dir': os.getenv('MB_CACHE_DIR', '/tmp/mediabase/cache'),
         'cache_ttl': int(os.getenv('MB_CACHE_TTL', '86400')),
-        'batch_size': int(os.getenv('MB_BATCH_SIZE', '100')),
+        'batch_size': int(os.getenv('MB_BATCH_SIZE', '100')),  # Changed from '1000' to '100'
         # Database connectivity
         'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
         'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),

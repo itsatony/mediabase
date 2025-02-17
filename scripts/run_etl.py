@@ -54,7 +54,7 @@ def run_etl(args: argparse.Namespace) -> None:
         'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres'),
         
         # ETL configuration
-        'batch_size': args.batch_size,
+        'batch_size': args.batch_size,  # Will use new default of 100 from argparse
         'cache_dir': os.getenv('MB_CACHE_DIR', '/tmp/mediabase/cache'),
         'force_download': args.force_download,
         
@@ -193,8 +193,8 @@ def main() -> None:
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=1000,
-        help='Batch size for processing (default: 1000)'
+        default=100,  # Changed from 1000 to 100
+        help='Batch size for processing (default: 100)'
     )
     parser.add_argument(
         '--force-download',

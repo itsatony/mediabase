@@ -364,27 +364,44 @@ class DatabaseManager:
             return False
 
     def dump_database(self, output_file: str) -> bool:
-        """Dump database to a file."""
+        """Dump database to a file using pg_dump.
+        
+        Args:
+            output_file: Path to output file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             import subprocess
             
+            # Create environment with PGPASSWORD
             env = os.environ.copy()
-            env['PGPASSWORD'] = self.config['password']
+            env['PGPASSWORD'] = self.db_config['password']
             
+            # Construct pg_dump command
             cmd = [
                 'pg_dump',
-                '-h', self.config['host'],
-                '-p', str(self.config['port']),
-                '-U', self.config['user'],
+                '-h', self.db_config['host'],
+                '-p', str(self.db_config['port']),
+                '-U', self.db_config['user'],
                 '-F', 'c',  # Custom format
                 '-f', output_file,
-                self.config['dbname']
+                self.db_config['dbname']
             ]
             
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            # Run pg_dump with password in environment
+            result = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True
+            )
             
             if result.returncode == 0:
+                logger.info(f"Database successfully backed up to {output_file}")
                 return True
+            
             logger.error(f"Dump failed: {result.stderr}")
             return False
                 
@@ -431,24 +448,30 @@ class DatabaseManager:
         """Check if a column exists in the specified table.
         
         Args:
-            table: Table name to check
-            column: Column name to check
+            table: Name of the table
+            column: Name of the column
             
         Returns:
             bool: True if column exists, False otherwise
         """
         try:
             if not self.cursor:
-                raise RuntimeError("No database cursor available")
-                
+                self.cursor = self.conn.cursor() if self.conn else None
+                if not self.cursor:
+                    raise RuntimeError("Could not create database cursor")
+                    
             self.cursor.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = %s 
-                AND column_name = %s
+                SELECT EXISTS (
+                    SELECT 1 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'public'
+                    AND table_name = %s 
+                    AND column_name = %s
+                );
             """, (table, column))
             
-            return bool(self.cursor.fetchone())
+            result = self.cursor.fetchone()
+            return bool(result and result[0])
             
         except Exception as e:
             logger.error(f"Error checking column existence: {e}")

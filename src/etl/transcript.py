@@ -298,7 +298,7 @@ class TranscriptProcessor:
             current_total = len(records)
             
             # Different rules for protein coding vs non-protein coding
-            if gene_type == 'protein_coding':
+            if str(gene_type).strip() == 'protein_coding':
                 # Accept if we haven't reached the protein coding target
                 if gene_type_counts[gene_type] < PROTEIN_CODING_TARGET:
                     add_record = True
@@ -493,4 +493,90 @@ class TranscriptProcessor:
             
         except Exception as e:
             logger.error(f"Transcript processing pipeline failed: {e}")
+            raise
+
+    def update_transcript_ids(self, transcript_id_mappings: Dict[str, Dict[str, Any]]) -> None:
+        """Update transcript IDs in the database."""
+        
+        try:
+            # Process in batches
+            updates = []
+            processed = 0
+            
+            for transcript_id, mappings in transcript_id_mappings.items():
+                # Prepare alt_ids dictionary
+                alt_ids = {}
+                
+                # Add RefSeq transcript IDs if available
+                if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
+                    alt_ids['RefSeq'] = mappings['refseq_transcript_ids']
+                
+                # Add any other alternative IDs from mappings
+                if 'entrez_transcript_ids' in mappings:
+                    alt_ids['Entrez'] = mappings['entrez_transcript_ids']
+                
+                # Store RefSeq IDs separately to update the refseq_ids array field
+                refseq_ids = None
+                if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
+                    # Ensure we have a clean list of strings
+                    refseq_ids = [str(r).strip() for r in mappings['refseq_transcript_ids'] if r]
+                    refseq_ids = list(set(filter(None, refseq_ids)))  # Remove duplicates and empty strings
+                
+                # Add to updates batch - now with proper array handling
+                updates.append((
+                    json.dumps(alt_ids),
+                    refseq_ids,  # This will be cast to text[] by Postgres
+                    transcript_id
+                ))
+                
+                if len(updates) >= self.batch_size:
+                    execute_batch(
+                        self.db_manager.cursor,
+                        """
+                        UPDATE cancer_transcript_base
+                        SET 
+                            alt_transcript_ids = alt_transcript_ids || %s::jsonb,
+                            refseq_ids = CASE 
+                                WHEN %s IS NOT NULL THEN %s::text[]  -- Explicit cast to text array
+                                ELSE refseq_ids 
+                            END
+                        WHERE transcript_id = %s
+                        """,
+                        [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
+                        page_size=self.batch_size
+                    )
+                    updates = []
+                    processed += self.batch_size
+            
+            # Process remaining updates
+            if updates:
+                execute_batch(
+                    self.db_manager.cursor,
+                    """
+                    UPDATE cancer_transcript_base
+                    SET 
+                        alt_transcript_ids = alt_transcript_ids || %s::jsonb,
+                        refseq_ids = CASE 
+                            WHEN %s IS NOT NULL THEN %s::text[]  -- Explicit cast to text array
+                            ELSE refseq_ids 
+                        END
+                    WHERE transcript_id = %s
+                    """,
+                    [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
+                    page_size=self.batch_size
+                )
+                processed += len(updates)
+            
+            # Commit the transaction - safely check for connection
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+                logger.info(f"Transcript ID update completed successfully, processed {processed} records")
+            else:
+                logger.warning("Could not commit transaction - no active connection")
+            
+        except Exception as e:
+            logger.error(f"Error updating transcript IDs: {e}")
+            # Safely roll back if we have a connection
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
             raise

@@ -16,8 +16,8 @@ from psycopg2.extras import execute_batch
 from io import TextIOWrapper
 from rich.console import Console
 from rich.table import Table
-from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text
-from ..etl.publications import Publication, PublicationsProcessor
+from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text, format_pmid_url
+from .publications import Publication, PublicationsProcessor
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -354,52 +354,20 @@ class GOTermProcessor:
         return list(molecular_functions), list(cellular_locations)
 
     def extract_publication_references(self, go_terms: Dict[str, GOTerm]) -> List[Publication]:
-        """Extract publication references from GO terms.
-        
-        Args:
-            go_terms: Dictionary of GO terms
-            
-        Returns:
-            List[Publication]: List of extracted publication references
-        """
+        """Extract publication references from GO terms."""
         publications: List[Publication] = []
         
         for go_id, term_data in go_terms.items():
-            # Extract PMID from evidence code
-            evidence_code = term_data.get('evidence', '')
-            evidence_text = f"{evidence_code} {go_id} {term_data.get('term', '')}"
-            
-            # First use the utility to try to extract PMIDs
+            # Extract PMID from evidence code or reference text
+            evidence_text = f"{term_data.get('evidence', '')} {term_data.get('reference', '')}"
             pmids = extract_pmids_from_text(evidence_text)
             
-            # If that doesn't work, check if evidence code itself contains references
-            if not pmids and ':' in evidence_code:
-                # Some evidence codes might have format "ECO:0000269|PubMed:12345678"
-                parts = evidence_code.split('|')
-                for part in parts:
-                    if 'PubMed:' in part or 'PMID:' in part:
-                        pmid = part.split(':')[-1].strip()
-                        if pmid.isdigit():
-                            # Using a set, so we need pmids as a set
-                            pmids_set = set(pmids)
-                            pmids_set.add(pmid)
-                            pmids = list(pmids_set)
-            
-            # Create publication references for each PMID found
             for pmid in pmids:
                 publication = PublicationsProcessor.create_publication_reference(
                     pmid=pmid,
                     evidence_type=term_data.get('evidence', 'unknown'),
-                    source_db='GO'
-                )
-                publications.append(publication)
-            
-            # If no PMIDs found but we have evidence code, still create a reference
-            if not pmids and evidence_code:
-                publication = PublicationsProcessor.create_publication_reference(
-                    pmid=None,
-                    evidence_type=evidence_code,
-                    source_db='GO'
+                    source_db="GO",
+                    url=format_pmid_url(pmid)
                 )
                 publications.append(publication)
         

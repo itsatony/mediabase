@@ -23,30 +23,16 @@ PUBMED_RATE_LIMIT = 0.34  # ~3 requests per second (adjust to 0.1 with API key)
 DEFAULT_CACHE_TTL = 2592000  # 30 days in seconds for publications (much longer than other data)
 
 class Publication(TypedDict, total=False):
-    """Type definition for publication reference data.
-    
-    Attributes:
-        pmid: PubMed ID
-        title: Publication title
-        abstract: Publication abstract
-        year: Publication year
-        journal: Journal name
-        authors: List of author names
-        evidence_type: Type of evidence (experimental, computational, review, etc.)
-        citation_count: Number of citations
-        source_db: Source database (go_terms, uniprot, drugs, pathways)
-        doi: Digital Object Identifier
-        url: URL to the publication
-    """
+    """Publication reference type definition."""
     pmid: str
+    evidence_type: str
+    source_db: str
     title: Optional[str]
     abstract: Optional[str]
     year: Optional[int]
     journal: Optional[str]
     authors: Optional[List[str]]
-    evidence_type: str
     citation_count: Optional[int]
-    source_db: str
     doi: Optional[str]
     url: Optional[str]
 
@@ -137,26 +123,37 @@ class PublicationsProcessor:
     
     @staticmethod
     def create_publication_reference(
-        pmid: Optional[str] = None,
-        evidence_type: str = "unknown",
-        source_db: str = "unknown"
+        pmid: Optional[str],
+        evidence_type: str,
+        source_db: str,
+        **kwargs
     ) -> Publication:
-        """Create a publication reference with minimal required fields.
+        """Create a standardized publication reference.
         
         Args:
             pmid: PubMed ID
-            evidence_type: Type of evidence
-            source_db: Source database
+            evidence_type: Type of evidence (e.g., "experimental", "computational")
+            source_db: Source database (e.g., "GO", "DrugCentral", "UniProt")
+            **kwargs: Additional publication metadata
             
         Returns:
-            Publication: A new publication reference
+            Publication: Standardized publication reference
         """
-        reference: Publication = {
+        publication: Publication = {
             "pmid": pmid or "",
             "evidence_type": evidence_type,
             "source_db": source_db
         }
-        return reference
+        
+        # Add optional fields if provided
+        for field in [
+            "title", "abstract", "year", "journal",
+            "authors", "citation_count", "doi", "url"
+        ]:
+            if field in kwargs and kwargs[field] is not None:
+                publication[field] = kwargs[field]
+                
+        return publication
     
     def add_reference_to_transcript(
         self,

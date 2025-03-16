@@ -511,6 +511,15 @@ Current development status and upcoming milestones:
   - Improved memory usage by employing streaming processing
   - Added proper validation of filtered content
   - Maintained data completeness and accuracy while improving performance
+- [x] STEP_AQ: Enhanced Publication References Structure (2025-02-04)
+  - Added proper JSONB structure for source_references
+  - Created publication_reference type for consistent data handling
+  - Improved NULL handling for source_references
+- [x] STEP_BR: Database Schema Update to v0.1.5 (2025-05-15)
+  - Enhanced source_references structure with proper defaults
+  - Added publication_reference type for consistent data handling
+  - Improved NULL handling for source_references
+  - Added data validation for publication references
 - [ ] STEP_CA: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
   - Build oncology-specific terminology mapping (German/English)
@@ -628,6 +637,7 @@ MB_ALLOWED_ORIGINS=...           # CORS allowed origins
 - v0.1.2: Enhanced UniProt feature storage and molecular function arrays
 - v0.1.3: Improved GO term storage with dedicated arrays and indices
 - v0.1.4: Enhanced ID storage and source-specific references
+- v0.1.5: Enhanced source_references structure with proper defaults and data validation
 - Repository: [mediabase](https://github.com/itsatony/mediabase)
 
 ## Data Flow and Dependencies

@@ -1022,7 +1022,7 @@ class IDEnrichmentProcessor:
                             alt_gene_ids = %s::jsonb,
                             uniprot_ids = %s,
                             ncbi_ids = %s,
-                            refseq_ids = %s,
+                            refseq_ids = %s::text[],  -- Explicit cast to text array
                             source_references = COALESCE(source_references, '{}'::jsonb) || %s::jsonb
                         WHERE gene_symbol = %s
                         """,
@@ -1047,7 +1047,7 @@ class IDEnrichmentProcessor:
                         alt_gene_ids = %s::jsonb,
                         uniprot_ids = %s,
                         ncbi_ids = %s,
-                        refseq_ids = %s,
+                        refseq_ids = %s::text[],  -- Explicit cast to text array
                         source_references = COALESCE(source_references, '{}'::jsonb) || %s::jsonb
                     WHERE gene_symbol = %s
                     """,

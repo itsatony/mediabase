@@ -18,7 +18,7 @@ from psycopg2.extras import execute_batch
 from ..utils import validate_gene_symbol
 from ..db.database import get_db_manager
 from ..etl.publications import Publication, PublicationsProcessor
-from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text
+from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text, format_pmid_url, merge_publication_references
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +246,25 @@ class ProductClassifier:
                     source_db="UniProt"
                 )
                 publications.append(publication)
+        
+        return publications
+
+    def extract_uniprot_references(self, feature_data: Dict[str, Any]) -> List[Publication]:
+        """Extract publication references from UniProt feature data."""
+        publications: List[Publication] = []
+        
+        # Extract PMIDs from feature references
+        reference_text = feature_data.get('references', '')
+        pmids = extract_pmids_from_text(reference_text)
+        
+        for pmid in pmids:
+            publication = PublicationsProcessor.create_publication_reference(
+                pmid=pmid,
+                evidence_type=feature_data.get('feature_type', 'unknown'),
+                source_db="UniProt",
+                url=format_pmid_url(pmid)
+            )
+            publications.append(publication)
         
         return publications
 

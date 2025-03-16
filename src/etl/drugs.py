@@ -15,7 +15,7 @@ import hashlib
 from rich.console import Console
 from rich.table import Table
 from ..etl.publications import Publication, PublicationsProcessor
-from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text
+from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text, format_pmid_url, merge_publication_references
 
 logger = logging.getLogger(__name__)
 
@@ -806,4 +806,30 @@ class DrugProcessor:
             )
             publications.append(publication)
             
+        return publications
+
+    def extract_drug_references(self, drug_data: Dict[str, Any]) -> List[Publication]:
+        """Extract publication references from drug evidence data."""
+        publications: List[Publication] = []
+        
+        # Check various evidence fields for PMIDs
+        evidence_fields = [
+            'clinical_evidence',
+            'experimental_evidence',
+            'mechanism_references'
+        ]
+        
+        for field in evidence_fields:
+            evidence_text = drug_data.get(field, '')
+            pmids = extract_pmids_from_text(evidence_text)
+            
+            for pmid in pmids:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=pmid,
+                    evidence_type=field.replace('_', ' '),
+                    source_db="DrugCentral",
+                    url=format_pmid_url(pmid)
+                )
+                publications.append(publication)
+        
         return publications

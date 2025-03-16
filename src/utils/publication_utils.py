@@ -1,4 +1,4 @@
-"""Utilities for processing publication references."""
+"""Utility functions for publication reference handling."""
 
 import re
 import logging
@@ -7,82 +7,70 @@ from ..etl.publications import Publication
 
 logger = logging.getLogger(__name__)
 
-# Regular expressions for different PMID formats
+# Regular expressions for finding PMIDs
 PMID_PATTERNS = [
-    # Standard format: PMID: 12345678
-    re.compile(r'PMID:\s*(\d+)', re.IGNORECASE),
-    # PubMed ID: 12345678
-    re.compile(r'PubMed\s+ID:?\s*(\d+)', re.IGNORECASE),
-    # PubMed:12345678
-    re.compile(r'PubMed:?\s*(\d+)', re.IGNORECASE),
-    # PMID=12345678
-    re.compile(r'PMID\s*=\s*(\d+)', re.IGNORECASE),
-    # Bare PMID in parentheses: (12345678)
-    re.compile(r'\((\d{1,8})\)'),
-    # URLs: /pubmed/12345678
-    re.compile(r'/pubmed/(\d+)', re.IGNORECASE),
+    r'PMID:\s*(\d+)',  # Standard PMID:12345678 format
+    r'PubMed:\s*(\d+)',  # PubMed:12345678 format
+    r'\[(\d{6,8})\]',  # [12345678] format
+    r'pubmed/(\d{6,8})',  # pubmed/12345678 format
 ]
 
-def extract_pmid_from_text(text: str) -> Optional[str]:
-    """Extract a PMID from text if present.
+def is_valid_pmid(pmid: str) -> bool:
+    """Validate PMID format.
     
     Args:
-        text: Text that might contain a PMID
+        pmid: PubMed ID to validate
         
     Returns:
-        Extracted PMID or None if not found
+        bool: True if valid PMID format
+    """
+    # PMIDs are 1-8 digit numbers
+    return bool(re.match(r'^\d{1,8}$', pmid))
+
+def extract_pmid_from_text(text: str) -> Optional[str]:
+    """Extract single PMID from text.
+    
+    Args:
+        text: Text to extract PMID from
+        
+    Returns:
+        Optional[str]: First valid PMID found or None
     """
     if not text:
         return None
         
-    # Try all patterns
+    # Try each pattern
     for pattern in PMID_PATTERNS:
-        match = pattern.search(text)
+        match = re.search(pattern, text)
         if match:
-            pmid = match.group(1).strip()
-            if pmid.isdigit() and 1 <= len(pmid) <= 8:
+            pmid = match.group(1)
+            if is_valid_pmid(pmid):
                 return pmid
-                
     return None
 
 def extract_pmids_from_text(text: str) -> List[str]:
     """Extract all PMIDs from text.
     
     Args:
-        text: Text that might contain PMIDs
+        text: Text to extract PMIDs from
         
     Returns:
-        List of extracted PMIDs (empty if none found)
+        List[str]: List of valid PMIDs found
     """
     if not text:
         return []
         
-    pmids = []
+    pmids: Set[str] = set()
     
-    # Try all patterns
+    # Try each pattern
     for pattern in PMID_PATTERNS:
-        matches = pattern.finditer(text)
+        matches = re.finditer(pattern, text)
         for match in matches:
-            pmid = match.group(1).strip()
-            if pmid.isdigit() and 1 <= len(pmid) <= 8 and pmid not in pmids:
-                pmids.append(pmid)
+            pmid = match.group(1)
+            if is_valid_pmid(pmid):
+                pmids.add(pmid)
                 
-    return pmids
-
-def is_valid_pmid(pmid: str) -> bool:
-    """Check if a string is a valid PMID.
-    
-    Args:
-        pmid: String to check
-        
-    Returns:
-        True if valid PMID, False otherwise
-    """
-    if not pmid:
-        return False
-        
-    # PMIDs are 1-8 digit numbers
-    return pmid.isdigit() and 1 <= len(pmid) <= 8
+    return sorted(list(pmids))
 
 def format_pmid_url(pmid: str) -> str:
     """Format a PMID as a PubMed URL.

@@ -439,19 +439,32 @@ class IDEnrichmentProcessor:
         update_progress("Processing UniProt idmapping file...")
         
         # Define column indices for idmapping_selected.tab file
-        UNIPROT_ACC = 0
-        UNIPROT_ID = 1
-        GENE_NAME = 2
+        # Column definitions in UniProt idmapping_selected.tab
+        UNIPROT_ACC = 0    # UniProtKB-AC
+        UNIPROT_ID = 1     # UniProtKB-ID
+        GENE_NAME = 2      # GeneID (EntrezGene)
+        ENTREZ_GENE = 2    # Same as GENE_NAME (EntrezGene)
+        REFSEQ = 3         # RefSeq
+        PDB = 5            # PDB
+        GO = 6             # GO
+        MIM = 13           # OMIM disease associations
+        PUBMED = 15        # PubMed
+        ENSEMBL = 18       # Ensembl
+        ENSEMBL_TRS = 19   # Ensembl_TRS (fixed from 129)
+        ADD_PUBMED = 21    # Additional PubMed
         
         gene_mappings: Dict[str, Dict[str, Any]] = {}
+        lines = []
         n = 0
+        
         try:
             # Process the file line by line to avoid loading everything into memory
             with gzip.open(file_path, 'rt') as f:
                 for line in tqdm(f, desc="Processing UniProt idmapping"):
-                    n += 1
                     if n < 2:
-                      logger.debug(f"Line {n}: {line}")
+                        lines.append(line)
+                    n += 1
+                    
                     # Split the line by tabs
                     fields = line.strip().split('\t')
                     
@@ -474,7 +487,13 @@ class IDEnrichmentProcessor:
                         if gene_symbol not in gene_mappings:
                             gene_mappings[gene_symbol] = {
                                 'uniprot_acc': [],
-                                'uniprot_id': []
+                                'uniprot_id': [],
+                                'entrez_ids': [],
+                                'refseq_ids': [],
+                                'pdb_ids': [],
+                                'go_terms': [],
+                                'mim_ids': [],
+                                'pubmed_ids': []
                             }
                             
                         # Add UniProt accession and ID
@@ -483,15 +502,73 @@ class IDEnrichmentProcessor:
                             
                         if uniprot_id and uniprot_id not in gene_mappings[gene_symbol]['uniprot_id']:
                             gene_mappings[gene_symbol]['uniprot_id'].append(uniprot_id)
-        
+                        
+                        # Extract additional IDs when available
+                        # Add EntrezGene/NCBI IDs
+                        if len(fields) > ENTREZ_GENE and fields[ENTREZ_GENE] and fields[ENTREZ_GENE] != "-":
+                            entrez_id = fields[ENTREZ_GENE]
+                            if entrez_id not in gene_mappings[gene_symbol]['entrez_ids']:
+                                gene_mappings[gene_symbol]['entrez_ids'].append(entrez_id)
+                        
+                        # Add RefSeq IDs
+                        if len(fields) > REFSEQ and fields[REFSEQ] and fields[REFSEQ] != "-":
+                            for refseq_id in fields[REFSEQ].split('; '):
+                                if refseq_id and refseq_id not in gene_mappings[gene_symbol]['refseq_ids']:
+                                    gene_mappings[gene_symbol]['refseq_ids'].append(refseq_id)
+                        
+                        # Add PDB IDs
+                        if len(fields) > PDB and fields[PDB] and fields[PDB] != "-":
+                            for pdb_id in fields[PDB].split('; '):
+                                if pdb_id and pdb_id not in gene_mappings[gene_symbol]['pdb_ids']:
+                                    gene_mappings[gene_symbol]['pdb_ids'].append(pdb_id)
+                        
+                        # Add GO terms
+                        if len(fields) > GO and fields[GO] and fields[GO] != "-":
+                            for go_term in fields[GO].split('; '):
+                                if go_term and go_term not in gene_mappings[gene_symbol]['go_terms']:
+                                    gene_mappings[gene_symbol]['go_terms'].append(go_term)
+                        
+                        # Add MIM/OMIM disease IDs
+                        if len(fields) > MIM and fields[MIM] and fields[MIM] != "-":
+                            for mim_id in fields[MIM].split('; '):
+                                if mim_id and mim_id not in gene_mappings[gene_symbol]['mim_ids']:
+                                    gene_mappings[gene_symbol]['mim_ids'].append(mim_id)
+                        
+                        # Add PubMed IDs
+                        if len(fields) > PUBMED and fields[PUBMED] and fields[PUBMED] != "-":
+                            for pubmed_id in fields[PUBMED].split('; '):
+                                if pubmed_id and pubmed_id not in gene_mappings[gene_symbol]['pubmed_ids']:
+                                    gene_mappings[gene_symbol]['pubmed_ids'].append(pubmed_id)
+                        
+                        # Add additional PubMed IDs
+                        if len(fields) > ADD_PUBMED and fields[ADD_PUBMED] and fields[ADD_PUBMED] != "-":
+                            for pubmed_id in fields[ADD_PUBMED].split('; '):
+                                if pubmed_id and pubmed_id not in gene_mappings[gene_symbol]['pubmed_ids']:
+                                    gene_mappings[gene_symbol]['pubmed_ids'].append(pubmed_id)
+            
             # Log summary statistics
             update_progress(f"Processed UniProt idmapping for {len(gene_mappings)} gene symbols")
+            
+            # Log additional data statistics
+            id_counts = {
+                'entrez_ids': sum(1 for data in gene_mappings.values() if data['entrez_ids']),
+                'refseq_ids': sum(1 for data in gene_mappings.values() if data['refseq_ids']),
+                'pdb_ids': sum(1 for data in gene_mappings.values() if data['pdb_ids']),
+                'go_terms': sum(1 for data in gene_mappings.values() if data['go_terms']),
+                'mim_ids': sum(1 for data in gene_mappings.values() if data['mim_ids']),
+                'pubmed_ids': sum(1 for data in gene_mappings.values() if data['pubmed_ids']),
+            }
+            
+            logger.info(f"Extracted ID counts from UniProt mapping:")
+            for id_type, count in id_counts.items():
+                logger.info(f"  - {id_type}: {count} genes")
+                
             return gene_mappings
             
         except Exception as e:
             logger.error(f"Error processing UniProt idmapping: {e}")
             return {}
-
+    
     def download_ensembl_refseq(self) -> Path:
         """Download Ensembl-RefSeq mapping file if not in cache."""
         cache_key = self._get_cache_key(self.ensembl_refseq_url)
@@ -517,7 +594,7 @@ class IDEnrichmentProcessor:
                 
         self._update_cache_meta(cache_key, file_path)
         return file_path
-
+    
     def download_ensembl_entrez(self) -> Path:
         """Download Ensembl-Entrez mapping file if not in cache."""
         cache_key = self._get_cache_key(self.ensembl_entrez_url)
@@ -543,7 +620,7 @@ class IDEnrichmentProcessor:
                 
         self._update_cache_meta(cache_key, file_path)
         return file_path
-
+        
     def process_ensembl_refseq(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
         """Process Ensembl-RefSeq mapping file to map transcript IDs.
         
@@ -601,7 +678,7 @@ class IDEnrichmentProcessor:
         except Exception as e:
             logger.error(f"Error processing Ensembl-RefSeq mapping: {e}")
             return {}
-
+    
     def process_ensembl_entrez(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
         """Process Ensembl-Entrez mapping file to map transcript IDs.
         
@@ -659,7 +736,7 @@ class IDEnrichmentProcessor:
         except Exception as e:
             logger.error(f"Error processing Ensembl-Entrez mapping: {e}")
             return {}
-
+    
     def update_gene_ids(self, gene_id_mappings: Dict[str, Dict[str, Any]]) -> None:
         """Update gene IDs in the database.
         
@@ -689,7 +766,7 @@ class IDEnrichmentProcessor:
                 alt_ids = {}
                 
                 # Add directly mappable IDs
-                for direct_id in ['hgnc_id', 'entrez_id', 'ensembl_gene_id']:
+                for direct_id in ['hgnc_id', 'entrez_id', 'ensembl_gene_id', 'vgnc_id']:
                     if direct_id in mappings and mappings[direct_id]:
                         alt_ids[direct_id] = mappings[direct_id]
                 
@@ -698,6 +775,8 @@ class IDEnrichmentProcessor:
                     refseq_ids = mappings['refseq_ids']
                     if isinstance(refseq_ids, list) and refseq_ids:
                         alt_ids['refseq_id'] = refseq_ids[0]  # Use first as primary
+                        if len(refseq_ids) > 1:
+                            alt_ids['refseq_ids'] = refseq_ids
                 
                 # Prepare UniProt IDs
                 uniprot_ids = []
@@ -727,12 +806,38 @@ class IDEnrichmentProcessor:
                     else:
                         refseq_ids = [mappings['refseq_ids']]
                 
+                # Prepare GO terms
+                go_terms = []
+                if 'go_terms' in mappings and mappings['go_terms']:
+                    if isinstance(mappings['go_terms'], list):
+                        go_terms = mappings['go_terms']
+                    else:
+                        go_terms = [mappings['go_terms']]
+                    # Store GO terms in alt_ids for better accessibility
+                    alt_ids['go_terms'] = go_terms
+                
+                # Prepare source references from PubMed IDs
+                source_references = {}
+                if 'pubmed_ids' in mappings and mappings['pubmed_ids']:
+                    pubmed_refs = []
+                    for pmid in mappings['pubmed_ids']:
+                        if pmid:
+                            pubmed_refs.append({
+                                "pmid": pmid,
+                                "evidence_type": "curated",
+                                "source_db": "uniprot"
+                            })
+                    
+                    if pubmed_refs:
+                        source_references['uniprot'] = pubmed_refs
+                
                 # Add to updates batch
                 updates.append((
                     json.dumps(alt_ids),
                     uniprot_ids if uniprot_ids else None,
                     ncbi_ids if ncbi_ids else None,
                     refseq_ids if refseq_ids else None,
+                    json.dumps(source_references) if source_references else None,
                     gene_symbol
                 ))
                 
@@ -745,7 +850,8 @@ class IDEnrichmentProcessor:
                             alt_gene_ids = %s::jsonb,
                             uniprot_ids = %s,
                             ncbi_ids = %s,
-                            refseq_ids = %s
+                            refseq_ids = %s,
+                            source_references = COALESCE(source_references, '{}'::jsonb) || %s::jsonb
                         WHERE gene_symbol = %s
                         """,
                         updates,
@@ -769,7 +875,8 @@ class IDEnrichmentProcessor:
                         alt_gene_ids = %s::jsonb,
                         uniprot_ids = %s,
                         ncbi_ids = %s,
-                        refseq_ids = %s
+                        refseq_ids = %s,
+                        source_references = COALESCE(source_references, '{}'::jsonb) || %s::jsonb
                     WHERE gene_symbol = %s
                     """,
                     updates,
@@ -779,7 +886,6 @@ class IDEnrichmentProcessor:
                     self.db_manager.conn.commit()
                 processed += len(updates)
                 pbar.update(len(updates))
-                
             pbar.close()
             update_progress(f"Updated {processed} gene records with alternative IDs")
             print()  # Move to next line after completion
@@ -788,39 +894,41 @@ class IDEnrichmentProcessor:
             if self.db_manager.conn:
                 self.db_manager.conn.rollback()
             logger.error(f"Error updating gene IDs: {e}")
-
+    
     def enrich_gene_ids(self) -> None:
         """Enrich gene IDs using various mapping sources."""
         update_progress("Starting gene ID enrichment...")
         
-        # Download and process NCBI gene info
-        ncbi_file = self.download_ncbi_gene_info()
-        ncbi_mappings = self.process_ncbi_gene_info(ncbi_file)
-        
-        # Download and process VGNC gene set (replacing HGNC)
-        vgnc_file = self.download_vgnc_gene_set()
-        vgnc_mappings = self.process_vgnc_gene_set(vgnc_file)
-        
-        # Download and process UniProt idmapping
+        # Download and process UniProt idmapping (prioritize this source as it's the richest)
         uniprot_file = self.download_uniprot_idmapping()
         uniprot_mappings = self.process_uniprot_idmapping(uniprot_file)
         
-        # Merge gene ID mappings
+        # Download and process VGNC gene set (for vertebrate gene nomenclature)
+        vgnc_file = self.download_vgnc_gene_set()
+        vgnc_mappings = self.process_vgnc_gene_set(vgnc_file)
+        
+        # Download and process NCBI gene info (for additional coverage)
+        ncbi_file = self.download_ncbi_gene_info()
+        ncbi_mappings = self.process_ncbi_gene_info(ncbi_file)
+        
+        # Merge gene ID mappings, prioritizing the most specific and reliable sources
         gene_id_mappings = {}
         
-        # Start with VGNC mappings as they are authoritative for vertebrates
-        for gene_symbol, mappings in vgnc_mappings.items():
+        # Start with UniProt mappings as they have the richest cross-references
+        for gene_symbol, mappings in uniprot_mappings.items():
             if gene_symbol not in gene_id_mappings:
                 gene_id_mappings[gene_symbol] = {}
             gene_id_mappings[gene_symbol].update(mappings)
         
-        # Add NCBI mappings
-        for gene_symbol, mappings in ncbi_mappings.items():
+        # Add VGNC mappings (authoritative for vertebrate gene nomenclature)
+        for gene_symbol, mappings in vgnc_mappings.items():
             if gene_symbol not in gene_id_mappings:
                 gene_id_mappings[gene_symbol] = {}
-            # Merge mappings, giving preference to existing VGNC mappings
+            # For fields that exist in both, prioritize VGNC for official nomenclature
             for key, value in mappings.items():
-                if key not in gene_id_mappings[gene_symbol] or not gene_id_mappings[gene_symbol][key]:
+                if key in ['vgnc_id', 'hgnc_id']:  # Always use VGNC for these official IDs
+                    gene_id_mappings[gene_symbol][key] = value
+                elif key not in gene_id_mappings[gene_symbol] or not gene_id_mappings[gene_symbol][key]:
                     gene_id_mappings[gene_symbol][key] = value
                 # Special handling for array fields
                 elif isinstance(value, list) and key in gene_id_mappings[gene_symbol]:
@@ -828,16 +936,35 @@ class IDEnrichmentProcessor:
                     if isinstance(gene_id_mappings[gene_symbol][key], list):
                         gene_id_mappings[gene_symbol][key] = list(set(gene_id_mappings[gene_symbol][key] + value))
         
-        # Add UniProt mappings
-        for gene_symbol, mappings in uniprot_mappings.items():
+        # Add NCBI mappings (for additional coverage)
+        for gene_symbol, mappings in ncbi_mappings.items():
             if gene_symbol not in gene_id_mappings:
                 gene_id_mappings[gene_symbol] = {}
-            # Add UniProt specific fields
+            # Merge mappings, giving lower priority to NCBI
             for key, value in mappings.items():
-                gene_id_mappings[gene_symbol][key] = value
+                if key not in gene_id_mappings[gene_symbol] or not gene_id_mappings[gene_symbol][key]:
+                    gene_id_mappings[gene_symbol][key] = value
+                # Special handling for array fields
+                elif isinstance(value, list) and key in gene_id_mappings[gene_symbol]:
+                    # Combine lists and remove duplicates
+                    if isinstance(gene_id_mappings[gene_symbol][key], list):
+                        existing = gene_id_mappings[gene_symbol][key]
+                        gene_id_mappings[gene_symbol][key] = list(set(existing + value))
         
         # Update the database with merged mappings
         self.update_gene_ids(gene_id_mappings)
+        
+        # Log mapping source statistics
+        total_genes = len(gene_id_mappings)
+        uniprot_coverage = sum(1 for gene in gene_id_mappings.values() if 'uniprot_acc' in gene and gene['uniprot_acc'])
+        vgnc_coverage = sum(1 for gene in gene_id_mappings.values() if 'vgnc_id' in gene and gene['vgnc_id'])
+        ncbi_coverage = sum(1 for gene in gene_id_mappings.values() if 'ncbi_id' in gene and gene['ncbi_id'])
+        
+        logger.info(f"ID source coverage statistics:")
+        logger.info(f"  - Total genes: {total_genes}")
+        logger.info(f"  - UniProt coverage: {uniprot_coverage} genes ({uniprot_coverage/total_genes*100:.1f}%)")
+        logger.info(f"  - VGNC coverage: {vgnc_coverage} genes ({vgnc_coverage/total_genes*100:.1f}%)")
+        logger.info(f"  - NCBI coverage: {ncbi_coverage} genes ({ncbi_coverage/total_genes*100:.1f}%)")
         
         update_progress("Gene ID enrichment completed")
         print()  # Move to next line
@@ -854,7 +981,7 @@ class IDEnrichmentProcessor:
             update_progress("No transcript ID mappings to update")
             print()  # Move to next line
             return
-            
+        
         if not self.db_manager.cursor:
             logger.error("No database connection")
             return
@@ -878,9 +1005,14 @@ class IDEnrichmentProcessor:
                 # Prepare alt_transcript_ids JSON
                 alt_ids = {}
                 
+                # Store RefSeq IDs separately to also update the refseq_ids array field
+                refseq_ids = None
+                
                 # Add RefSeq transcript IDs if available
                 if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
                     alt_ids['RefSeq'] = mappings['refseq_transcript_ids']
+                    # Also store them for the refseq_ids array field
+                    refseq_ids = mappings['refseq_transcript_ids']
                 
                 # Add Entrez transcript IDs if available
                 if 'entrez_transcript_ids' in mappings and mappings['entrez_transcript_ids']:
@@ -889,10 +1021,11 @@ class IDEnrichmentProcessor:
                 # Skip if no alternative IDs found
                 if not alt_ids:
                     continue
-                
-                # Add to updates batch
+                    
+                # Add to updates batch - now including refseq_ids
                 updates.append((
                     json.dumps(alt_ids),
+                    refseq_ids,  # This is new - pass RefSeq IDs to update the array column
                     transcript_id
                 ))
                 
@@ -901,21 +1034,16 @@ class IDEnrichmentProcessor:
                         self.db_manager.cursor,
                         """
                         UPDATE cancer_transcript_base
-                        SET alt_transcript_ids = alt_transcript_ids || %s::jsonb
+                        SET 
+                            alt_transcript_ids = alt_transcript_ids || %s::jsonb,
+                            refseq_ids = CASE WHEN %s IS NOT NULL THEN %s ELSE refseq_ids END
                         WHERE transcript_id = %s
                         """,
-                        updates,
+                        [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
                         page_size=self.batch_size
                     )
-                    if self.db_manager.conn:
-                        self.db_manager.conn.commit()
                     processed += len(updates)
-                    # Update progress bar
                     pbar.update(len(updates))
-                    if processed % (self.batch_size * 5) == 0:  # Log periodically
-                        # Temporarily hide tqdm bar, update progress, then restore bar
-                        with pbar.external_write_mode():
-                            update_progress(f"Updated {processed}/{len(transcript_id_mappings)} transcript records so far...")
                     updates = []
             
             # Process remaining updates
@@ -924,26 +1052,29 @@ class IDEnrichmentProcessor:
                     self.db_manager.cursor,
                     """
                     UPDATE cancer_transcript_base
-                    SET alt_transcript_ids = alt_transcript_ids || %s::jsonb
+                    SET 
+                        alt_transcript_ids = alt_transcript_ids || %s::jsonb,
+                        refseq_ids = CASE WHEN %s IS NOT NULL THEN %s ELSE refseq_ids END
                     WHERE transcript_id = %s
                     """,
-                    updates,
+                    [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
                     page_size=self.batch_size
                 )
-                if self.db_manager.conn:
-                    self.db_manager.conn.commit()
                 processed += len(updates)
                 pbar.update(len(updates))
                 
             pbar.close()
             update_progress(f"Updated {processed} transcript records with alternative IDs")
-            print()  # Move to next line after completion
+            print()  # Move to next line
             
+            if self.db_manager.conn:
+                self.db_manager.conn.commit()
+                
         except Exception as e:
             if self.db_manager.conn:
                 self.db_manager.conn.rollback()
             logger.error(f"Error updating transcript IDs: {e}")
-        
+
     def enrich_transcript_ids(self) -> None:
         """Enrich transcript IDs using various mapping sources."""
         update_progress("Starting transcript ID enrichment...")
@@ -976,13 +1107,13 @@ class IDEnrichmentProcessor:
         
         update_progress("Transcript ID enrichment completed")
         print()  # Move to next line
-        
+
     def run(self) -> None:
         """Run the complete ID enrichment pipeline."""
+        update_progress("Starting ID enrichment pipeline...")
+        print()  # Move to next line since this is a major step
+        
         try:
-            update_progress("Starting ID enrichment pipeline...")
-            print()  # Move to next line since this is a major step
-            
             # Ensure proper database schema
             self._ensure_db_schema()
             
@@ -1001,64 +1132,30 @@ class IDEnrichmentProcessor:
         except Exception as e:
             logger.error(f"ID enrichment failed: {e}")
             raise
-            
-    def _ensure_db_schema(self) -> None:
-        """Ensure database schema has the required columns for ID enrichment."""
-        if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
-            
-        try:
-            # Check if required columns exist
-            required_columns = [
-                'alt_transcript_ids',
-                'alt_gene_ids',
-                'uniprot_ids',
-                'ncbi_ids',
-                'refseq_ids'
-            ]
-            
-            # Get current schema version
-            self.db_manager.cursor.execute("SELECT version FROM schema_version")
-            version = self.db_manager.cursor.fetchone()
-            current_version = version[0] if version else None
-            
-            if current_version != 'v0.1.4':
-                update_progress(f"Current schema version {current_version} needs update to v0.1.4")
-                if not self.db_manager.migrate_to_version('v0.1.4'):
-                    raise RuntimeError("Failed to migrate database schema to v0.1.4")
-                update_progress("Schema successfully updated to v0.1.4")
-            else:
-                # Verify all required columns exist
-                for column in required_columns:
-                    if not self.db_manager.check_column_exists('cancer_transcript_base', column):
-                        raise RuntimeError(f"Required column '{column}' missing in schema v0.1.4")
-                
-            update_progress("Database schema validated for ID enrichment")
-        except Exception as e:
-            logger.error(f"Database schema validation failed: {e}")
-            raise
-        
+
     def verify_id_enrichment(self) -> None:
         """Verify results of ID enrichment process."""
+        
         if not self.db_manager.cursor:
             logger.error("No database connection")
             return
-            
+        
         try:
             # Count records with different ID types
             self.db_manager.cursor.execute("""
                 SELECT 
                     COUNT(*) as total_genes,
                     COUNT(CASE WHEN alt_gene_ids IS NOT NULL 
-                              AND alt_gene_ids != '{}'::jsonb THEN 1 END) as with_alt_gene_ids,
-                    COUNT(CASE WHEN uniprot_ids IS NOT NULL 
-                              AND array_length(uniprot_ids, 1) > 0 THEN 1 END) as with_uniprot,
-                    COUNT(CASE WHEN ncbi_ids IS NOT NULL 
-                              AND array_length(ncbi_ids, 1) > 0 THEN 1 END) as with_ncbi,
-                    COUNT(CASE WHEN refseq_ids IS NOT NULL 
-                              AND array_length(refseq_ids, 1) > 0 THEN 1 END) as with_refseq,
+                               AND alt_gene_ids != '{}'::jsonb THEN 1 END) as with_alt_gene_ids,
+                    COUNT(CASE WHEN array_length(uniprot_ids, 1) > 0 THEN 1 END) as with_uniprot,
+                    COUNT(CASE WHEN array_length(ncbi_ids, 1) > 0 THEN 1 END) as with_ncbi,
+                    COUNT(CASE WHEN array_length(refseq_ids, 1) > 0 THEN 1 END) as with_refseq,
                     COUNT(CASE WHEN alt_transcript_ids IS NOT NULL 
-                              AND alt_transcript_ids != '{}'::jsonb THEN 1 END) as with_alt_transcript_ids
+                               AND alt_transcript_ids != '{}'::jsonb THEN 1 END) as with_alt_transcript_ids,
+                    COUNT(CASE WHEN alt_gene_ids ? 'pdb_ids' THEN 1 END) as with_pdb,
+                    COUNT(CASE WHEN alt_gene_ids ? 'mim_ids' THEN 1 END) as with_omim,
+                    COUNT(CASE WHEN alt_gene_ids ? 'go_terms' THEN 1 END) as with_go_terms,
+                    COUNT(CASE WHEN source_references ? 'uniprot' THEN 1 END) as with_uniprot_refs
                 FROM cancer_transcript_base
             """)
             
@@ -1068,11 +1165,57 @@ class IDEnrichmentProcessor:
                 # For statistics that take multiple lines, use print instead of update_progress
                 print("\nID Enrichment Statistics:")
                 print(f"- Total genes in database: {result[0]:,}")
-                print(f"- Genes with alternative gene IDs: {result[1]:,}")
-                print(f"- Genes with UniProt IDs: {result[2]:,}")
-                print(f"- Genes with NCBI IDs: {result[3]:,}")
-                print(f"- Genes with RefSeq IDs: {result[4]:,}")
-                print(f"- Transcripts with alternative transcript IDs: {result[5]:,}")
+                print(f"- Genes with alternative gene IDs: {result[1]:,} ({result[1]/result[0]*100:.1f}%)")
+                print(f"- Genes with UniProt IDs: {result[2]:,} ({result[2]/result[0]*100:.1f}%)")
+                print(f"- Genes with NCBI IDs: {result[3]:,} ({result[3]/result[0]*100:.1f}%)")
+                print(f"- Genes with RefSeq IDs: {result[4]:,} ({result[4]/result[0]*100:.1f}%)")
+                print(f"- Transcripts with alternative transcript IDs: {result[5]:,} ({result[5]/result[0]*100:.1f}%)")
+                print(f"- Genes with PDB structure IDs: {result[6]:,} ({result[6]/result[0]*100:.1f}%)")
+                print(f"- Genes with OMIM disease IDs: {result[7]:,} ({result[7]/result[0]*100:.1f}%)")
+                print(f"- Genes with GO terms: {result[8]:,} ({result[8]/result[0]*100:.1f}%)")
+                print(f"- Genes with UniProt literature references: {result[9]:,} ({result[9]/result[0]*100:.1f}%)")
+                
+                # Check coverage redundancy between sources
+                self.db_manager.cursor.execute("""
+                    SELECT 
+                        COUNT(CASE WHEN alt_gene_ids ? 'ensembl_gene_id' AND 
+                                    alt_gene_ids ->> 'ensembl_gene_id' IS NOT NULL THEN 1 END) as ensembl_from_alt,
+                        COUNT(CASE WHEN alt_gene_ids ? 'refseq_id' AND 
+                                    alt_gene_ids ->> 'refseq_id' IS NOT NULL THEN 1 END) as refseq_from_alt
+                    FROM cancer_transcript_base
+                """)
+                
+                redundancy = self.db_manager.cursor.fetchone()
+                if redundancy:
+                    print("\nSource Redundancy Analysis:")
+                    print(f"- Genes with Ensembl IDs from alternative sources: {redundancy[0]:,}")
+                    print(f"- Genes with RefSeq IDs from alternative sources: {redundancy[1]:,}")
                 
         except Exception as e:
             logger.error(f"Error verifying ID enrichment: {e}")
+    
+    def _ensure_db_schema(self) -> None:
+        """Ensure database schema has the required columns for ID enrichment."""
+        
+        if not self.db_manager.cursor:
+            raise RuntimeError("No database connection")
+        
+        try:
+            # Check if required columns exist
+            required_columns = [
+                'alt_gene_ids',
+                'uniprot_ids',
+                'ncbi_ids',
+                'refseq_ids',
+                'alt_transcript_ids',
+            ]
+            
+            for column in required_columns:
+                if not self.db_manager.check_column_exists('cancer_transcript_base', column):
+                    raise RuntimeError(f"Required column '{column}' missing in schema v0.1.4")
+            
+            update_progress("Database schema validated for ID enrichment")
+            
+        except Exception as e:
+            logger.error(f"Database schema validation failed: {e}")
+            raise

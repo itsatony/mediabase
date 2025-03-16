@@ -102,15 +102,12 @@ def run_etl(args: argparse.Namespace) -> None:
     db_manager = get_db_manager(config)
     
     # Add robust database connection validation
-    if not db_manager or not db_manager.conn or not db_manager.cursor:
+    if not db_manager.ensure_connection():
         error_msg = "Could not establish database connection"
         console.print(f"[bold red]{error_msg}[/bold red]")
         raise RuntimeError(error_msg)
     
     try:
-        if not db_manager.cursor:
-            raise RuntimeError("Could not establish database connection")
-        
         # Handle reset_db if requested
         if args.reset_db:
             console.print("[yellow]Resetting database tables...[/yellow]")
@@ -132,6 +129,13 @@ def run_etl(args: argparse.Namespace) -> None:
                     return
         
         # Verify schema version - Fix the way we check schema version
+        # Ensure connection is valid before executing
+        if not db_manager.ensure_connection():
+            raise RuntimeError("Database connection lost when checking schema version")
+        
+        if not db_manager.cursor:
+            raise RuntimeError("Database cursor is not available")
+
         db_manager.cursor.execute("SELECT version FROM schema_version")
         version_row = db_manager.cursor.fetchone()
         current_version = version_row[0] if version_row else None

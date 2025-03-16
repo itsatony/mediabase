@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 # Third party imports
 import pandas as pd
@@ -17,6 +17,8 @@ from psycopg2.extras import execute_batch
 # Local imports
 from ..utils import validate_gene_symbol
 from ..db.database import get_db_manager
+from ..etl.publications import Publication, PublicationsProcessor
+from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +178,77 @@ class ProductClassifier:
 
         return list(classifications)
 
+    def extract_publication_references(self, gene_symbol: str) -> List[Publication]:
+        """Extract publication references from UniProt data for a gene.
+        
+        Args:
+            gene_symbol: Gene symbol to extract references for
+            
+        Returns:
+            List[Publication]: List of publication references
+        """
+        publications: List[Publication] = []
+        
+        if not validate_gene_symbol(gene_symbol) or gene_symbol not in self._data:
+            return publications
+            
+        data = self._data.get(gene_symbol, {})
+        
+        # Check references in the different sections of UniProt data
+        
+        # 1. Look in features sections
+        for feature in data.get('features', []):
+            # Features are sometimes stored as strings with embedded references
+            pmids = extract_pmids_from_text(feature)
+            
+            for pmid in pmids:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=pmid,
+                    evidence_type="UniProt feature",
+                    source_db="UniProt"
+                )
+                publications.append(publication)
+        
+        # 2. Look in citations section if present
+        for citation in data.get('citations', []):
+            if isinstance(citation, str):
+                pmids = extract_pmids_from_text(citation)
+                for pmid in pmids:
+                    publication = PublicationsProcessor.create_publication_reference(
+                        pmid=pmid,
+                        evidence_type="UniProt citation",
+                        source_db="UniProt"
+                    )
+                    publications.append(publication)
+            elif isinstance(citation, dict) and 'pmid' in citation:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=citation['pmid'],
+                    evidence_type="UniProt citation",
+                    source_db="UniProt"
+                )
+                if 'title' in citation:
+                    publication['title'] = citation['title']
+                if 'year' in citation:
+                    publication['year'] = citation['year']
+                if 'journal' in citation:
+                    publication['journal'] = citation['journal']
+                publications.append(publication)
+        
+        # 3. Look in functions section
+        for function_text in data.get('functions', []):
+            # Function descriptions may contain PMID references
+            pmids = extract_pmids_from_text(function_text)
+            
+            for pmid in pmids:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=pmid,
+                    evidence_type="UniProt function",
+                    source_db="UniProt"
+                )
+                publications.append(publication)
+        
+        return publications
+
     def _matches_patterns(self, patterns: List[str], go_terms: List[str], 
                          keywords: List[str], functions: List[str]) -> bool:
         """Check if any pattern matches in GO terms, keywords, or functions."""
@@ -221,7 +294,8 @@ class ProductClassifier:
                     gene_symbol TEXT PRIMARY KEY,
                     product_type TEXT[],
                     features JSONB,
-                    molecular_functions TEXT[]
+                    molecular_functions TEXT[],
+                    publication_refs JSONB
                 );
             """)
             
@@ -261,13 +335,18 @@ class ProductClassifier:
                             for go_term in data.get('go_terms', []):
                                 if 'molecular_function' in go_term.get('aspect', '').lower():
                                     molecular_functions.append(go_term['term'])
+                                    
+                            # Extract publication references
+                            publications = self.extract_publication_references(gene)
+                            publication_refs = [dict(pub) for pub in publications]
                             
-                            if classifications or features or molecular_functions:
+                            if classifications or features or molecular_functions or publication_refs:
                                 batch_data.append((
                                     gene,
                                     classifications,
                                     json.dumps(features) if features else '{}',
-                                    molecular_functions
+                                    molecular_functions,
+                                    json.dumps(publication_refs) if publication_refs else '[]'
                                 ))
                                 
                         except Exception as e:
@@ -278,7 +357,7 @@ class ProductClassifier:
                     if batch_data:
                         execute_batch(
                             db_manager.cursor,
-                            "INSERT INTO temp_gene_data VALUES (%s, %s, %s::jsonb, %s)",
+                            "INSERT INTO temp_gene_data VALUES (%s, %s, %s::jsonb, %s, %s::jsonb)",
                             batch_data,
                             page_size=1000
                         )
@@ -289,7 +368,12 @@ class ProductClassifier:
                             SET 
                                 product_type = tgd.product_type,
                                 features = tgd.features,
-                                molecular_functions = tgd.molecular_functions
+                                molecular_functions = tgd.molecular_functions,
+                                source_references = jsonb_set(
+                                    COALESCE(cb.source_references, '{}'::jsonb),
+                                    '{uniprot}',
+                                    COALESCE(tgd.publication_refs, '[]'::jsonb)
+                                )
                             FROM temp_gene_data tgd
                             WHERE cb.gene_symbol = tgd.gene_symbol
                         """)
@@ -307,6 +391,31 @@ class ProductClassifier:
                     continue
                     
             logger.info("Database update completed successfully")
+            
+            # Display statistics
+            db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_genes,
+                    COUNT(CASE WHEN source_references->'uniprot' IS NOT NULL 
+                              AND source_references->'uniprot' != '[]'::jsonb 
+                         THEN 1 END) as with_refs,
+                    SUM(jsonb_array_length(
+                        CASE WHEN source_references->'uniprot' IS NOT NULL 
+                             AND source_references->'uniprot' != '[]'::jsonb 
+                        THEN source_references->'uniprot' 
+                        ELSE '[]'::jsonb END
+                    )) as total_refs
+                FROM cancer_transcript_base
+                WHERE gene_type = 'protein_coding'
+            """)
+            stats = db_manager.cursor.fetchone()
+            if stats:
+                logger.info(
+                    f"Publication references extraction:\n"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Genes with UniProt references: {stats[1]:,}\n"
+                    f"- Total references extracted: {stats[2] or 0:,}"
+                )
             
         except Exception as e:
             logger.error(f"Database update failed: {e}")
@@ -336,6 +445,7 @@ class ProductProcessor:
         1. Product classification
         2. Database updates
         3. Feature extraction
+        4. Publication reference extraction
         """
         try:
             logger.info("Starting product classification pipeline...")
@@ -355,7 +465,10 @@ class ProductProcessor:
                          THEN 1 END) as classified,
                     COUNT(CASE WHEN features IS NOT NULL 
                               AND features != '{}'::jsonb 
-                         THEN 1 END) as with_features
+                         THEN 1 END) as with_features,
+                    COUNT(CASE WHEN source_references->'uniprot' IS NOT NULL 
+                              AND source_references->'uniprot' != '[]'::jsonb 
+                         THEN 1 END) as with_refs
                 FROM cancer_transcript_base
                 WHERE gene_type = 'protein_coding'
             """)
@@ -366,7 +479,8 @@ class ProductProcessor:
                     f"Classification completed:\n"
                     f"- Total genes processed: {stats[0]:,}\n"
                     f"- Genes classified: {stats[1]:,}\n"
-                    f"- Genes with features: {stats[2]:,}"
+                    f"- Genes with features: {stats[2]:,}\n"
+                    f"- Genes with UniProt references: {stats[3]:,}"
                 )
             
             logger.info("Product classification pipeline completed successfully")

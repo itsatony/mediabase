@@ -798,13 +798,19 @@ class IDEnrichmentProcessor:
                 elif 'entrez_id' in mappings and mappings['entrez_id']:
                     ncbi_ids = [mappings['entrez_id']]
                 
-                # Prepare RefSeq IDs
+                # Prepare RefSeq IDs - Ensure we're capturing all possible sources
                 refseq_ids = []
                 if 'refseq_ids' in mappings and mappings['refseq_ids']:
                     if isinstance(mappings['refseq_ids'], list):
                         refseq_ids = mappings['refseq_ids']
                     else:
                         refseq_ids = [mappings['refseq_ids']]
+                # Also check refseq_id (singular) format that might come from some sources
+                elif 'refseq_id' in mappings and mappings['refseq_id']:
+                    if isinstance(mappings['refseq_id'], list):
+                        refseq_ids = mappings['refseq_id']
+                    else:
+                        refseq_ids = [mappings['refseq_id']]
                 
                 # Prepare GO terms
                 go_terms = []
@@ -831,12 +837,12 @@ class IDEnrichmentProcessor:
                     if pubmed_refs:
                         source_references['uniprot'] = pubmed_refs
                 
-                # Add to updates batch
+                # Add to updates batch - Now including the refseq_ids array directly
                 updates.append((
                     json.dumps(alt_ids),
                     uniprot_ids if uniprot_ids else None,
                     ncbi_ids if ncbi_ids else None,
-                    refseq_ids if refseq_ids else None,
+                    refseq_ids if refseq_ids else None,  # This will now be passed correctly to the SQL
                     json.dumps(source_references) if source_references else None,
                     gene_symbol
                 ))

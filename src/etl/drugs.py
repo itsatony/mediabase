@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import hashlib
 from rich.console import Console
 from rich.table import Table
+from ..etl.publications import Publication, PublicationsProcessor
+from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +248,16 @@ class DrugProcessor:
                         'evidence_score': float(row.get('evidence_score', 1.0)),
                         'reference_ids': str(row.get('references', '')).split('|') if row.get('references') else []
                     }
+                    
+                    # Extract publication references if available
+                    references = []
+                    if 'references' in row and row['references']:
+                        references = self.extract_publication_references(row['references'])
+                    
+                    # Add publication references if found
+                    if references:
+                        processed_row['publications'] = [dict(ref) for ref in references]
+                    
                     processed_data.append(processed_row)
                 except Exception as e:
                     logger.debug(f"Error processing row: {e}\nRow data: {row}")
@@ -466,6 +478,10 @@ class DrugProcessor:
             total_processed = 0
             
             while True:
+                # Ensure cursor is still valid
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor is no longer valid")
+                    
                 # Get batch of genes with drugs
                 self.db_manager.cursor.execute("""
                     SELECT gene_symbol, drugs, pathways, go_terms
@@ -577,17 +593,21 @@ class DrugProcessor:
             logger.info(f"Drug score calculation completed. Total genes processed: {total_processed}")
             
             # Sample verification
-            self.db_manager.cursor.execute("""
-                SELECT gene_symbol, drug_scores 
-                FROM cancer_transcript_base 
-                WHERE drug_scores IS NOT NULL 
-                LIMIT 3
-            """)
-            samples = self.db_manager.cursor.fetchall()
-            if samples:
-                logger.debug("Sample drug scores:")
-                for sample in samples:
-                    logger.debug(f"{sample[0]}: {sample[1]}")
+            # Ensure cursor is still valid before executing
+            if not self.db_manager.cursor:
+                logger.warning("Cannot verify results - database cursor is no longer valid")
+            else:
+                self.db_manager.cursor.execute("""
+                    SELECT gene_symbol, drug_scores 
+                    FROM cancer_transcript_base 
+                    WHERE drug_scores IS NOT NULL 
+                    LIMIT 3
+                """)
+                samples = self.db_manager.cursor.fetchall() if self.db_manager.cursor else []
+                if samples:
+                    logger.debug("Sample drug scores:")
+                    for sample in samples:
+                        logger.debug(f"{sample[0]}: {sample[1]}")
             
         except Exception as e:
             logger.error(f"Drug score calculation failed: {e}")
@@ -652,14 +672,75 @@ class DrugProcessor:
             
             # Integrate with transcript data
             logger.info("Integrating drug data with transcripts...")
+            
+            # Ensure we have a valid database connection before proceeding
+            if not self.db_manager.ensure_connection():
+                raise RuntimeError("Database connection lost before integrating drug data")
+            
             self.integrate_drugs(drug_targets)
             
             # Calculate drug scores
             logger.info("Calculating drug interaction scores...")
             self.calculate_drug_scores()
             
+            # Verify results
+            if not self.db_manager.cursor:
+                logger.warning("Cannot verify results - database cursor is no longer valid")
+                return
+                
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN drugs != '{}'::jsonb THEN 1 END) as with_drugs,
+                    COUNT(CASE WHEN drug_scores != '{}'::jsonb THEN 1 END) as with_scores,
+                    COUNT(CASE WHEN source_references->'drugs' IS NOT NULL 
+                              AND source_references->'drugs' != '[]'::jsonb 
+                         THEN 1 END) as with_refs
+                FROM cancer_transcript_base
+            """)
+            
+            # Null-check before accessing fetchone
+            stats = self.db_manager.cursor.fetchone() if self.db_manager.cursor else None
+            if stats:
+                logger.info(
+                    f"Pipeline completed:\n"
+                    f"- Total records: {stats[0]:,}\n"
+                    f"- Records with drugs: {stats[1]:,}\n"
+                    f"- Records with drug scores: {stats[2]:,}\n"
+                    f"- Records with drug references: {stats[3]:,}"
+                )
+            
             logger.info("Drug processing pipeline completed successfully")
             
         except Exception as e:
             logger.error(f"Drug processing pipeline failed: {e}")
             raise
+
+    def extract_publication_references(self, drug_references: str) -> List[Publication]:
+        """Extract publication references from drug evidence data.
+        
+        Args:
+            drug_references: References field from drug data
+            
+        Returns:
+            List[Publication]: List of publication references
+        """
+        publications: List[Publication] = []
+        
+        # Skip empty references
+        if not drug_references:
+            return publications
+            
+        # Extract PMIDs from reference text
+        pmids = extract_pmids_from_text(drug_references)
+        
+        # Create publication references for each PMID
+        for pmid in pmids:
+            publication = PublicationsProcessor.create_publication_reference(
+                pmid=pmid,
+                evidence_type="DrugCentral",
+                source_db="DrugCentral"
+            )
+            publications.append(publication)
+            
+        return publications

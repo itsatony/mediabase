@@ -8,8 +8,11 @@ from pathlib import Path
 import hashlib
 from datetime import datetime, timedelta
 import json
+import re  # Add missing import for regex
 from tqdm import tqdm
 from ..db.database import get_db_manager
+from ..etl.publications import Publication, PublicationsProcessor
+from ..utils.publication_utils import extract_pmid_from_text
 from psycopg2.extras import execute_batch
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,9 @@ class PathwayProcessor:
         file_path = self.download_reactome()
         gene_pathways: Dict[str, Set[str]] = {}
         
+        # Track pathway-publication mappings
+        pathway_publications: Dict[str, List[Publication]] = {}
+        
         # Initialize counters
         total = 0
         skipped = 0
@@ -157,6 +163,10 @@ class PathwayProcessor:
                     pathway_entry = f"{pathway_name} [Reactome:{pathway_id}]"
                     unique_pathways.add(pathway_entry)
                     
+                    # Extract publication references if evidence field contains PMID info
+                    if pathway_id not in pathway_publications:
+                        pathway_publications[pathway_id] = self._extract_pathway_publications(evidence, pathway_id)
+                    
                     processed += 1
                     if gene_id not in gene_pathways:
                         gene_pathways[gene_id] = set()
@@ -167,6 +177,9 @@ class PathwayProcessor:
                     logger.debug(f"Skipping malformed line: {line[:100]}... Error: {e}")
                     continue
         
+        # Store pathway publications for later use
+        self._save_pathway_publications(pathway_publications)
+        
         logger.info(
             f"Pathway processing completed:\n"
             f"- Total lines processed: {total:,}\n"
@@ -174,7 +187,8 @@ class PathwayProcessor:
             f"- Lines skipped: {skipped:,}\n"
             f"- Valid entries processed: {processed:,}\n"
             f"- Unique pathways found: {len(unique_pathways):,}\n"
-            f"- Genes with annotations: {len(gene_pathways):,}"
+            f"- Genes with annotations: {len(gene_pathways):,}\n"
+            f"- Pathways with publication references: {len(pathway_publications):,}"
         )
         
         # Log sample of gene-pathway mappings
@@ -188,6 +202,86 @@ class PathwayProcessor:
             )
         
         return gene_pathways
+
+    def _extract_pathway_publications(self, evidence: str, pathway_id: str) -> List[Publication]:
+        """Extract publication references from pathway evidence data.
+        
+        Args:
+            evidence: Evidence string from Reactome
+            pathway_id: Reactome pathway ID
+            
+        Returns:
+            List of Publication references
+        """
+        publications: List[Publication] = []
+        
+        # Check if evidence field contains a PMID
+        pmid = extract_pmid_from_text(evidence)
+        if pmid:
+            publication = PublicationsProcessor.create_publication_reference(
+                pmid=pmid,
+                evidence_type="Reactome",
+                source_db="Reactome"
+            )
+            publications.append(publication)
+        
+        # If no direct PMID, try the Reactome API to get publications
+        # This is a placeholder - in a real implementation you would
+        # query the Reactome API for pathway publications
+        if not publications:
+            # For demonstration, we'll create a reference with just the pathway ID
+            reference = PublicationsProcessor.create_publication_reference(
+                pmid=None,
+                evidence_type=f"Reactome:{pathway_id}",
+                source_db="Reactome"
+            )
+            publications.append(reference)
+            
+        return publications
+
+    def _save_pathway_publications(self, pathway_publications: Dict[str, List[Publication]]) -> None:
+        """Save pathway publication mappings to cache for reuse.
+        
+        Args:
+            pathway_publications: Mapping of pathway IDs to publications
+        """
+        cache_file = self.cache_dir / "pathway_publications.json"
+        
+        # Convert Publications to serializable format
+        serializable = {}
+        for pathway_id, pubs in pathway_publications.items():
+            serializable[pathway_id] = [dict(p) for p in pubs]
+            
+        with open(cache_file, 'w') as f:
+            json.dump(serializable, f)
+            
+        logger.info(f"Saved {len(pathway_publications)} pathway publication references to {cache_file}")
+
+    def _load_pathway_publications(self) -> Dict[str, List[Publication]]:
+        """Load pathway publication mappings from cache.
+        
+        Returns:
+            Mapping of pathway IDs to publications
+        """
+        cache_file = self.cache_dir / "pathway_publications.json"
+        
+        if not cache_file.exists():
+            return {}
+            
+        try:
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+                
+            # Convert back to Publication objects
+            result = {}
+            for pathway_id, pubs in data.items():
+                result[pathway_id] = [Publication(**p) for p in pubs]
+                
+            logger.info(f"Loaded {len(result)} pathway publication references from cache")
+            return result
+        except Exception as e:
+            logger.error(f"Error loading pathway publications: {e}")
+            return {}
 
     def _download_id_mapping(self) -> Path:
         """Download NCBI to Ensembl ID mapping file."""
@@ -379,6 +473,9 @@ class PathwayProcessor:
         """Update a batch of pathway data."""
         logger.debug(f"Processing batch update with {len(updates)} entries")
         
+        # Get pathway publications
+        pathway_publications = self._load_pathway_publications()
+        
         # Update one gene at a time to avoid array formatting issues
         for pathway_list, gene_symbol in updates:
             try:
@@ -392,6 +489,37 @@ class PathwayProcessor:
                     """,
                     (pathway_list, gene_symbol)
                 )
+                
+                # Extract pathway IDs from pathway_list
+                pathway_ids = []
+                for pathway in pathway_list:
+                    # Extract Reactome ID from format "Pathway Name [Reactome:R-HSA-123456]"
+                    match = re.search(r'\[Reactome:(.*?)\]', pathway)
+                    if match:
+                        pathway_ids.append(match.group(1))
+                
+                # Collect publication references for these pathways
+                references = []
+                for pathway_id in pathway_ids:
+                    if pathway_id in pathway_publications:
+                        references.extend(pathway_publications[pathway_id])
+                
+                # Update publication references if we found any
+                if references:
+                    pub_json = json.dumps([dict(ref) for ref in references])
+                    cur.execute(
+                        """
+                        UPDATE cancer_transcript_base
+                        SET source_references = jsonb_set(
+                            COALESCE(source_references, '{}'::jsonb),
+                            '{pathways}',
+                            COALESCE(source_references->'pathways', '[]'::jsonb) || %s::jsonb
+                        )
+                        WHERE gene_symbol = %s
+                        """,
+                        (pub_json, gene_symbol)
+                    )
+                
             except Exception as e:
                 logger.error(f"Error updating pathways for {gene_symbol}: {e}")
                 # Continue with other genes

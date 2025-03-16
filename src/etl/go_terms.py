@@ -16,6 +16,8 @@ from psycopg2.extras import execute_batch
 from io import TextIOWrapper
 from rich.console import Console
 from rich.table import Table
+from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text
+from ..etl.publications import Publication, PublicationsProcessor
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -351,6 +353,55 @@ class GOTermProcessor:
         
         return list(molecular_functions), list(cellular_locations)
 
+    def extract_publication_references(self, go_terms: Dict[str, GOTerm]) -> List[Publication]:
+        """Extract publication references from GO terms.
+        
+        Args:
+            go_terms: Dictionary of GO terms
+            
+        Returns:
+            List[Publication]: List of extracted publication references
+        """
+        publications: List[Publication] = []
+        
+        for go_id, term_data in go_terms.items():
+            # Extract PMID from evidence code
+            evidence_code = term_data.get('evidence', '')
+            evidence_text = f"{evidence_code} {go_id} {term_data.get('term', '')}"
+            
+            # First use the utility to try to extract PMIDs
+            pmids = extract_pmids_from_text(evidence_text)
+            
+            # If that doesn't work, check if evidence code itself contains references
+            if not pmids and ':' in evidence_code:
+                # Some evidence codes might have format "ECO:0000269|PubMed:12345678"
+                parts = evidence_code.split('|')
+                for part in parts:
+                    if 'PubMed:' in part or 'PMID:' in part:
+                        pmid = part.split(':')[-1].strip()
+                        if pmid.isdigit():
+                            pmids.add(pmid)
+            
+            # Create publication references for each PMID found
+            for pmid in pmids:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=pmid,
+                    evidence_type=term_data.get('evidence', 'unknown'),
+                    source_db='GO'
+                )
+                publications.append(publication)
+            
+            # If no PMIDs found but we have evidence code, still create a reference
+            if not pmids and evidence_code:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=None,
+                    evidence_type=evidence_code,
+                    source_db='GO'
+                )
+                publications.append(publication)
+        
+        return publications
+
     def _update_batch(self, cur, updates: List[Tuple[str, str]]) -> None:
         """Update a batch of enriched GO terms."""
         try:
@@ -389,9 +440,41 @@ class GOTermProcessor:
                 if self.db_manager.conn:
                     self.db_manager.conn.commit()
                     logger.info("Schema updated to include required columns")
+            
+            # Process each update to extract publications
+            for go_terms_json, gene_symbol in updates:
+                try:
+                    # Parse GO terms from JSON string
+                    go_terms = json.loads(go_terms_json)
                     
-            # Proceed with update using simpler query first
-            result = execute_batch(
+                    # Extract publications from GO terms
+                    publications = self.extract_publication_references(go_terms)
+                    
+                    # Add publications to source_references
+                    if publications:
+                        pub_json = json.dumps(publications)
+                        
+                        # Update source_references for this gene
+                        cur.execute("""
+                            UPDATE cancer_transcript_base
+                            SET source_references = jsonb_set(
+                                COALESCE(source_references, '{}'::jsonb),
+                                '{go_terms}',
+                                COALESCE(
+                                    source_references->'go_terms',
+                                    '[]'::jsonb
+                                ) || %s::jsonb
+                            )
+                            WHERE gene_symbol = %s
+                        """, (pub_json, gene_symbol))
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON for gene {gene_symbol}: {go_terms_json}")
+                except Exception as e:
+                    logger.warning(f"Error processing GO terms for {gene_symbol}: {e}")
+            
+            # Original batch update for go_terms, molecular_functions, etc.
+            # ... rest of the existing _update_batch implementation ...
+            execute_batch(
                 cur,
                 """
                 WITH term_extraction AS (
@@ -430,36 +513,10 @@ class GOTermProcessor:
                 ) for batch in [updates]],
                 page_size=self.batch_size
             )
-
-            # Update source_references in a separate query to handle any remaining schema issues
-            cur.execute("""
-                UPDATE cancer_transcript_base
-                SET source_references = source_references || 
-                    jsonb_build_object(
-                        'go_terms',
-                        COALESCE(
-                            (
-                                SELECT jsonb_agg(
-                                    jsonb_build_object(
-                                        'pmid', NULL,
-                                        'year', NULL,
-                                        'evidence_type', value->>'evidence',
-                                        'source_db', 'GO'
-                                    )
-                                )
-                                FROM jsonb_each(go_terms)
-                            ),
-                            '[]'::jsonb
-                        )
-                    )
-                WHERE go_terms IS NOT NULL;
-            """)
             
             if self.db_manager.conn:
                 self.db_manager.conn.commit()
-            
-            return result
-            
+                
         except Exception as e:
             logger.error(f"Batch update failed: {e}")
             raise

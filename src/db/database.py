@@ -557,6 +557,42 @@ class DatabaseManager:
         
         console.print(table)
 
+    def ensure_connection(self) -> bool:
+        """Ensure database connection is active and reconnect if needed.
+        
+        Returns:
+            bool: True if a valid connection is available, False otherwise
+        """
+        try:
+            # Check if connection exists
+            if not self.conn:
+                logger.info("No connection exists. Creating new connection.")
+                return self.connect()
+            
+            # Check if connection is closed
+            if self.conn.closed:
+                logger.info("Connection is closed. Reconnecting...")
+                return self.connect()
+            
+            # Test if connection is still valid
+            try:
+                # Create a new cursor if needed
+                if not self.cursor or self.cursor.closed:
+                    self.cursor = self.conn.cursor()
+                
+                # Simple query to test connection
+                self.cursor.execute("SELECT 1")
+                result = self.cursor.fetchone()
+                return bool(result and result[0] == 1)
+            except psycopg2.Error as e:
+                logger.warning(f"Connection test failed: {e}. Reconnecting...")
+                self.close()  # Close the invalid connection
+                return self.connect()  # Try to reconnect
+                
+        except Exception as e:
+            logger.error(f"Error ensuring database connection: {e}")
+            return False
+    
     def execute_safely(self, query: str, params: Optional[Tuple] = None, 
                        commit: bool = True) -> Optional[pg_cursor]:
         """Execute a query safely with proper error handling and transaction management.
@@ -569,20 +605,25 @@ class DatabaseManager:
         Returns:
             Optional[pg_cursor]: Database cursor or None if operation failed
         """
-        if not self.conn or not self.cursor:
-            logger.error("No database connection available")
+        # Ensure we have a valid connection first
+        if not self.ensure_connection():
+            logger.error("Failed to establish database connection")
             return None
             
         try:
+            if not self.cursor:
+                logger.error("Cursor is None, cannot execute query.")
+                return None
+
             if params:
-                result = self.cursor.execute(query, params)
+                self.cursor.execute(query, params)
             else:
-                result = self.cursor.execute(query)
+                self.cursor.execute(query)
                 
             if commit and self.conn:
                 self.conn.commit()
                 
-            return result
+            return self.cursor
         except Exception as e:
             logger.error(f"Query execution failed: {e}")
             if self.conn:

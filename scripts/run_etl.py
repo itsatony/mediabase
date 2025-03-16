@@ -16,13 +16,13 @@ from src.etl.transcript import TranscriptProcessor
 from src.etl.products import ProductProcessor
 from src.etl.pathways import PathwayProcessor
 from src.etl.drugs import DrugProcessor
-from src.db.database import get_db_manager
+from src.db.database import get_db_manager  # This should now be properly recognized
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
+    format="%(asctime)s - %(message)s",
+    datefmt="%H:%M:%S",  # 24h format with hours, minutes, seconds
     handlers=[RichHandler(rich_tracebacks=True)]
 )
 logger = logging.getLogger("master_etl")
@@ -39,7 +39,11 @@ def load_config() -> Dict[str, Any]:
         'dbname':     os.getenv('MB_POSTGRES_NAME', 'mediabase'),
         'user':       os.getenv('MB_POSTGRES_USER', 'postgres'),
         'password':   os.getenv('MB_POSTGRES_PASSWORD', 'postgres'),
-        'gtf_url':    os.getenv('MB_GENCODE_GTF_URL')
+        'gtf_url':    os.getenv('MB_GENCODE_GTF_URL'),
+        'go_obo_url': os.getenv('MB_GO_OBO_URL'),
+        'go_basic_url': os.getenv('MB_GO_BASIC_URL'),
+        'reactome_url': os.getenv('MB_REACTOME_DOWNLOAD_URL'),
+        'drugcentral_url': os.getenv('MB_DRUGCENTRAL_DATA_URL')
     }
 
 def run_etl(args: argparse.Namespace) -> None:
@@ -58,17 +62,26 @@ def run_etl(args: argparse.Namespace) -> None:
         'cache_dir': os.getenv('MB_CACHE_DIR', '/tmp/mediabase/cache'),
         'force_download': args.force_download,
         
+        # New: Transcript limit configuration
+        'limit_transcripts': args.limit_transcripts,
+        
         # Data source URLs
         'gtf_url': os.getenv('MB_GENCODE_GTF_URL', 'ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.annotation.gtf.gz'),
-        'go_obo_url': 'http://purl.obolibrary.org/obo/go.obo',
-        'go_basic_url': 'http://purl.obolibrary.org/obo/go/go-basic.obo',
-        'reactome_url': os.getenv('MB_REACTOME_DOWNLOAD_URL', 'https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt'),
-        'drugcentral_url': os.getenv('MB_DRUGCENTRAL_DATA_URL', 'https://unmtid-shinyapps.net/download/DrugCentral/20231006/drugcentral-pgdump_20231006.sql.gz')
+        'uniprot_idmapping_selected_url': os.getenv('MB_UNIPROT_IDMAPPING_SELECTED_URL', 'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz'),
+        'ncbi_gene_info_url': os.getenv('MB_NCBI_GENE_INFO_URL', 'https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz'),
+        'vgnc_gene_set_url': os.getenv('MB_VGNC_GENE_SET_URL', 'https://ftp.ebi.ac.uk/pub/databases/genenames/vgnc/json/all/all_vgnc_gene_set_All.json'),
+        'ensembl_refseq_url': os.getenv('MB_ENSEMBL_REFSEQ_URL', 'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz'),
+        'ensembl_entrez_url': os.getenv('MB_ENSEMBL_ENTREZ_URL', 'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.entrez.tsv.gz'),
+        'go_obo_url': os.getenv('MB_GO_OBO_URL', 'http://purl.obolibrary.org/obo/go.obo'),
+        'go_basic_url': os.getenv('MB_GO_BASIC_URL', 'http://purl.obolibrary.org/obo/go/go-basic.obo'),
+        'drugcentral_url': os.getenv('MB_DRUGCENTRAL_DATA_URL', 'https://unmtid-shinyapps.net/download/DrugCentral/20231006/drugcentral-pgdump_20231006.sql.gz'),
+        'reactome_url': os.getenv('MB_REACTOME_DOWNLOAD_URL', 'https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt')
     }
 
     # Validate required URLs
     required_urls = {
         'transcript': ['gtf_url'],
+        'id_enrichment': ['ncbi_gene_info_url', 'vgnc_gene_set_url', 'uniprot_idmapping_selected_url', 'ensembl_refseq_url', 'ensembl_entrez_url'],
         'go_terms': ['go_obo_url', 'go_basic_url'],
         'pathways': ['reactome_url'],
         'drugs': ['drugcentral_url']
@@ -88,14 +101,40 @@ def run_etl(args: argparse.Namespace) -> None:
     
     db_manager = get_db_manager(config)
     
+    # Add robust database connection validation
+    if not db_manager or not db_manager.conn or not db_manager.cursor:
+        error_msg = "Could not establish database connection"
+        console.print(f"[bold red]{error_msg}[/bold red]")
+        raise RuntimeError(error_msg)
+    
     try:
         if not db_manager.cursor:
             raise RuntimeError("Could not establish database connection")
         
-        # Verify schema version
-        version_query = db_manager.cursor.execute("SELECT version FROM schema_version")
-        version = version_query.fetchone() if version_query else None
-        current_version = version[0] if version else None
+        # Handle reset_db if requested
+        if args.reset_db:
+            console.print("[yellow]Resetting database tables...[/yellow]")
+            if not db_manager.reset():
+                raise RuntimeError("Database reset failed")
+            console.print("[green]Database tables reset successful[/green]")
+        
+        # Transcript limit warning if not resetting
+        if args.limit_transcripts and not args.reset_db:
+            console.print(
+                "[bold yellow]WARNING: Using --limit-transcripts without --reset-db may result "
+                "in inconsistent data. Consider using them together.[/bold yellow]"
+            )
+            if not args.force:
+                if not console.input(
+                    "\nContinue anyway? (y/n): "
+                ).lower().startswith('y'):
+                    console.print("[yellow]Aborting.[/yellow]")
+                    return
+        
+        # Verify schema version - Fix the way we check schema version
+        db_manager.cursor.execute("SELECT version FROM schema_version")
+        version_row = db_manager.cursor.fetchone()
+        current_version = version_row[0] if version_row else None
         
         if current_version != 'v0.1.4':
             console.print("[yellow]Migrating database schema to v0.1.4...[/yellow]")
@@ -104,11 +143,12 @@ def run_etl(args: argparse.Namespace) -> None:
             
         # Run modules in correct order to handle dependencies
         module_sequence = {
-            'transcript': 1,  # Base data must come first
-            'products': 2,    # Products need transcript data
-            'go_terms': 3,    # GO terms can enhance product classification
-            'pathways': 4,    # Pathways may reference products and GO terms
-            'drugs': 5        # Drugs need all previous data
+            'transcript': 1,    # Base data must come first
+            'id_enrichment': 2, # ID enrichment should happen right after transcript loading
+            'products': 3,      # Products need transcript data and IDs
+            'go_terms': 4,      # GO terms can enhance product classification
+            'pathways': 5,      # Pathways may reference products and GO terms
+            'drugs': 6          # Drugs need all previous data
         }
         
         # Sort modules if running multiple
@@ -125,6 +165,13 @@ def run_etl(args: argparse.Namespace) -> None:
                 transcript_processor = TranscriptProcessor(config)
                 transcript_processor.run()
                 console.print("[green]Transcript ETL completed[/green]")
+            
+            elif module == 'id_enrichment':
+                console.print("[bold green]Starting ID enrichment...[/bold green]")
+                from src.etl.id_enrichment import IDEnrichmentProcessor
+                id_processor = IDEnrichmentProcessor(config)
+                id_processor.run()
+                console.print("[green]ID enrichment completed[/green]")
             
             elif module == 'products':
                 console.print("[bold green]Running product classification...[/bold green]")
@@ -172,6 +219,14 @@ def run_etl(args: argparse.Namespace) -> None:
                     f"Records with references: {result[1]:,}\n"
                     f"Records with alternative IDs: {result[2]:,}"
                 )
+                
+                # Print note about transcript limit if it was used
+                if args.limit_transcripts and result[0] < args.limit_transcripts:
+                    console.print(
+                        f"[yellow]Note: Requested limit was {args.limit_transcripts:,} transcripts "
+                        f"but only {result[0]:,} were processed. "
+                        f"This may be due to filtering or limited data in the source file.[/yellow]"
+                    )
         
     except Exception as e:
         console.print(f"[bold red]ETL pipeline failed: {str(e)}[/bold red]")
@@ -186,7 +241,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Run ETL pipeline')
     parser.add_argument(
         '--module', 
-        choices=['all', 'transcript', 'products', 'go_terms', 'pathways', 'drugs'],
+        choices=['all', 'transcript', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs'],
         default='all',
         help='ETL module to run'
     )
@@ -206,6 +261,22 @@ def main() -> None:
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
         default='INFO',
         help='Set logging level'
+    )
+    # New arguments for transcript limiting and database reset
+    parser.add_argument(
+        '--limit-transcripts',
+        type=int,
+        help='Limit the number of transcripts to process (useful for testing)'
+    )
+    parser.add_argument(
+        '--reset-db',
+        action='store_true',
+        help='Reset the database before running the ETL pipeline'
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force operation without confirmation prompts'
     )
     
     args = parser.parse_args()

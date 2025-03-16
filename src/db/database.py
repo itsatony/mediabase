@@ -132,6 +132,7 @@ class DatabaseManager:
         # Store other config options separately
         self.config = {k: v for k, v in config.items() 
                       if k not in self.db_config}
+        self.print_config()
         self.conn: Optional[pg_connection] = None
         self.cursor: Optional[pg_cursor] = None
         self._register_adapters()
@@ -178,6 +179,7 @@ class DatabaseManager:
 
     def create_database(self) -> bool:
         """Create the database if it doesn't exist."""
+        dbname = self.config.get('dbname', 'mediabase')
         try:
             if not self.cursor:
                 if not self.connect():
@@ -186,7 +188,7 @@ class DatabaseManager:
                 return False
                 
             self.cursor.execute(
-                f"CREATE DATABASE {self.config['dbname']}"
+                f"CREATE DATABASE {dbname}"
             )
             return True
         except psycopg2.Error as e:
@@ -195,6 +197,7 @@ class DatabaseManager:
 
     def drop_database(self) -> bool:
         """Drop the database with connection handling."""
+        dbname = self.config.get('dbname', 'mediabase')
         try:
             # Connect to postgres database
             if not self.connect() or not self.cursor:
@@ -205,14 +208,14 @@ class DatabaseManager:
                 SELECT pg_terminate_backend(pid) 
                 FROM pg_stat_activity 
                 WHERE datname = %s AND pid != pg_backend_pid()
-            """, (self.config['dbname'],))
+            """, (dbname,))
             
             # Small delay to ensure connections are closed
             import time
             time.sleep(1)
             
             # Drop the database
-            self.cursor.execute(f"DROP DATABASE IF EXISTS {self.config['dbname']}")
+            self.cursor.execute(f"DROP DATABASE IF EXISTS {dbname}")
             return True
             
         except psycopg2.Error as e:
@@ -316,15 +319,75 @@ class DatabaseManager:
             return {"row_count": 0, "size_mb": 0}
 
     def reset(self) -> bool:
-        """Reset database to latest schema version."""
+        """Reset database tables according to the latest schema version.
+        
+        Instead of dropping and recreating the entire database, this method:
+        1. Drops the tables if they exist
+        2. Creates the schema version table
+        3. Applies the latest schema version to create tables
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            if self.drop_database() and self.create_database():
-                if self.connect(self.config['dbname']):
-                    latest_version = list(SCHEMA_VERSIONS.keys())[-1]
-                    return self.migrate_to_version(latest_version)
-            return False
+            # Ensure we have a valid connection
+            if not self.conn or self.conn.closed:
+                if not self.connect():
+                    return False
+            
+            if not self.cursor:
+                logger.error("No database cursor available")
+                return False
+            
+            # Drop tables if they exist
+            logger.info("Dropping existing tables...")
+            try:
+                self.cursor.execute("""
+                    DROP TABLE IF EXISTS cancer_transcript_base CASCADE;
+                    DROP TABLE IF EXISTS schema_version CASCADE;
+                """)
+                if self.conn:  # Add check before accessing commit
+                    self.conn.commit()
+            except Exception as e:
+                logger.error(f"Error dropping tables: {e}")
+                if self.conn:  # Add check before accessing rollback
+                    self.conn.rollback()
+                # Continue anyway - we'll try to create the tables
+                
+            # Create schema_version table
+            logger.info("Creating schema_version table")
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    id SERIAL PRIMARY KEY,
+                    version TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            if self.conn:  # Add check before accessing commit
+                self.conn.commit()
+            
+            # Apply latest schema version
+            latest_version = list(SCHEMA_VERSIONS.keys())[-1]
+            logger.info(f"Applying schema version {latest_version}")
+            
+            # Apply all schema versions in order
+            for version in SCHEMA_VERSIONS.keys():
+                logger.info(f"Applying schema version {version}")
+                self.cursor.execute(SCHEMA_VERSIONS[version])
+                self.cursor.execute(
+                    "INSERT INTO schema_version (version) VALUES (%s)",
+                    (version,)
+                )
+                if self.conn:  # Add check before accessing commit
+                    self.conn.commit()
+            
+            logger.info("Database tables reset successfully")
+            return True
+            
         except Exception as e:
             logger.error(f"Reset failed: {e}")
+            if self.conn:  # Add check before accessing rollback
+                self.conn.rollback()
             return False
 
     def display_status(self) -> None:
@@ -351,12 +414,13 @@ class DatabaseManager:
 
     def check_db_exists(self) -> bool:
         """Check if database exists."""
+        dbname = self.config.get('dbname', 'mediabase')
         try:
             if self.cursor is None:
                 return False
             self.cursor.execute(
                 "SELECT 1 FROM pg_database WHERE datname = %s",
-                (self.config['dbname'],)
+                (dbname,)
             )
             return bool(self.cursor.fetchone())
         except psycopg2.Error as e:
@@ -411,6 +475,11 @@ class DatabaseManager:
 
     def restore_database(self, input_file: str) -> bool:
         """Restore database from a dump file."""
+        dbname = self.config.get('dbname', 'mediabase')
+        dbhost = self.config.get('host', 'localhost')
+        dbport = self.config.get('port', 5432)
+        dbuser = self.config.get('user', 'postgres')
+        dbpass = self.config.get('password', 'postgres')
         try:
             # First ensure we're starting fresh
             if not self.connect():
@@ -422,14 +491,14 @@ class DatabaseManager:
             import subprocess
             
             env = os.environ.copy()
-            env['PGPASSWORD'] = self.config['password']
+            env['PGPASSWORD'] = dbpass
             
             cmd = [
                 'pg_restore',
-                '-h', self.config['host'],
-                '-p', str(self.config['port']),
-                '-U', self.config['user'],
-                '-d', self.config['dbname'],
+                '-h', dbhost,
+                '-p', str(dbport),
+                '-U', dbuser,
+                '-d', dbname,
                 input_file
             ]
             
@@ -476,6 +545,50 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error checking column existence: {e}")
             return False
+
+    def print_config(self) -> None:
+        """Print database configuration."""
+        table = Table(title="Database Configuration")
+        table.add_column("Parameter")
+        table.add_column("Value")
+        
+        for key, value in self.db_config.items():
+            table.add_row(key, str(value))
+        
+        console.print(table)
+
+    def execute_safely(self, query: str, params: Optional[Tuple] = None, 
+                       commit: bool = True) -> Optional[pg_cursor]:
+        """Execute a query safely with proper error handling and transaction management.
+        
+        Args:
+            query: SQL query to execute
+            params: Optional parameters for the query
+            commit: Whether to commit after execution
+            
+        Returns:
+            Optional[pg_cursor]: Database cursor or None if operation failed
+        """
+        if not self.conn or not self.cursor:
+            logger.error("No database connection available")
+            return None
+            
+        try:
+            if params:
+                result = self.cursor.execute(query, params)
+            else:
+                result = self.cursor.execute(query)
+                
+            if commit and self.conn:
+                self.conn.commit()
+                
+            return result
+        except Exception as e:
+            logger.error(f"Query execution failed: {e}")
+            if self.conn:
+                self.conn.rollback()
+            return None
+
 
 def get_db_manager(config: Dict[str, Any]) -> DatabaseManager:
     """Create and initialize a database manager instance.

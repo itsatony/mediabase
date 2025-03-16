@@ -5,13 +5,19 @@ import aiohttp
 import gzip
 import json
 import logging
+from rich.logging import RichHandler
 import os
 from pathlib import Path
 from rich.progress import Progress, DownloadColumn, TransferSpeedColumn
 from rich.progress import TextColumn, BarColumn, TimeRemainingColumn
 from rich.console import Console
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    datefmt="%H:%M:%S",  # 24h format with hours, minutes, seconds
+    handlers=[RichHandler(rich_tracebacks=True)]
+)
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -49,7 +55,7 @@ def process_dat_file(dat_path: Path, json_path: Path, progress: Progress) -> Non
             for line in f:
                 if line.startswith('ID '):
                     if current_entry and 'gene_symbol' in current_entry:
-                        processed_data[current_entry['gene_symbol']] = current_entry
+                        processed_data[current_entry.get('gene_symbol')] = current_entry
                         entries_processed += 1
                         if entries_processed % 1000 == 0:
                             progress.update(task_id, description=f"Processed {entries_processed} entries...")
@@ -66,7 +72,7 @@ def process_dat_file(dat_path: Path, json_path: Path, progress: Progress) -> Non
                         go_term = go_info.split(';')[1].strip() if len(go_info.split(';')) > 1 else ""
                         if 'go_terms' not in current_entry:
                             current_entry['go_terms'] = []
-                        current_entry['go_terms'].append({
+                        current_entry.get('go_terms', []).append({
                             'id': go_id,
                             'term': go_term
                         })
@@ -75,20 +81,20 @@ def process_dat_file(dat_path: Path, json_path: Path, progress: Progress) -> Non
                     if any(t in feature_line for t in ['DOMAIN', 'DNA_BIND', 'BINDING', 'ACTIVE']):
                         if 'features' not in current_entry:
                             current_entry['features'] = []
-                        current_entry['features'].append(feature_line)
+                        current_entry.get('features', []).append(feature_line)
                 elif line.startswith('KW '):
                     keywords = line[5:].strip().split(';')
                     if 'keywords' not in current_entry:
                         current_entry['keywords'] = []
-                    current_entry['keywords'].extend([k.strip() for k in keywords if k.strip()])
+                    current_entry.get('keywords', []).extend([k.strip() for k in keywords if k.strip()])
                 elif line.startswith('CC   -!- FUNCTION:'):
                     if 'functions' not in current_entry:
                         current_entry['functions'] = []
-                    current_entry['functions'].append(line[17:].strip())
+                    current_entry.get('functions', []).append(line[17:].strip())
 
             # Don't forget the last entry
             if current_entry and 'gene_symbol' in current_entry:
-                processed_data[current_entry['gene_symbol']] = current_entry
+                processed_data[current_entry.get('gene_symbol')] = current_entry
                 entries_processed += 1
 
     except gzip.BadGzipFile:

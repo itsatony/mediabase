@@ -5,6 +5,8 @@ import logging
 import gzip
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -17,6 +19,10 @@ from ..utils import validate_gene_symbol
 from ..db.database import get_db_manager
 
 logger = logging.getLogger(__name__)
+
+# Constants
+DEFAULT_BATCH_SIZE = 100
+DEFAULT_CACHE_DIR = '/tmp/mediabase/cache'
 
 class ProductClassifier:
     """Classifies gene products based on UniProt data."""
@@ -58,13 +64,13 @@ class ProductClassifier:
         self.config = config or {}
         
         # Cache directory setup
-        self.cache_dir = Path(os.getenv('MB_CACHE_DIR', '/tmp/mediabase/cache'))
+        self.cache_dir = Path(os.getenv('MB_CACHE_DIR', DEFAULT_CACHE_DIR))
         self.uniprot_dir = self.cache_dir / 'uniprot'
         self.json_path = self.uniprot_dir / "uniprot_processed.json.gz"
         
         # Database configuration - either from config or environment
         if self.config.get('db'):
-            self.db_config = self.config['db']
+            self.db_config = self.config.get('db', {})
         else:
             self.db_config = {
                 'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
@@ -74,16 +80,73 @@ class ProductClassifier:
                 'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
             }
         
-        # Load processed data
+        # Load processed data - with auto-download if missing
         if not self.json_path.exists():
-            raise FileNotFoundError(
-                f"UniProt data not found at {self.json_path}. "
-                "Run download_uniprot_data.py first."
+            logger.info(f"UniProt data not found at {self.json_path}. Attempting to download...")
+            try:
+                self._download_uniprot_data()
+            except Exception as e:
+                logger.error(f"Failed to download UniProt data: {str(e)}")
+                raise FileNotFoundError(
+                    f"UniProt data not found at {self.json_path} and automatic download failed. "
+                    f"Error: {str(e)}"
+                ) from e
+                
+        try:
+            with gzip.open(self.json_path, 'rt') as f:
+                self._data = json.load(f)
+                logger.info(f"Loaded {len(self._data)} UniProt entries")
+        except Exception as e:
+            logger.error(f"Failed to load UniProt data: {str(e)}")
+            raise RuntimeError(f"Failed to load UniProt data: {str(e)}") from e
+
+    def _download_uniprot_data(self) -> None:
+        """Download and process UniProt data using the existing download script.
+        
+        Uses the original download_uniprot_data.py script to maintain compatibility.
+        
+        Raises:
+            FileNotFoundError: If download script cannot be found
+            RuntimeError: If download process fails
+        """
+        # Ensure the uniprot directory exists
+        self.uniprot_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # Find the download script path
+            script_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
+            script_path = script_dir / "download_uniprot_data.py"
+            
+            if not script_path.exists():
+                raise FileNotFoundError(f"Download script not found at {script_path}")
+                
+            logger.info(f"Running UniProt download script: {script_path}")
+            result = subprocess.run(
+                [sys.executable, str(script_path)], 
+                check=True,
+                capture_output=True,
+                text=True
             )
             
-        with gzip.open(self.json_path, 'rt') as f:
-            self._data = json.load(f)
-            logger.info(f"Loaded {len(self._data)} UniProt entries")
+            logger.info(f"Download script completed successfully")
+            if result.stdout:
+                logger.debug(f"Download script output: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"Download script warnings: {result.stderr}")
+                
+            if not self.json_path.exists():
+                raise FileNotFoundError(
+                    f"Download script completed but data file still not found at {self.json_path}"
+                )
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Download script failed with exit code {e.returncode}: {e.stderr}")
+            raise RuntimeError(f"Failed to download UniProt data: {e.stderr}") from e
+        except Exception as e:
+            logger.error(f"Error during UniProt data download: {str(e)}")
+            raise
+            
+        logger.info(f"Successfully downloaded and processed UniProt data to {self.json_path}")
 
     def classify_product(self, gene_symbol: str) -> List[str]:
         """Determine product types for a gene with comprehensive classification."""
@@ -97,7 +160,7 @@ class ProductClassifier:
 
         classifications = set()
         features = data.get('features', [])
-        go_terms = [term['id'] for term in data.get('go_terms', [])]
+        go_terms = [term.get('id') for term in data.get('go_terms', [])]
         keywords = data.get('keywords', [])
         functions = data.get('functions', [])
 

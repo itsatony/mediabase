@@ -60,12 +60,11 @@ def main():
             # Verify schema version
             if not processor.db_manager.cursor:
                 raise RuntimeError("No database connection")
-                
-            version_query = processor.db_manager.cursor.execute(
-                "SELECT version FROM schema_version"
-            )
-            version = version_query.fetchone() if version_query else None
-            if not version or version[0] != 'v0.1.4':
+            
+            # Fix: Execute and fetch separately    
+            processor.db_manager.cursor.execute("SELECT version FROM schema_version")
+            version_row = processor.db_manager.cursor.fetchone()
+            if not version_row or version_row[0] != 'v0.1.4':
                 raise RuntimeError("Database schema must be v0.1.4")
             
             progress.update(task, description="Processing pathways...")

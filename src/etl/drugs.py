@@ -17,6 +17,12 @@ from rich.table import Table
 
 logger = logging.getLogger(__name__)
 
+# Constants
+DEFAULT_CACHE_TTL = 86400  # 24 hours in seconds
+DEFAULT_BATCH_SIZE = 100
+GO_TERM_WEIGHT_FACTOR = 0.5  # GO terms weighted at 50% of pathway weight
+DEFAULT_CACHE_DIR = '/tmp/mediabase/cache'
+
 class DrugProcessor:
     """Process drug data from DrugCentral and integrate with transcript data."""
 
@@ -31,14 +37,14 @@ class DrugProcessor:
                 - batch_size: Size of batches for database operations
         """
         self.config = config
-        self.cache_dir = Path(config['cache_dir'])
+        self.cache_dir = Path(config.get('cache_dir', DEFAULT_CACHE_DIR))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.drug_dir = self.cache_dir / 'drugcentral'
         self.drug_dir.mkdir(exist_ok=True)
         
-        self.batch_size = config.get('batch_size', 100)  # Changed from 1000 to 100
-        self.cache_ttl = config.get('cache_ttl', 86400)  # 24 hours default
-        self.drugcentral_url = config['drugcentral_url']
+        self.batch_size = config.get('batch_size', DEFAULT_BATCH_SIZE)
+        self.cache_ttl = config.get('cache_ttl', DEFAULT_CACHE_TTL)
+        self.drugcentral_url = config.get('drugcentral_url', '')
         if not self.drugcentral_url:
             raise ValueError("DrugCentral URL not configured")
         self.db_manager = get_db_manager(config)
@@ -307,24 +313,27 @@ class DrugProcessor:
                 
                 # Process drugs by gene
                 updates = []
+                processed = 0
+                matched = 0
+                
                 for gene, group in drug_targets.groupby('gene_symbol'):
                     drug_info = {}
                     references = []
                     
                     for _, row in group.iterrows():
-                        drug_info[row['drug_id']] = {
-                            'name': row['drug_name'],
-                            'mechanism': row['mechanism'],
-                            'action_type': row['action_type'],
+                        drug_info[row.get('drug_id')] = {
+                            'name': row.get('drug_name', ''),
+                            'mechanism': row.get('mechanism', 'unknown'),
+                            'action_type': row.get('action_type', 'unknown'),
                             'evidence': {
-                                'type': row['evidence_type'],
-                                'score': float(row['evidence_score'])
+                                'type': row.get('evidence_type', 'experimental'),
+                                'score': float(row.get('evidence_score', 1.0))
                             }
                         }
                         
                         # Process references
-                        if row['reference_ids']:
-                            for ref_id in row['reference_ids']:
+                        if row.get('reference_ids'):
+                            for ref_id in row.get('reference_ids', []):
                                 if ref_id and isinstance(ref_id, str):
                                     ref_id = ref_id.strip()
                                     
@@ -337,10 +346,10 @@ class DrugProcessor:
                                     references.append({
                                         'pmid': ref_id,
                                         'year': None,  # Would need PubMed lookup
-                                        'evidence_type': row['evidence_type'],
+                                        'evidence_type': row.get('evidence_type', 'experimental'),
                                         'citation_count': None,
                                         'source_db': 'DrugCentral',
-                                        'drug_id': row['drug_id']
+                                        'drug_id': row.get('drug_id', '')
                                     })
                     
                     updates.append((
@@ -524,7 +533,7 @@ class DrugProcessor:
                 
                 # Combine scores for this batch
                 pathway_weight = float(self.config.get('drug_pathway_weight', 1.0))
-                go_weight = pathway_weight * 0.5  # GO terms weighted at 50% of pathway weight
+                go_weight = pathway_weight * GO_TERM_WEIGHT_FACTOR  # Use constant instead of magic number
                 
                 self.db_manager.cursor.execute("""
                     INSERT INTO temp_final_scores

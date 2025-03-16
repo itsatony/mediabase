@@ -107,12 +107,24 @@ After completing the setup, you can:
    poetry run python scripts/run_etl.py
    ```
 
-2. Start the API server:
+2. For testing or development purposes, limit the number of transcripts:
+   ```bash
+   # Reset the database and process only 100 transcripts
+   poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100
+   
+   # Only process transcript data (not drugs, pathways, etc.)
+   poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100 --module transcript
+   
+   # If you want to run with more verbose output
+   poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100 --log-level DEBUG
+   ```
+
+3. Start the API server:
    ```bash
    poetry run python -m src.api.server
    ```
 
-3. Explore example notebooks:
+4. Explore example notebooks:
    ```bash
    poetry run jupyter lab notebooks/01_data_exploration.ipynb
    ```
@@ -384,7 +396,33 @@ Current development status and upcoming milestones:
     - Enhanced publication tracking in all processors
     - Standardized database access patterns
     - Added comprehensive validation
-- [ ] STEP_AQ: AI Agent System Prompt Development
+- [x] STEP_AQ: Introduce config var to limit the pipeline to n transcripts (2025-04-16)
+  - Added --limit-transcripts option to run_etl.py
+  - Allows limiting the number of transcripts processed
+  - Useful for testing and development
+  - Best used in conjunction with --reset-db to ensure consistent state
+  - Documentation updated with example command usage
+- [x] STEP_AR: Implement auto-download of UniProt data in ProductClassifier (2025-04-18)
+  - Added automatic download of UniProt data when file is missing
+  - Integrates with existing download script functionality
+  - Provides clear error messages when download fails
+  - Ensures seamless ETL pipeline execution without manual downloads
+  - Maintains compatibility with standalone download script
+- [x] STEP_AS: Fixed Database Module Connection Errors (2025-04-20)
+  - Fixed module import/export structures
+  - Added proper error handling for SQL operations
+  - Added type-safe connection management
+  - Implemented execute_safely helper for robust query execution
+  - Ensured proper NULL checks before operations on connections
+  - Fixed reset method to properly handle errors
+  - Added additional database management utilities
+- [x] STEP_AT: Fixed pathway enrichment SQL error (2025-04-22)
+  - Fixed array formatting issue in pathway enrichment module
+  - Improved connection handling to prevent "connection already closed" errors
+  - Added proper exception handling for database operations
+  - Enhanced update_batch method to process genes individually
+  - Added more robust connection state checking
+- [ ] STEP_CA: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
   - Build oncology-specific terminology mapping (German/English)
   - Document all available data relationships
@@ -392,10 +430,10 @@ Current development status and upcoming milestones:
   - Create German-English medical term mapping
   - Document query patterns and best practices
   - Create mapping of colloquial to technical terms
-- [ ] STEP_BA: Query optimization
-- [ ] STEP_BB: LLM-agent integration tests
-- [ ] STEP_BC: Documentation
-- [ ] STEP_BD: Production deployment
+- [ ] STEP_CB: Query optimization
+- [ ] STEP_CC: LLM-agent integration tests
+- [ ] STEP_DA: Documentation
+- [ ] STEP_FA: Production deployment
 
 ## Database Management
 
@@ -890,8 +928,6 @@ ORDER BY sum(gene_count) DESC;
 │   ├── 02_query_examples.ipynb
 │   └── __init__.py
 ├── poetry.lock
-├── __pycache__
-│   └── __init__.cpython-312.pyc
 ├── pyproject.toml
 ├── pytest.ini
 ├── README.md
@@ -914,10 +950,6 @@ ORDER BY sum(gene_count) DESC;
 │   │   ├── __init__.py
 │   │   ├── migrations
 │   │   │   └── __init__.py
-│   │   ├── __pycache__
-│   │   │   ├── adapters.cpython-312.pyc
-│   │   │   ├── connection.cpython-312.pyc
-│   │   │   └── __init__.cpython-312.pyc
 │   │   └── schema.py
 │   ├── etl
 │   │   ├── drugs.py
@@ -926,56 +958,29 @@ ORDER BY sum(gene_count) DESC;
 │   │   ├── pathways.py
 │   │   ├── products.py
 │   │   ├── publications.py
-│   │   ├── __pycache__
-│   │   │   ├── drugs.cpython-312.pyc
-│   │   │   ├── go_terms.cpython-312.pyc
-│   │   │   ├── __init__.cpython-312.pyc
-│   │   │   ├── pathways.cpython-312.pyc
-│   │   │   ├── products.cpython-312.pyc
-│   │   │   └── transcript.cpython-312.pyc
 │   │   └── transcript.py
 │   ├── __init__.py
-│   ├── __pycache__
-│   │   └── __init__.cpython-312.pyc
 │   └── utils
 │       ├── __init__.py
 │       ├── logging.py
-│       ├── __pycache__
-│       │   ├── __init__.cpython-312.pyc
-│       │   └── validation.cpython-312.pyc
 │       └── validation.py
 └── tests
     ├── conftest.py
     ├── etl
-    │   ├── __pycache__
-    │   │   ├── test_integration_products.cpython-312-pytest-7.4.4.pyc
-    │   │   └── test_transcript.cpython-312-pytest-7.4.4.pyc
     │   ├── test_drugs.py
     │   ├── test_go_terms.py
     │   ├── test_integration_products.py
     │   ├── test_products.py
     │   └── test_transcript.py
     ├── __init__.py
-    ├── __pycache__
-    │   ├── conftest.cpython-312-pytest-7.4.4.pyc
-    │   └── __init__.cpython-312.pyc
     ├── test_api
     │   ├── __init__.py
-    │   ├── __pycache__
-    │   │   ├── __init__.cpython-312.pyc
-    │   │   └── test_basic.cpython-312-pytest-7.4.4.pyc
     │   └── test_basic.py
     ├── test_db
     │   ├── __init__.py
-    │   ├── __pycache__
-    │   │   ├── __init__.cpython-312.pyc
-    │   │   └── test_basic.cpython-312-pytest-7.4.4.pyc
     │   └── test_basic.py
     ├── test_etl
     │   ├── __init__.py
-    │   ├── __pycache__
-    │   │   ├── __init__.cpython-312.pyc
-    │   │   └── test_basic.cpython-312-pytest-7.4.4.pyc
     │   └── test_basic.py
     └── utils
         └── test_validation.py
@@ -1133,3 +1138,59 @@ These queries will provide comprehensive data for building the AI agent's contex
 5. Document common query patterns
 6. Create example queries for each data category
 7. Build comprehensive prompt template
+
+## Current Example of a DB entry
+
+For reference of the enrichment success of the current ETL pipeline, here are examples of a database entry in json and csv formats:
+
+```json
+{
+  "transcript_id": "ENST00000503052.3",
+  "gene_symbol": "ENSG00000251161",
+  "gene_id": "ENSG00000251161.5",
+  "gene_type": "lncRNA",
+  "chromosome": "chr15",
+  "coordinates": {
+    "end": 40910337,
+    "start": 40906811,
+    "strand": 1
+  },
+  "product_type": [],
+  "go_terms": {},
+  "pathways": [],
+  "drugs": {},
+  "expression_fold_change": 1,
+  "expression_freq": {
+    "low": [],
+    "high": []
+  },
+  "cancer_types": [],
+  "features": {},
+  "molecular_functions": [],
+  "cellular_location": [],
+  "drug_scores": {},
+  "alt_transcript_ids": {
+    "CCDS": "",
+    "HAVANA": "OTTHUMT00000418857.2"
+  },
+  "alt_gene_ids": {
+    "HGNC": "",
+    "HAVANA": "OTTHUMG00000172510.3"
+  },
+  "uniprot_ids": [],
+  "ncbi_ids": [],
+  "refseq_ids": [],
+  "source_references": {
+    "drugs": [],
+    "uniprot": [],
+    "go_terms": [],
+    "pathways": []
+  }
+}
+```
+
+```csv
+"transcript_id","gene_symbol","gene_id","gene_type","chromosome","coordinates","product_type","go_terms","pathways","drugs","expression_fold_change","expression_freq","cancer_types","features","molecular_functions","cellular_location","drug_scores","alt_transcript_ids","alt_gene_ids","uniprot_ids","ncbi_ids","refseq_ids","source_references"
+"ENST00000503052.3","ENSG00000251161","ENSG00000251161.5","lncRNA","chr15","{""end"":40910337,""start"":40906811,""strand"":1}",[],{},[],{},1,"{""low"":[],""high"":[]}",[],{},[],[],{},"{""CCDS"":"""",""HAVANA"":""OTTHUMT00000418857.2""}","{""HGNC"":"""",""HAVANA"":""OTTHUMG00000172510.3""}",[],[],[],"{""drugs"":[],""uniprot"":[],""go_terms"":[],""pathways"":[]}"
+"ENST00000613205.4","NUMA1","ENSG00000137497.19","protein_coding","chr11","{""end"":72080693,""start"":72002865,""strand"":-1}","[""nuclear"",""structural_protein"",""cytoplasmic"",""membrane_associated""]","{""GO:0000132"":{""term"":""establishment of mitotic spindle orientation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0000922"":{""term"":""spindle pole"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0001578"":{""term"":""microtubule bundle formation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0005198"":{""term"":""structural molecule activity"",""aspect"":""molecular_function"",""evidence"":""TAS""},""GO:0005515"":{""term"":""protein binding"",""aspect"":""molecular_function"",""evidence"":""IPI""},""GO:0005634"":{""term"":""nucleus"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005654"":{""term"":""nucleoplasm"",""aspect"":""cellular_component"",""evidence"":""TAS""},""GO:0005694"":{""term"":""chromosome"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0005813"":{""term"":""centrosome"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005819"":{""term"":""spindle"",""aspect"":""cellular_component"",""evidence"":""TAS""},""GO:0005829"":{""term"":""cytosol"",""aspect"":""cellular_component"",""evidence"":""TAS""},""GO:0005876"":{""term"":""spindle microtubule"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005886"":{""term"":""plasma membrane"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005938"":{""term"":""cell cortex"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0006997"":{""term"":""nucleus organization"",""aspect"":""biological_process"",""evidence"":""TAS""},""GO:0008017"":{""term"":""microtubule binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0015631"":{""term"":""tubulin binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0016328"":{""term"":""lateral plasma membrane"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0016363"":{""term"":""nuclear matrix"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0019904"":{""term"":""protein domain specific binding"",""aspect"":""molecular_function"",""evidence"":""IPI""},""GO:0030425"":{""term"":""dendrite"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0030513"":{""term"":""positive regulation of BMP signaling pathway"",""aspect"":""biological_process"",""evidence"":""ISS""},""GO:0030953"":{""term"":""astral microtubule organization"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0031116"":{""term"":""positive regulation of microtubule polymerization"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0031616"":{""term"":""spindle pole centrosome"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0032388"":{""term"":""positive regulation of intracellular transport"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0032991"":{""term"":""protein-containing complex"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0035091"":{""term"":""phosphatidylinositol binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0035371"":{""term"":""microtubule plus-end"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0036449"":{""term"":""microtubule minus-end"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0043025"":{""term"":""neuronal cell body"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0044877"":{""term"":""protein-containing complex binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0045618"":{""term"":""positive regulation of keratinocyte differentiation"",""aspect"":""biological_process"",""evidence"":""ISS""},""GO:0051010"":{""term"":""microtubule plus-end binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0051011"":{""term"":""microtubule minus-end binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0051301"":{""term"":""cell division"",""aspect"":""biological_process"",""evidence"":""IEA""},""GO:0051321"":{""term"":""meiotic cell cycle"",""aspect"":""biological_process"",""evidence"":""IEA""},""GO:0051798"":{""term"":""positive regulation of hair follicle development"",""aspect"":""biological_process"",""evidence"":""ISS""},""GO:0051984"":{""term"":""positive regulation of chromosome segregation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0055028"":{""term"":""cortical microtubule"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0055048"":{""term"":""anastral spindle assembly"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0060236"":{""term"":""regulation of mitotic spindle organization"",""aspect"":""biological_process"",""evidence"":""IDA""},""GO:0061673"":{""term"":""mitotic spindle astral microtubule"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0070062"":{""term"":""extracellular exosome"",""aspect"":""cellular_component"",""evidence"":""HDA""},""GO:0070840"":{""term"":""dynein complex binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0072686"":{""term"":""mitotic spindle"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0090235"":{""term"":""regulation of metaphase plate congression"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0097427"":{""term"":""microtubule bundle"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0097431"":{""term"":""mitotic spindle pole"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0097575"":{""term"":""lateral cell cortex"",""aspect"":""cellular_component"",""evidence"":""ISS""},""GO:0097718"":{""term"":""disordered domain specific binding"",""aspect"":""molecular_function"",""evidence"":""IMP""},""GO:0099738"":{""term"":""cell cortex region"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:1902365"":{""term"":""positive regulation of protein localization to spindle pole body"",""aspect"":""biological_process"",""evidence"":""IDA""},""GO:1902846"":{""term"":""positive regulation of mitotic spindle elongation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1904778"":{""term"":""positive regulation of protein localization to cell cortex"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1905720"":{""term"":""cytoplasmic microtubule bundle"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:1905820"":{""term"":""positive regulation of chromosome separation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1905832"":{""term"":""positive regulation of spindle assembly"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1990023"":{""term"":""mitotic spindle midzone"",""aspect"":""cellular_component"",""evidence"":""IDA""}}",[],{},1,"{""low"":[],""high"":[]}",[],{},"[""disordered domain specific binding"",""dynein complex binding"",""microtubule binding"",""microtubule minus-end binding"",""microtubule plus-end binding"",""phosphatidylinositol binding"",""protein binding"",""protein-containing complex binding"",""protein domain specific binding"",""structural molecule activity"",""tubulin binding""]","[""cell cortex"",""cell cortex region"",""centrosome"",""chromosome"",""cortical microtubule"",""cytoplasmic microtubule bundle"",""cytosol"",""dendrite"",""extracellular exosome"",""lateral cell cortex"",""lateral plasma membrane"",""microtubule bundle"",""microtubule minus-end"",""microtubule plus-end"",""mitotic spindle"",""mitotic spindle astral microtubule"",""mitotic spindle midzone"",""mitotic spindle pole"",""neuronal cell body"",""nuclear matrix"",""nucleoplasm"",""nucleus"",""plasma membrane"",""protein-containing complex"",""spindle"",""spindle microtubule"",""spindle pole"",""spindle pole centrosome""]",{},"{""CCDS"":"""",""HAVANA"":""""}","{""HGNC"":""HGNC:8059"",""HAVANA"":""OTTHUMG00000167697.4""}",[],[],[],"{""drugs"":[],""uniprot"":[],""go_terms"":[{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IPI""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IPI""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""HDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""}],""pathways"":[]}"
+```

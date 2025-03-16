@@ -6,7 +6,7 @@ For everything you do, document each step and key improvement in the README.md f
 
 ## Environment
 
-We are using poetry for managing dependencies.
+We are using poetry v2.01 for managing dependencies.
 
 We are using python >=3.10 for development.
 
@@ -116,6 +116,97 @@ We are using python >=3.10 for development.
        result = processor.calculate_fold_change(base=1.0, sample=2.0)
        assert result == pytest.approx(2.0)
    ```
+
+5. **Logging**
+   ```python
+   import logging
+   
+   logger = logging.getLogger(__name__)
+   
+   def process_data(data: pd.DataFrame) -> pd.DataFrame:
+       logger.info("Processing data...")
+       ...
+   ```
+
+6. **Dictionary Access**
+   ```python
+   # Good
+   gene_symbol = gene.get('symbol', 'unknown')
+   
+   # Bad - DO NOT USE
+   gene_symbol = gene['symbol']
+   ```
+
+7. **List Comprehensions**
+   ```python
+   # Good
+   gene_symbols = [gene['symbol'] for gene in genes if gene.get('symbol')]
+
+    # Bad - DO NOT USE
+    gene_symbols = []
+    for gene in genes:
+        if gene.get('symbol'):
+            gene_symbols.append(gene['symbol'])
+    ```
+
+8. **String Formatting**
+   ```python
+   # Good
+   message = f"Gene {gene['symbol']} has expression {gene['expression']}"
+   
+   # Bad - DO NOT USE
+   message = "Gene %s has expression %s" % (gene['symbol'], gene['expression'])
+   ```
+
+9. **Function Arguments**
+   ```python
+   # Good
+   def process_genes(genes: List[str]) -> Dict[str, float]:
+       ...
+    
+    # Bad - DO NOT USE
+    def process_genes(genes):
+        ...
+   ```
+
+10. **Constants**
+    ```python
+    # Good
+    THRESHOLD = 0.5
+    
+    # Bad - DO NOT USE
+    threshold = 0.5
+    ```
+
+11. **Global Variables**
+    ```python
+    # Good
+    def process_genes(genes: List[str]) -> Dict[str, float]:
+        global gene_count
+        gene_count = len(genes)
+        ...
+    
+    # Bad - DO NOT USE
+    gene_count = 0
+
+    def process_genes(genes: List[str]) -> Dict[str, float]:
+        gene_count = len(genes)
+        ...
+    ```
+
+12. **Magic Numbers**
+    ```python
+    # Good
+    def process_genes(genes: List[str]) -> Dict[str, float]:
+        gene_count = len(genes)
+        if gene_count > 10:
+            ...
+
+    # Bad - DO NOT USE
+    def process_genes(genes: List[str]) -> Dict[str, float]:
+        if len(genes) > 10:
+            ...
+    ```
 
 ### SQL Style
 

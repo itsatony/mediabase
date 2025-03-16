@@ -14,16 +14,23 @@ from psycopg2.extras import execute_batch
 
 logger = logging.getLogger(__name__)
 
+# Constants
+DEFAULT_CACHE_TTL = 86400  # 24 hours in seconds
+DEFAULT_BATCH_SIZE = 1000
+HUMAN_SPECIES = 'Homo sapiens'
+ID_MAPPING_BATCH_SIZE = 200  # Batch size for id mapping
+HUMAN_TAXONOMY_ID = '9606'  # NCBI taxonomy ID for humans
+
 class PathwayProcessor:
     """Process pathway data and enrich transcript information."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
         """Initialize pathway processor."""
         self.config = config
-        self.cache_dir = Path(config['cache_dir']) / 'pathways'
+        self.cache_dir = Path(config.get('cache_dir', '/tmp/mediabase/cache')) / 'pathways'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.batch_size = config.get('batch_size', 1000)
-        self.cache_ttl = config.get('cache_ttl', 86400)  # 24 hours default
+        self.batch_size = config.get('batch_size', DEFAULT_BATCH_SIZE)
+        self.cache_ttl = config.get('cache_ttl', DEFAULT_CACHE_TTL)
         self.db_manager = get_db_manager(config)
         
     def _get_cache_key(self, url: str) -> str:
@@ -32,7 +39,9 @@ class PathwayProcessor:
 
     def download_reactome(self) -> Path:
         """Download Reactome pathway mapping file if not in cache."""
-        url = self.config['reactome_data_url']
+        url = self.config.get('reactome_url')
+        if not url:
+            raise ValueError("Reactome URL not configured")
         cache_key = self._get_cache_key(url)
         file_path = self.cache_dir / f"reactome_{cache_key}.txt"
         meta_path = self.cache_dir / "meta.json"
@@ -124,10 +133,19 @@ class PathwayProcessor:
                     if len(fields) != 6:
                         skipped += 1
                         continue
-                        
-                    gene_id, pathway_id, _, pathway_name, evidence, species = fields
                     
-                    if species != 'Homo sapiens':
+                    # Safely access fields with bounds checking
+                    if len(fields) >= 6:
+                        gene_id = fields[0]
+                        pathway_id = fields[1]
+                        pathway_name = fields[3]
+                        evidence = fields[4]
+                        species = fields[5]
+                    else:
+                        skipped += 1
+                        continue
+                        
+                    if species != HUMAN_SPECIES:
                         non_human += 1
                         continue
                     
@@ -208,7 +226,7 @@ class PathwayProcessor:
             next(f)
             for line in tqdm(f, desc="Loading ID mappings"):
                 fields = line.strip().split('\t')
-                if len(fields) >= 3 and fields[0] == '9606':  # Human only
+                if len(fields) >= 3 and fields[0] == HUMAN_TAXONOMY_ID:  # Human only
                     ncbi_id = fields[1]
                     ensembl_id = fields[2].split('.')[0]  # Remove version
                     mapping[ncbi_id] = ensembl_id
@@ -271,6 +289,10 @@ class PathwayProcessor:
         if not gene_pathways:
             logger.warning("No pathway data to process!")
             return
+            
+        if not self.db_manager.cursor or self.db_manager.cursor.closed:
+            logger.info("Reopening database connection...")
+            self.db_manager = get_db_manager(self.config)
             
         if not self.db_manager.cursor:
             raise RuntimeError("No database connection")
@@ -348,57 +370,32 @@ class PathwayProcessor:
                 
         except Exception as e:
             logger.error(f"Pathway enrichment failed: {e}")
-            if self.db_manager.conn is not None:
+            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
-        finally:
-            if self.db_manager.conn is not None:
-                self.db_manager.conn.close()
+        # Remove the finally block with connection closing - this is now handled in run()
 
     def _update_batch(self, cur, updates: List[Tuple[List[str], str]]) -> None:
         """Update a batch of pathway data."""
         logger.debug(f"Processing batch update with {len(updates)} entries")
         
-        execute_batch(
-            cur,
-            """
-            WITH pathway_update AS (
-                SELECT 
-                    u.gene_symbol,
-                    u.pathways,
-                    jsonb_build_array(
-                        jsonb_build_object(
-                            'pmid', p.pmid,
-                            'year', p.year,
-                            'evidence_type', p.evidence_type,
-                            'citation_count', p.citations,
-                            'source_db', 'Reactome'
-                        )
-                    ) as pathway_refs
-                FROM (
-                    SELECT 
-                        gene_symbol::text,
-                        pathways::text[],
-                        unnest(regexp_matches(unnest(pathways), 'R-HSA-[0-9]+', 'g')) as pathway_id
-                    FROM unnest(%s::text[], %s::text[]) as u(pathways, gene_symbol)
-                ) u
-                JOIN reactome.pathway_publications p ON u.pathway_id = p.pathway_id
-            )
-            UPDATE cancer_transcript_base
-            SET 
-                pathways = pu.pathways,
-                source_references = jsonb_set(
-                    COALESCE(source_references, '{}'::jsonb),
-                    '{pathways}',
-                    pu.pathway_refs
+        # Update one gene at a time to avoid array formatting issues
+        for pathway_list, gene_symbol in updates:
+            try:
+                # Update pathways
+                cur.execute(
+                    """
+                    UPDATE cancer_transcript_base
+                    SET pathways = %s
+                    WHERE gene_symbol = %s
+                    AND gene_type = 'protein_coding'
+                    """,
+                    (pathway_list, gene_symbol)
                 )
-            FROM pathway_update pu
-            WHERE cancer_transcript_base.gene_symbol = pu.gene_symbol
-            AND gene_type = 'protein_coding'
-            """,
-            updates,
-            page_size=self.batch_size
-        )
+            except Exception as e:
+                logger.error(f"Error updating pathways for {gene_symbol}: {e}")
+                # Continue with other genes
+                continue
 
     def run(self) -> None:
         """Run the complete pathway enrichment pipeline.
@@ -413,6 +410,10 @@ class PathwayProcessor:
             logger.info("Starting pathway enrichment pipeline...")
             
             # More thorough schema verification
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                logger.info("Opening database connection...")
+                self.db_manager = get_db_manager(self.config)
+                
             if not self.db_manager.cursor:
                 raise RuntimeError("No database connection")
                 
@@ -446,6 +447,14 @@ class PathwayProcessor:
             # Run enrichment after schema verification
             self.enrich_transcripts()
             
+            # Verify connection is still open
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                logger.info("Reopening database connection for verification...")
+                self.db_manager = get_db_manager(self.config)
+                
+            if not self.db_manager.cursor:
+                raise RuntimeError("Could not reestablish database connection for verification")
+            
             # Verify results
             self.db_manager.cursor.execute("""
                 SELECT 
@@ -467,9 +476,11 @@ class PathwayProcessor:
             
         except Exception as e:
             logger.error(f"Pathway enrichment pipeline failed: {e}")
-            if self.db_manager.conn is not None:
+            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
         finally:
-            if self.db_manager.conn is not None:
+            # Only close the connection here, at the end of the entire pipeline
+            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
+                logger.debug("Closing database connection at end of pathway pipeline")
                 self.db_manager.conn.close()

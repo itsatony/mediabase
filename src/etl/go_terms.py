@@ -20,6 +20,10 @@ from rich.table import Table
 logger = logging.getLogger(__name__)
 console = Console()
 
+# Constants
+DEFAULT_CACHE_TTL = 86400  # 24 hours in seconds
+DEFAULT_BATCH_SIZE = 1000
+
 class GOTerm(TypedDict):
     """Type definition for GO term data."""
     term: str
@@ -220,7 +224,7 @@ class GOTermProcessor:
         if not self.go_graph or term_id not in self.go_graph:
             return None
         
-        term_data = self.go_graph.nodes[term_id]
+        term_data = self.go_graph.nodes.get(term_id, {})
         namespace = term_data.get('namespace')
         
         if namespace == 'molecular_function':
@@ -273,10 +277,10 @@ class GOTermProcessor:
                     enriched_terms[go_id] = term_info
                     
                     # Add ancestors with inherited evidence
-                    ancestors = self.get_ancestors(go_id, term_data.get('aspect'))
+                    ancestors = self.get_ancestors(go_id, term_data.get('aspect', ''))
                     for ancestor in ancestors:
                         if ancestor in self.go_graph.nodes:
-                            ancestor_data = self.go_graph.nodes[ancestor]
+                            ancestor_data = self.go_graph.nodes.get(ancestor, {})
                             if ancestor not in enriched_terms:
                                 enriched_terms[ancestor] = {
                                     'term': ancestor_data.get('name', ''),
@@ -336,8 +340,8 @@ class GOTermProcessor:
             if not isinstance(term_data, dict) or 'aspect' not in term_data or 'term' not in term_data:
                 continue
                 
-            term_name = term_data['term']
-            aspect = term_data['aspect']
+            term_name = term_data.get('term', '')
+            aspect = term_data.get('aspect', '')
             
             # Classify terms based on aspect
             if aspect == 'molecular_function':

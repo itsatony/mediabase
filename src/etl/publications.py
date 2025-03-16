@@ -69,7 +69,7 @@ class PublicationsProcessor:
                 response = requests.get(f"{base_url}/esummary.fcgi", params=params)
                 if response.ok:
                     data = response.json()
-                    for pmid, article in data['result'].items():
+                    for pmid, article in data.get('result', {}).items():
                         if pmid != 'uids':
                             try:
                                 pub_date = article.get('pubdate', '')
@@ -157,16 +157,16 @@ class PublicationsProcessor:
                 
                 # Process each source's references
                 for source in ['go_terms', 'drugs', 'pathways', 'uniprot']:
-                    if source in refs and isinstance(refs[source], list):
+                    if source in refs and isinstance(refs.get(source), list):
                         enriched_source_refs = []
-                        for ref in refs[source]:
+                        for ref in refs.get(source, []):
                             if isinstance(ref, dict) and 'pmid' in ref:
-                                pmid = ref['pmid']
+                                pmid = ref.get('pmid')
                                 if pmid in metadata:
                                     ref.update({
-                                        'year': metadata[pmid]['year'],
-                                        'title': metadata[pmid]['title'],
-                                        'journal': metadata[pmid]['journal']
+                                        'year': metadata.get(pmid, {}).get('year'),
+                                        'title': metadata.get(pmid, {}).get('title', ''),
+                                        'journal': metadata.get(pmid, {}).get('journal', '')
                                     })
                                     modified = True
                             enriched_source_refs.append(ref)

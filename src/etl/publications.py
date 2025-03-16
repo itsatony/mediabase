@@ -174,8 +174,13 @@ class PublicationsProcessor:
         Returns:
             bool: True if successful
         """
+        # Ensure we have a valid connection
+        if not self.db_manager.ensure_connection():
+            logger.error("Failed to establish database connection")
+            return False
+            
         if not self.db_manager.cursor:
-            logger.error("No database connection")
+            logger.error("No database cursor available")
             return False
             
         try:
@@ -186,6 +191,11 @@ class PublicationsProcessor:
                 WHERE transcript_id = %s
             """, (transcript_id,))
             
+            # Check cursor before fetching results
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                logger.error("Cursor became invalid during query execution")
+                return False
+                
             result = self.db_manager.cursor.fetchone()
             if not result:
                 logger.warning(f"Transcript {transcript_id} not found")
@@ -216,21 +226,32 @@ class PublicationsProcessor:
                 
             source_refs[source_category] = updated_refs
             
+            # Verify connection before update
+            if not self.db_manager.ensure_connection():
+                logger.warning("Connection lost before update, reconnecting...")
+                if not self.db_manager.ensure_connection():
+                    logger.error("Failed to reestablish database connection")
+                    return False
+            
             # Update database
+            if not self.db_manager.cursor:
+                logger.error("No database cursor available for update")
+                return False
+                
             self.db_manager.cursor.execute("""
                 UPDATE cancer_transcript_base
                 SET source_references = %s
                 WHERE transcript_id = %s
             """, (json.dumps(source_refs), transcript_id))
             
-            if self.db_manager.conn:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 self.db_manager.conn.commit()
                 
             return True
             
         except Exception as e:
             logger.error(f"Failed to add reference: {e}")
-            if self.db_manager.conn:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             return False
         
@@ -429,8 +450,12 @@ class PublicationsProcessor:
         Returns:
             Set of PMIDs that need metadata
         """
+        # Ensure we have a valid connection
+        if not self.db_manager.ensure_connection():
+            raise RuntimeError("Failed to establish database connection")
+            
         if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
+            raise RuntimeError("Database cursor is not available")
             
         try:
             # First, identify PMIDs from all source categories
@@ -460,6 +485,10 @@ class PublicationsProcessor:
                 AND (ref->>'title' IS NULL OR ref->>'year' IS NULL);
             """)
             
+            # Make sure cursor is still valid before fetching results
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                raise RuntimeError("Cursor became invalid during query execution")
+                
             # Get only PMIDs that are not yet enriched (missing title or year)
             pmids = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
             
@@ -467,6 +496,14 @@ class PublicationsProcessor:
             
             # If force_refresh is enabled, get ALL PMIDs instead
             if self.force_refresh:
+                # Verify connection before executing another query
+                if not self.db_manager.ensure_connection():
+                    logger.warning("Connection lost before force refresh query, reconnecting...")
+                    if not self.db_manager.ensure_connection():
+                        raise RuntimeError("Failed to reestablish database connection")
+                    if not self.db_manager.cursor:
+                        raise RuntimeError("Failed to create a valid cursor")
+                        
                 self.db_manager.cursor.execute("""
                     WITH RECURSIVE 
                     source_refs AS (
@@ -492,6 +529,10 @@ class PublicationsProcessor:
                     AND ref->>'pmid' != '';
                 """)
                 
+                # Check cursor again before fetching results
+                if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                    raise RuntimeError("Cursor became invalid during force refresh query")
+                    
                 all_pmids = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
                 logger.info(f"Force refresh enabled. Will update all {len(all_pmids)} PMIDs")
                 pmids = all_pmids
@@ -510,8 +551,12 @@ class PublicationsProcessor:
         2. Fetches publication metadata from PubMed or cache
         3. Updates references in the database
         """
+        # Ensure we have a valid connection
+        if not self.db_manager.ensure_connection():
+            raise RuntimeError("Failed to establish database connection")
+            
         if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
+            raise RuntimeError("Database cursor is not available")
             
         try:
             # Get PMIDs to enrich
@@ -528,6 +573,15 @@ class PublicationsProcessor:
                 logger.warning("No metadata retrieved for publications")
                 return
                 
+            # Check connection state before continuing
+            if not self.db_manager.ensure_connection():
+                logger.warning("Database connection lost after fetching metadata. Reconnecting...")
+                if not self.db_manager.ensure_connection():
+                    raise RuntimeError("Failed to reestablish database connection")
+                    
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                raise RuntimeError("Database cursor is not valid")
+                    
             # Update references in batches with progress tracking
             logger.info(f"Updating {len(metadata)} publications in the database")
             
@@ -541,8 +595,17 @@ class PublicationsProcessor:
             processed = 0
             enriched = 0
             
+            # Make sure we have results before proceeding
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                raise RuntimeError("Cursor became invalid during query execution")
+                
+            rows = self.db_manager.cursor.fetchall()
+            if not rows:
+                logger.info("No references found in database to enrich")
+                return
+                
             for gene_symbol, refs in tqdm(
-                self.db_manager.cursor.fetchall(),
+                rows,
                 desc="Enriching references in database"
             ):
                 if not isinstance(refs, dict):
@@ -575,12 +638,24 @@ class PublicationsProcessor:
                     enriched += 1
                     
                 if len(updates) >= self.batch_size:
+                    # Verify connection before batch update
+                    if not self.db_manager.ensure_connection():
+                        logger.warning("Connection lost during reference updates, reconnecting...")
+                        if not self.db_manager.ensure_connection():
+                            raise RuntimeError("Failed to reestablish database connection")
+                    
                     self._update_batch(updates)
                     processed += len(updates)
                     updates = []
                     
             # Process remaining updates
             if updates:
+                # Verify connection before final updates
+                if not self.db_manager.ensure_connection():
+                    logger.warning("Connection lost before final updates, reconnecting...")
+                    if not self.db_manager.ensure_connection():
+                        raise RuntimeError("Failed to reestablish database connection")
+                        
                 self._update_batch(updates)
                 processed += len(updates)
             
@@ -588,15 +663,19 @@ class PublicationsProcessor:
             
         except Exception as e:
             logger.error(f"Reference enrichment failed: {e}")
-            if self.db_manager.conn:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
-        finally:
-            if self.db_manager.conn:
-                self.db_manager.conn.close()
 
     def _update_batch(self, updates: List[tuple]) -> None:
         """Update a batch of enriched references."""
+        # Ensure we have a valid cursor
+        if not self.db_manager.cursor or self.db_manager.cursor.closed:
+            if not self.db_manager.ensure_connection():
+                raise RuntimeError("Failed to establish database connection for batch update")
+            if not self.db_manager.cursor:
+                raise RuntimeError("Failed to create a valid cursor for batch update")
+        
         execute_batch(
             self.db_manager.cursor,
             """
@@ -608,16 +687,19 @@ class PublicationsProcessor:
             page_size=self.batch_size
         )
         
-        if self.db_manager.conn:
+        if self.db_manager.conn and not self.db_manager.conn.closed:
             self.db_manager.conn.commit()
 
     def run(self) -> None:
         """Run the complete publications enrichment pipeline."""
         try:
             # Ensure database schema is compatible
-            if not self.db_manager.cursor:
-                raise RuntimeError("No database connection")
+            if not self.db_manager.ensure_connection():
+                raise RuntimeError("Failed to establish database connection")
                 
+            if not self.db_manager.cursor:
+                raise RuntimeError("Database cursor is not available")
+                    
             # Check schema version
             self.db_manager.cursor.execute("SELECT version FROM schema_version")
             result = self.db_manager.cursor.fetchone()
@@ -631,83 +713,94 @@ class PublicationsProcessor:
             logger.info("Starting publication metadata enrichment")
             self.enrich_references()
             
-            # Print statistics
-            if self.db_manager.cursor:
-                self.db_manager.cursor.execute("""
-                    WITH stats AS (
-                        SELECT
-                            COUNT(*) as total_genes,
-                            COUNT(CASE WHEN source_references IS NOT NULL THEN 1 END) as with_refs,
-                            (
-                                SELECT COUNT(*)
-                                FROM (
-                                    WITH RECURSIVE all_refs AS (
-                                        SELECT jsonb_array_elements(source_references->'go_terms') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'go_terms' IS NOT NULL
-                                        UNION ALL
-                                        SELECT jsonb_array_elements(source_references->'drugs') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'drugs' IS NOT NULL
-                                        UNION ALL
-                                        SELECT jsonb_array_elements(source_references->'pathways') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'pathways' IS NOT NULL
-                                        UNION ALL
-                                        SELECT jsonb_array_elements(source_references->'uniprot') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'uniprot' IS NOT NULL
-                                    )
-                                    SELECT DISTINCT ref->>'pmid' as pmid
-                                    FROM all_refs
-                                    WHERE ref->>'pmid' IS NOT NULL
-                                ) pm
-                            ) as unique_pmids,
-                            (
-                                SELECT COUNT(*)
-                                FROM (
-                                    WITH RECURSIVE all_refs AS (
-                                        SELECT jsonb_array_elements(source_references->'go_terms') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'go_terms' IS NOT NULL
-                                        UNION ALL
-                                        SELECT jsonb_array_elements(source_references->'drugs') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'drugs' IS NOT NULL
-                                        UNION ALL
-                                        SELECT jsonb_array_elements(source_references->'pathways') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'pathways' IS NOT NULL
-                                        UNION ALL
-                                        SELECT jsonb_array_elements(source_references->'uniprot') as ref
-                                        FROM cancer_transcript_base
-                                        WHERE source_references->'uniprot' IS NOT NULL
-                                    )
-                                    SELECT DISTINCT ref->>'pmid' as pmid
-                                    FROM all_refs
-                                    WHERE ref->>'pmid' IS NOT NULL
-                                    AND ref->>'title' IS NOT NULL
-                                ) pm
-                            ) as enriched_pmids
-                        FROM cancer_transcript_base
-                    )
-                    SELECT 
-                        total_genes, 
-                        with_refs, 
-                        unique_pmids, 
-                        enriched_pmids, 
-                        ROUND((enriched_pmids::float / NULLIF(unique_pmids, 0)::float) * 100, 1) as percent_enriched
-                    FROM stats;
-                """)
+            # Print statistics - ensure we have a valid cursor
+            cursor = None
+            if not self.db_manager.ensure_connection():
+                logger.warning("Connection lost after enrichment. Reconnecting for statistics...")
+                if not self.db_manager.ensure_connection():
+                    logger.warning("Failed to reconnect for statistics. Skipping statistics output.")
+                    return
+            
+            cursor = self.db_manager.cursor
+            if not cursor or cursor.closed:
+                logger.warning("Cursor is closed or None. Cannot collect statistics.")
+                return
                 
-                result = self.db_manager.cursor.fetchone()
-                if result:
-                    logger.info(f"Publications enrichment statistics:")
-                    logger.info(f"- Total genes in database: {result[0]:,}")
-                    logger.info(f"- Genes with references: {result[1]:,}")
-                    logger.info(f"- Unique PMIDs: {result[2]:,}")
-                    logger.info(f"- Enriched PMIDs: {result[3]:,}")
-                    logger.info(f"- Enrichment coverage: {result[4]}%")
+            cursor.execute("""
+                WITH stats AS (
+                    SELECT
+                        COUNT(*) as total_genes,
+                        COUNT(CASE WHEN source_references IS NOT NULL THEN 1 END) as with_refs,
+                        (
+                            SELECT COUNT(*)
+                            FROM (
+                                WITH RECURSIVE all_refs AS (
+                                    SELECT jsonb_array_elements(source_references->'go_terms') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'go_terms' IS NOT NULL
+                                    UNION ALL
+                                    SELECT jsonb_array_elements(source_references->'drugs') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'drugs' IS NOT NULL
+                                    UNION ALL
+                                    SELECT jsonb_array_elements(source_references->'pathways') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'pathways' IS NOT NULL
+                                    UNION ALL
+                                    SELECT jsonb_array_elements(source_references->'uniprot') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'uniprot' IS NOT NULL
+                                )
+                                SELECT DISTINCT ref->>'pmid' as pmid
+                                FROM all_refs
+                                WHERE ref->>'pmid' IS NOT NULL
+                            ) pm
+                        ) as unique_pmids,
+                        (
+                            SELECT COUNT(*)
+                            FROM (
+                                WITH RECURSIVE all_refs AS (
+                                    SELECT jsonb_array_elements(source_references->'go_terms') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'go_terms' IS NOT NULL
+                                    UNION ALL
+                                    SELECT jsonb_array_elements(source_references->'drugs') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'drugs' IS NOT NULL
+                                    UNION ALL
+                                    SELECT jsonb_array_elements(source_references->'pathways') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'pathways' IS NOT NULL
+                                    UNION ALL
+                                    SELECT jsonb_array_elements(source_references->'uniprot') as ref
+                                    FROM cancer_transcript_base
+                                    WHERE source_references->'uniprot' IS NOT NULL
+                                )
+                                SELECT DISTINCT ref->>'pmid' as pmid
+                                FROM all_refs
+                                WHERE ref->>'pmid' IS NOT NULL
+                                AND ref->>'title' IS NOT NULL
+                            ) pm
+                        ) as enriched_pmids
+                    FROM cancer_transcript_base
+                )
+                SELECT 
+                    total_genes, 
+                    with_refs, 
+                    unique_pmids, 
+                    enriched_pmids, 
+                    ROUND((enriched_pmids::float / NULLIF(unique_pmids, 0)::float) * 100, 1) as percent_enriched
+                FROM stats;
+            """)
+            
+            result = cursor.fetchone() if cursor and not cursor.closed else None
+            if result:
+                logger.info(f"Publications enrichment statistics:")
+                logger.info(f"- Total genes in database: {result[0]:,}")
+                logger.info(f"- Genes with references: {result[1]:,}")
+                logger.info(f"- Unique PMIDs: {result[2]:,}")
+                logger.info(f"- Enriched PMIDs: {result[3]:,}")
+                logger.info(f"- Enrichment coverage: {result[4]}%")
             
             logger.info("Publications enrichment completed successfully")
             logger.info(f"Publication cache contains {len(self.publication_cache):,} entries")
@@ -715,3 +808,7 @@ class PublicationsProcessor:
         except Exception as e:
             logger.error(f"Publications enrichment failed: {e}")
             raise
+        finally:
+            # Ensure connection is closed properly at the end
+            if self.db_manager and self.db_manager.conn and not self.db_manager.conn.closed:
+                self.db_manager.conn.close()

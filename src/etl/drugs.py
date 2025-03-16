@@ -339,7 +339,7 @@ class DrugProcessor:
                                     
                                     # Skip non-PMID references but log them
                                     if not ref_id.isdigit():
-                                        logger.debug(f"Skipping non-PMID reference: {ref_id}")
+                                        # logger.debug(f"Skipping non-PMID reference: {ref_id}")
                                         continue
                                         
                                     # Drug-specific reference

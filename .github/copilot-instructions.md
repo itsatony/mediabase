@@ -128,6 +128,43 @@ We are using python >=3.10 for development.
        ...
    ```
 
+    For console logging, we use rich output formatting and for progress indicators we use tqdm library progress updating in 1 line:
+    ```python
+    from rich.console import Console
+    from tqdm import tqdm
+
+    console = Console()
+
+    for i in tqdm(range(100), desc="Processing data"):
+        ...
+    ```
+    For file logging, we use the standard logging module with a rotating file handler:
+    ```python
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+
+    handler = RotatingFileHandler("app.log", maxBytes=10000, backupCount=1)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+
+    logger.addHandler(handler)
+    ```
+    For both console and file logging, we use the following log levels:
+    - DEBUG: Detailed information, typically of interest only when diagnosing problems.
+    - INFO: Confirmation that things are working as expected.
+    - WARNING: An indication that something unexpected happened, or indicative of some problem in the near future (e.g. ‘disk space low’). The software is still working as expected.
+    - ERROR: Due to a more serious problem, the software has not been able to perform some function.
+    - CRITICAL: A serious error, indicating that the program itself may be unable to continue running.
+
+    we prefix logs with a HH:MM:SS timestamp and log level and the module name:
+    ```
+    12:00:00 INFO __main__ - Processing data...
+    ```
+    
+
 6. **Dictionary Access**
    ```python
    # Good

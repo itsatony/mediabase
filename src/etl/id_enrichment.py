@@ -8,6 +8,7 @@ import logging
 import gzip
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Set, Any, Optional, Tuple
 import requests
@@ -24,6 +25,18 @@ logger = logging.getLogger(__name__)
 # Constants
 DEFAULT_CACHE_TTL = 86400  # 24 hours
 DEFAULT_BATCH_SIZE = 1000
+# Terminal width for padding progress messages
+TERM_WIDTH = os.get_terminal_size().columns if sys.stdout.isatty() else 100
+
+# Helper function for single-line progress updates
+def update_progress(message: str) -> None:
+    """Print progress update on a single, updating line.
+    
+    Args:
+        message: The progress message to display
+    """
+    # Pad with spaces to clear previous content and add carriage return
+    print(f"\r{message:<{TERM_WIDTH}}", end="", flush=True)
 
 class IDEnrichmentProcessor:
     """Process and enrich transcript records with external database identifiers."""
@@ -37,7 +50,7 @@ class IDEnrichmentProcessor:
                 - batch_size: Size of batches for database operations
                 - uniprot_mapping_url: URL for UniProt ID mapping service
                 - ncbi_gene_info_url: URL for NCBI gene info file
-                - hgnc_complete_set_url: URL for HGNC complete set
+                - vgnc_gene_set_url: URL for VGNC complete set
         """
         self.config = config
         self.cache_dir = Path(config.get('cache_dir', '/tmp/mediabase/cache')) / 'id_mapping'
@@ -51,13 +64,23 @@ class IDEnrichmentProcessor:
             'ncbi_gene_info_url',
             'https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz'
         )
-        self.hgnc_complete_set_url = config.get(
-            'hgnc_complete_set_url',
-            'https://ftp.ebi.ac.uk/pub/databases/genenames/hgnc/tsv/hgnc_complete_set.txt'
+        self.vgnc_gene_set_url = config.get(
+            'vgnc_gene_set_url',
+            'https://ftp.ebi.ac.uk/pub/databases/genenames/vgnc/json/all/all_vgnc_gene_set_All.json'
         )
         self.uniprot_idmapping_selected_url = config.get(
             'uniprot_idmapping_selected_url',
             'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz'
+        )
+        
+        # Add transcript mapping source URLs with defaults
+        self.ensembl_refseq_url = config.get(
+            'ensembl_refseq_url',
+            'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz'
+        )
+        self.ensembl_entrez_url = config.get(
+            'ensembl_entrez_url',
+            'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.entrez.tsv.gz'
         )
         
         self.db_manager = get_db_manager(config)
@@ -108,10 +131,10 @@ class IDEnrichmentProcessor:
         file_path = self.cache_dir / f"ncbi_gene_info_{cache_key}.gz"
         
         if file_path.exists() and self._is_cache_valid(cache_key):
-            logger.info(f"Using cached NCBI gene info file: {file_path}")
+            update_progress(f"Using cached NCBI gene info file: {file_path}")
             return file_path
             
-        logger.info(f"Downloading NCBI gene info from {self.ncbi_gene_info_url}")
+        update_progress(f"Downloading NCBI gene info from {self.ncbi_gene_info_url}")
         response = requests.get(self.ncbi_gene_info_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
@@ -128,21 +151,21 @@ class IDEnrichmentProcessor:
         self._update_cache_meta(cache_key, file_path)
         return file_path
             
-    def download_hgnc_complete_set(self) -> Path:
-        """Download HGNC complete set file if not in cache."""
-        cache_key = self._get_cache_key(self.hgnc_complete_set_url)
-        file_path = self.cache_dir / f"hgnc_complete_set_{cache_key}.txt"
+    def download_vgnc_gene_set(self) -> Path:
+        """Download VGNC gene set file if not in cache."""
+        cache_key = self._get_cache_key(self.vgnc_gene_set_url)
+        file_path = self.cache_dir / f"vgnc_gene_set_{cache_key}.json"
         
         if file_path.exists() and self._is_cache_valid(cache_key):
-            logger.info(f"Using cached HGNC complete set file: {file_path}")
+            update_progress(f"Using cached VGNC gene set file: {file_path}")
             return file_path
             
-        logger.info(f"Downloading HGNC complete set from {self.hgnc_complete_set_url}")
-        response = requests.get(self.hgnc_complete_set_url, stream=True)
+        update_progress(f"Downloading VGNC gene set from {self.vgnc_gene_set_url}")
+        response = requests.get(self.vgnc_gene_set_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
         with open(file_path, 'wb') as f, tqdm(
-            desc="Downloading HGNC complete set",
+            desc="Downloading VGNC gene set",
             total=total_size,
             unit='iB',
             unit_scale=True
@@ -161,10 +184,10 @@ class IDEnrichmentProcessor:
         file_path = self.cache_dir / f"uniprot_idmapping_selected_{cache_key}.tab.gz"
         
         if file_path.exists() and self._is_cache_valid(cache_key):
-            logger.info(f"Using cached UniProt idmapping file: {file_path}")
+            update_progress(f"Using cached UniProt idmapping file: {file_path}")
             return file_path
             
-        logger.info(f"Downloading UniProt idmapping from {self.uniprot_idmapping_selected_url}")
+        update_progress(f"Downloading UniProt idmapping from {self.uniprot_idmapping_selected_url}")
         response = requests.get(self.uniprot_idmapping_selected_url, stream=True)
         total_size = int(response.headers.get('content-length', 0))
         
@@ -195,7 +218,7 @@ class IDEnrichmentProcessor:
         Returns:
             Dictionary mapping gene symbols to various IDs
         """
-        logger.info("Processing NCBI gene info file...")
+        update_progress("Processing NCBI gene info file...")
         
         # Define column positions in NCBI gene_info file
         NCBI_TAX_ID = 0
@@ -255,78 +278,70 @@ class IDEnrichmentProcessor:
                                     gene_mappings[gene_symbol]['refseq_ids'].append(refseq_id)
         
         # Log summary statistics
-        logger.info(f"Processed NCBI gene info for {len(gene_mappings)} human genes")
+        update_progress(f"Processed NCBI gene info for {len(gene_mappings)} human genes")
         
         return gene_mappings
         
-    def process_hgnc_complete_set(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
-        """Process HGNC complete set to map gene symbols to various IDs.
+    def process_vgnc_gene_set(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
+        """Process VGNC gene set to map gene symbols to various IDs.
         
         Args:
-            file_path: Path to the HGNC complete set file
+            file_path: Path to the VGNC gene set JSON file
             
         Returns:
             Dictionary mapping gene symbols to various IDs
         """
-        logger.info("Processing HGNC complete set file...")
+        update_progress("Processing VGNC gene set file...")
         
-        # Load the data into a pandas DataFrame for easier processing
-        # HGNC file has header row and tab separation
+        # Load the JSON data
         try:
-            df = pd.read_csv(file_path, sep='\t')
+            with open(file_path, 'r') as f:
+                vgnc_data = json.load(f)
             
-            # Check for expected columns
-            required_columns = ['symbol', 'hgnc_id', 'entrez_id', 'ensembl_gene_id', 
-                                'refseq_accession', 'uniprot_ids']
-            
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                available_columns = ', '.join(df.columns)
-                logger.warning(f"Missing columns in HGNC file: {missing_columns}. Available columns: {available_columns}")
-                
-            # Process each row
             gene_mappings: Dict[str, Dict[str, Any]] = {}
             
-            for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing HGNC records"):
-                gene_symbol = row.get('symbol')
+            for record in tqdm(vgnc_data, desc="Processing VGNC records"):
+                gene_symbol = record.get('symbol')
                 if not gene_symbol:
                     continue
                     
-                # Initialize entry
-                gene_mappings[gene_symbol] = {}
+                # Initialize entry for this gene symbol if needed
+                if gene_symbol not in gene_mappings:
+                    gene_mappings[gene_symbol] = {}
                 
-                # Add HGNC ID if available
-                if 'hgnc_id' in row and pd.notna(row['hgnc_id']):
-                    gene_mappings[gene_symbol]['hgnc_id'] = row['hgnc_id']
-                    
-                # Add Entrez ID if available
-                if 'entrez_id' in row and pd.notna(row['entrez_id']):
-                    gene_mappings[gene_symbol]['entrez_id'] = str(row['entrez_id'])
-                    
-                # Add Ensembl Gene ID if available
-                if 'ensembl_gene_id' in row and pd.notna(row['ensembl_gene_id']):
+                # Add VGNC ID
+                if 'vgnc_id' in record:
+                    gene_mappings[gene_symbol]['vgnc_id'] = record['vgnc_id']
+                
+                # Add Entrez/NCBI ID
+                if 'ncbi_id' in record:
+                    gene_mappings[gene_symbol]['entrez_id'] = record['ncbi_id']
+                
+                # Add Ensembl Gene ID
+                if 'ensembl_gene_id' in record:
                     # Remove version if present
-                    ensembl_id = str(row['ensembl_gene_id']).split('.')[0]
+                    ensembl_id = record['ensembl_gene_id'].split('.')[0]
                     gene_mappings[gene_symbol]['ensembl_gene_id'] = ensembl_id
-                    
-                # Add RefSeq accessions if available
-                if 'refseq_accession' in row and pd.notna(row['refseq_accession']):
-                    refseq_ids = str(row['refseq_accession']).split('|')
-                    gene_mappings[gene_symbol]['refseq_ids'] = refseq_ids
-                    
+                
                 # Add UniProt IDs if available
-                if 'uniprot_ids' in row and pd.notna(row['uniprot_ids']):
-                    uniprot_ids = str(row['uniprot_ids']).split('|')
-                    gene_mappings[gene_symbol]['uniprot_ids'] = uniprot_ids
-            
+                if 'uniprot_ids' in record and isinstance(record['uniprot_ids'], list):
+                    gene_mappings[gene_symbol]['uniprot_ids'] = record['uniprot_ids']
+                
+                # Add HGNC orthologs if available
+                if 'hgnc_orthologs' in record and isinstance(record['hgnc_orthologs'], list):
+                    # Extract just the IDs from orthologs (format is "HGNC:123")
+                    hgnc_ids = [h.replace('HGNC:', '') for h in record['hgnc_orthologs'] if h.startswith('HGNC:')]
+                    if hgnc_ids:
+                        gene_mappings[gene_symbol]['hgnc_id'] = hgnc_ids[0]  # Use first ortholog
+                
             # Log summary statistics
-            logger.info(f"Processed HGNC complete set with {len(gene_mappings)} gene symbols")
+            update_progress(f"Processed VGNC gene set with {len(gene_mappings)} gene symbols")
             return gene_mappings
             
         except Exception as e:
-            logger.error(f"Error processing HGNC complete set: {e}")
+            logger.error(f"Error processing VGNC gene set: {e}")
             return {}
-            
+    
     def process_uniprot_idmapping(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
         """Process UniProt idmapping file to map gene symbols to UniProt IDs.
         
@@ -336,7 +351,7 @@ class IDEnrichmentProcessor:
         Returns:
             Dictionary mapping gene symbols to UniProt IDs
         """
-        logger.info("Processing UniProt idmapping file...")
+        update_progress("Processing UniProt idmapping file...")
         
         # Define column indices for idmapping_selected.tab file
         UNIPROT_ACC = 0
@@ -382,11 +397,179 @@ class IDEnrichmentProcessor:
                             gene_mappings[gene_symbol]['uniprot_id'].append(uniprot_id)
         
             # Log summary statistics
-            logger.info(f"Processed UniProt idmapping for {len(gene_mappings)} gene symbols")
+            update_progress(f"Processed UniProt idmapping for {len(gene_mappings)} gene symbols")
             return gene_mappings
             
         except Exception as e:
             logger.error(f"Error processing UniProt idmapping: {e}")
+            return {}
+
+    def download_ensembl_refseq(self) -> Path:
+        """Download Ensembl-RefSeq mapping file if not in cache."""
+        cache_key = self._get_cache_key(self.ensembl_refseq_url)
+        file_path = self.cache_dir / f"ensembl_refseq_{cache_key}.tsv.gz"
+        
+        if file_path.exists() and self._is_cache_valid(cache_key):
+            update_progress(f"Using cached Ensembl-RefSeq mapping file: {file_path}")
+            return file_path
+            
+        update_progress(f"Downloading Ensembl-RefSeq mapping from {self.ensembl_refseq_url}")
+        response = requests.get(self.ensembl_refseq_url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(file_path, 'wb') as f, tqdm(
+            desc="Downloading Ensembl-RefSeq mapping",
+            total=total_size,
+            unit='iB',
+            unit_scale=True
+        ) as pbar:
+            for data in response.iter_content(chunk_size=8192):
+                size = f.write(data)
+                pbar.update(size)
+                
+        self._update_cache_meta(cache_key, file_path)
+        return file_path
+
+    def download_ensembl_entrez(self) -> Path:
+        """Download Ensembl-Entrez mapping file if not in cache."""
+        cache_key = self._get_cache_key(self.ensembl_entrez_url)
+        file_path = self.cache_dir / f"ensembl_entrez_{cache_key}.tsv.gz"
+        
+        if file_path.exists() and self._is_cache_valid(cache_key):
+            update_progress(f"Using cached Ensembl-Entrez mapping file: {file_path}")
+            return file_path
+            
+        update_progress(f"Downloading Ensembl-Entrez mapping from {self.ensembl_entrez_url}")
+        response = requests.get(self.ensembl_entrez_url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(file_path, 'wb') as f, tqdm(
+            desc="Downloading Ensembl-Entrez mapping",
+            total=total_size,
+            unit='iB',
+            unit_scale=True
+        ) as pbar:
+            for data in response.iter_content(chunk_size=8192):
+                size = f.write(data)
+                pbar.update(size)
+                
+        self._update_cache_meta(cache_key, file_path)
+        return file_path
+
+    def process_ensembl_refseq(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
+        """Process Ensembl-RefSeq mapping file to map transcript IDs.
+        
+        Args:
+            file_path: Path to the Ensembl-RefSeq mapping file
+            
+        Returns:
+            Dictionary mapping Ensembl transcript IDs to RefSeq IDs
+        """
+        update_progress("Processing Ensembl-RefSeq mapping file...")
+        
+        transcript_mappings: Dict[str, Dict[str, Any]] = {}
+        
+        try:
+            with gzip.open(file_path, 'rt') as f:
+                # Skip header line if it exists
+                first_line = f.readline().strip()
+                if first_line.startswith('#') or 'gene_id' in first_line:
+                    pass  # Skip header
+                else:
+                    # Reset file pointer if no header
+                    f.seek(0)
+                
+                # Process file
+                for line in tqdm(f, desc="Processing Ensembl-RefSeq mappings"):
+                    fields = line.strip().split('\t')
+                    
+                    # Ensure the line has enough fields
+                    if len(fields) < 2:
+                        continue
+                    
+                    # Extract transcript IDs
+                    # Format is typically: ensembl_transcript_id, refseq_transcript_id
+                    ensembl_id = fields[0].split('.')[0]  # Remove version if present
+                    refseq_id = fields[1]
+                    
+                    # Skip if either ID is missing
+                    if not ensembl_id or not refseq_id:
+                        continue
+                    
+                    # Initialize entry if needed
+                    if ensembl_id not in transcript_mappings:
+                        transcript_mappings[ensembl_id] = {
+                            'refseq_transcript_ids': []
+                        }
+                    
+                    # Add RefSeq ID if not already present
+                    if refseq_id not in transcript_mappings[ensembl_id]['refseq_transcript_ids']:
+                        transcript_mappings[ensembl_id]['refseq_transcript_ids'].append(refseq_id)
+            
+            # Log summary statistics
+            update_progress(f"Processed Ensembl-RefSeq mappings for {len(transcript_mappings)} Ensembl transcript IDs")
+            return transcript_mappings
+            
+        except Exception as e:
+            logger.error(f"Error processing Ensembl-RefSeq mapping: {e}")
+            return {}
+
+    def process_ensembl_entrez(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
+        """Process Ensembl-Entrez mapping file to map transcript IDs.
+        
+        Args:
+            file_path: Path to the Ensembl-Entrez mapping file
+            
+        Returns:
+            Dictionary mapping Ensembl transcript IDs to Entrez IDs
+        """
+        update_progress("Processing Ensembl-Entrez mapping file...")
+        
+        transcript_mappings: Dict[str, Dict[str, Any]] = {}
+        
+        try:
+            with gzip.open(file_path, 'rt') as f:
+                # Skip header line if it exists
+                first_line = f.readline().strip()
+                if first_line.startswith('#') or 'gene_id' in first_line:
+                    pass  # Skip header
+                else:
+                    # Reset file pointer if no header
+                    f.seek(0)
+                
+                # Process file
+                for line in tqdm(f, desc="Processing Ensembl-Entrez mappings"):
+                    fields = line.strip().split('\t')
+                    
+                    # Ensure the line has enough fields
+                    if len(fields) < 2:
+                        continue
+                    
+                    # Extract transcript IDs
+                    # Format is typically: ensembl_transcript_id, entrez_id
+                    ensembl_id = fields[0].split('.')[0]  # Remove version if present
+                    entrez_id = fields[1]
+                    
+                    # Skip if either ID is missing
+                    if not ensembl_id or not entrez_id:
+                        continue
+                    
+                    # Initialize entry if needed
+                    if ensembl_id not in transcript_mappings:
+                        transcript_mappings[ensembl_id] = {
+                            'entrez_transcript_ids': []
+                        }
+                    
+                    # Add Entrez ID if not already present
+                    if entrez_id not in transcript_mappings[ensembl_id]['entrez_transcript_ids']:
+                        transcript_mappings[ensembl_id]['entrez_transcript_ids'].append(entrez_id)
+            
+            # Log summary statistics
+            update_progress(f"Processed Ensembl-Entrez mappings for {len(transcript_mappings)} Ensembl transcript IDs")
+            return transcript_mappings
+            
+        except Exception as e:
+            logger.error(f"Error processing Ensembl-Entrez mapping: {e}")
             return {}
 
     def update_gene_ids(self, gene_id_mappings: Dict[str, Dict[str, Any]]) -> None:
@@ -395,10 +578,11 @@ class IDEnrichmentProcessor:
         Args:
             gene_id_mappings: Dictionary mapping gene symbols to other IDs
         """
-        logger.info("Updating gene IDs in the database...")
+        update_progress("Updating gene IDs in the database...")
         
         if not gene_id_mappings:
-            logger.warning("No gene ID mappings to update")
+            update_progress("No gene ID mappings to update")
+            print()  # Move to next line
             return
             
         if not self.db_manager.cursor:
@@ -409,6 +593,8 @@ class IDEnrichmentProcessor:
             # Process in batches
             updates = []
             processed = 0
+            
+            pbar = tqdm(total=len(gene_id_mappings), desc="Updating gene records", unit="records")
             
             for gene_symbol, mappings in gene_id_mappings.items():
                 # Prepare alt_gene_ids JSON
@@ -480,9 +666,10 @@ class IDEnrichmentProcessor:
                     if self.db_manager.conn:
                         self.db_manager.conn.commit()
                     processed += len(updates)
-                    updates = []
+                    pbar.update(len(updates))
                     if processed % (self.batch_size * 5) == 0:  # Log periodically
-                      tqdm.write(f"Updated {processed}/{len(gene_id_mappings)} gene records so far...")
+                        update_progress(f"Updated {processed}/{len(gene_id_mappings)} gene records so far...")
+                    updates = []
             
             # Process remaining updates
             if updates:
@@ -503,8 +690,11 @@ class IDEnrichmentProcessor:
                 if self.db_manager.conn:
                     self.db_manager.conn.commit()
                 processed += len(updates)
+                pbar.update(len(updates))
                 
-            logger.info(f"Updated {processed} gene records with alternative IDs")
+            pbar.close()
+            update_progress(f"Updated {processed} gene records with alternative IDs")
+            print()  # Move to next line after completion
             
         except Exception as e:
             if self.db_manager.conn:
@@ -513,15 +703,15 @@ class IDEnrichmentProcessor:
 
     def enrich_gene_ids(self) -> None:
         """Enrich gene IDs using various mapping sources."""
-        logger.info("Starting gene ID enrichment...")
+        update_progress("Starting gene ID enrichment...")
         
         # Download and process NCBI gene info
         ncbi_file = self.download_ncbi_gene_info()
         ncbi_mappings = self.process_ncbi_gene_info(ncbi_file)
         
-        # Download and process HGNC complete set
-        hgnc_file = self.download_hgnc_complete_set()
-        hgnc_mappings = self.process_hgnc_complete_set(hgnc_file)
+        # Download and process VGNC gene set (replacing HGNC)
+        vgnc_file = self.download_vgnc_gene_set()
+        vgnc_mappings = self.process_vgnc_gene_set(vgnc_file)
         
         # Download and process UniProt idmapping
         uniprot_file = self.download_uniprot_idmapping()
@@ -530,8 +720,8 @@ class IDEnrichmentProcessor:
         # Merge gene ID mappings
         gene_id_mappings = {}
         
-        # Start with HGNC mappings as they are most authoritative
-        for gene_symbol, mappings in hgnc_mappings.items():
+        # Start with VGNC mappings as they are authoritative for vertebrates
+        for gene_symbol, mappings in vgnc_mappings.items():
             if gene_symbol not in gene_id_mappings:
                 gene_id_mappings[gene_symbol] = {}
             gene_id_mappings[gene_symbol].update(mappings)
@@ -540,7 +730,7 @@ class IDEnrichmentProcessor:
         for gene_symbol, mappings in ncbi_mappings.items():
             if gene_symbol not in gene_id_mappings:
                 gene_id_mappings[gene_symbol] = {}
-            # Merge mappings, giving preference to existing HGNC mappings
+            # Merge mappings, giving preference to existing VGNC mappings
             for key, value in mappings.items():
                 if key not in gene_id_mappings[gene_symbol] or not gene_id_mappings[gene_symbol][key]:
                     gene_id_mappings[gene_symbol][key] = value
@@ -561,30 +751,155 @@ class IDEnrichmentProcessor:
         # Update the database with merged mappings
         self.update_gene_ids(gene_id_mappings)
         
-        logger.info("Gene ID enrichment completed")
+        update_progress("Gene ID enrichment completed")
+        print()  # Move to next line
 
-    def update_transcript_ids(self, transcript_id_mappings: Dict[str, Dict[str, str]]) -> None:
-        """Update transcript IDs in the database."""
-        # Implementation will be added in next iteration
-        pass
+    def update_transcript_ids(self, transcript_id_mappings: Dict[str, Dict[str, Any]]) -> None:
+        """Update transcript IDs in the database.
+        
+        Args:
+            transcript_id_mappings: Dictionary mapping transcript IDs to other IDs
+        """
+        update_progress("Updating transcript IDs in the database...")
+        
+        if not transcript_id_mappings:
+            update_progress("No transcript ID mappings to update")
+            print()  # Move to next line
+            return
+            
+        if not self.db_manager.cursor:
+            logger.error("No database connection")
+            return
+            
+        try:
+            # Process in batches
+            updates = []
+            processed = 0
+            
+            # Initialize progress bar
+            pbar = tqdm(
+                total=len(transcript_id_mappings),
+                desc="Updating transcript records",
+                unit="records"
+            )
+            
+            # For periodic progress updates outside of tqdm
+            progress_line = ""
+            
+            for transcript_id, mappings in transcript_id_mappings.items():
+                # Prepare alt_transcript_ids JSON
+                alt_ids = {}
+                
+                # Add RefSeq transcript IDs if available
+                if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
+                    alt_ids['RefSeq'] = mappings['refseq_transcript_ids']
+                
+                # Add Entrez transcript IDs if available
+                if 'entrez_transcript_ids' in mappings and mappings['entrez_transcript_ids']:
+                    alt_ids['Entrez'] = mappings['entrez_transcript_ids']
+                
+                # Skip if no alternative IDs found
+                if not alt_ids:
+                    continue
+                
+                # Add to updates batch
+                updates.append((
+                    json.dumps(alt_ids),
+                    transcript_id
+                ))
+                
+                if len(updates) >= self.batch_size:
+                    execute_batch(
+                        self.db_manager.cursor,
+                        """
+                        UPDATE cancer_transcript_base
+                        SET alt_transcript_ids = alt_transcript_ids || %s::jsonb
+                        WHERE transcript_id = %s
+                        """,
+                        updates,
+                        page_size=self.batch_size
+                    )
+                    if self.db_manager.conn:
+                        self.db_manager.conn.commit()
+                    processed += len(updates)
+                    # Update progress bar
+                    pbar.update(len(updates))
+                    if processed % (self.batch_size * 5) == 0:  # Log periodically
+                        # Temporarily hide tqdm bar, update progress, then restore bar
+                        with pbar.external_write_mode():
+                            update_progress(f"Updated {processed}/{len(transcript_id_mappings)} transcript records so far...")
+                    updates = []
+            
+            # Process remaining updates
+            if updates:
+                execute_batch(
+                    self.db_manager.cursor,
+                    """
+                    UPDATE cancer_transcript_base
+                    SET alt_transcript_ids = alt_transcript_ids || %s::jsonb
+                    WHERE transcript_id = %s
+                    """,
+                    updates,
+                    page_size=self.batch_size
+                )
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+                processed += len(updates)
+                pbar.update(len(updates))
+                
+            pbar.close()
+            update_progress(f"Updated {processed} transcript records with alternative IDs")
+            print()  # Move to next line after completion
+            
+        except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
+            logger.error(f"Error updating transcript IDs: {e}")
         
     def enrich_transcript_ids(self) -> None:
-        """Enrich transcript IDs using various mapping services."""
-        # Implementation will be added in next iteration
-        pass
+        """Enrich transcript IDs using various mapping sources."""
+        update_progress("Starting transcript ID enrichment...")
+        
+        # Download and process Ensembl-RefSeq mapping
+        ensembl_refseq_file = self.download_ensembl_refseq()
+        ensembl_refseq_mappings = self.process_ensembl_refseq(ensembl_refseq_file)
+        
+        # Download and process Ensembl-Entrez mapping
+        ensembl_entrez_file = self.download_ensembl_entrez()
+        ensembl_entrez_mappings = self.process_ensembl_entrez(ensembl_entrez_file)
+        
+        # Merge transcript ID mappings
+        transcript_id_mappings = {}
+        
+        # Start with RefSeq mappings
+        for transcript_id, mappings in ensembl_refseq_mappings.items():
+            if transcript_id not in transcript_id_mappings:
+                transcript_id_mappings[transcript_id] = {}
+            transcript_id_mappings[transcript_id].update(mappings)
+        
+        # Add Entrez mappings
+        for transcript_id, mappings in ensembl_entrez_mappings.items():
+            if transcript_id not in transcript_id_mappings:
+                transcript_id_mappings[transcript_id] = {}
+            transcript_id_mappings[transcript_id].update(mappings)
+        
+        # Update the database with merged mappings
+        self.update_transcript_ids(transcript_id_mappings)
+        
+        update_progress("Transcript ID enrichment completed")
+        print()  # Move to next line
         
     def run(self) -> None:
         """Run the complete ID enrichment pipeline."""
         try:
-            logger.info("Starting ID enrichment pipeline...")
+            update_progress("Starting ID enrichment pipeline...")
+            print()  # Move to next line since this is a major step
             
             # Ensure proper database schema
             self._ensure_db_schema()
             
             # Enrich transcript IDs
-            # Currently we don't have specific transcript ID enrichment
-            # Most ID mapping is at the gene level
-            logger.info("Skipping transcript ID enrichment (not implemented)")
+            self.enrich_transcript_ids()
             
             # Enrich gene IDs
             self.enrich_gene_ids()
@@ -592,7 +907,8 @@ class IDEnrichmentProcessor:
             # Verify results
             self.verify_id_enrichment()
             
-            logger.info("ID enrichment pipeline completed successfully")
+            update_progress("ID enrichment pipeline completed successfully")
+            print()  # Move to next line after completion
             
         except Exception as e:
             logger.error(f"ID enrichment failed: {e}")
@@ -619,17 +935,17 @@ class IDEnrichmentProcessor:
             current_version = version[0] if version else None
             
             if current_version != 'v0.1.4':
-                logger.info(f"Current schema version {current_version} needs update to v0.1.4")
+                update_progress(f"Current schema version {current_version} needs update to v0.1.4")
                 if not self.db_manager.migrate_to_version('v0.1.4'):
                     raise RuntimeError("Failed to migrate database schema to v0.1.4")
-                logger.info("Schema successfully updated to v0.1.4")
+                update_progress("Schema successfully updated to v0.1.4")
             else:
                 # Verify all required columns exist
                 for column in required_columns:
                     if not self.db_manager.check_column_exists('cancer_transcript_base', column):
                         raise RuntimeError(f"Required column '{column}' missing in schema v0.1.4")
                 
-            logger.info("Database schema validated for ID enrichment")
+            update_progress("Database schema validated for ID enrichment")
         except Exception as e:
             logger.error(f"Database schema validation failed: {e}")
             raise
@@ -661,15 +977,14 @@ class IDEnrichmentProcessor:
             result = self.db_manager.cursor.fetchone()
             
             if result:
-                logger.info(
-                    f"\nID Enrichment Statistics:\n"
-                    f"- Total genes in database: {result[0]:,}\n"
-                    f"- Genes with alternative gene IDs: {result[1]:,}\n"
-                    f"- Genes with UniProt IDs: {result[2]:,}\n"
-                    f"- Genes with NCBI IDs: {result[3]:,}\n"
-                    f"- Genes with RefSeq IDs: {result[4]:,}\n"
-                    f"- Transcripts with alternative transcript IDs: {result[5]:,}"
-                )
+                # For statistics that take multiple lines, use print instead of update_progress
+                print("\nID Enrichment Statistics:")
+                print(f"- Total genes in database: {result[0]:,}")
+                print(f"- Genes with alternative gene IDs: {result[1]:,}")
+                print(f"- Genes with UniProt IDs: {result[2]:,}")
+                print(f"- Genes with NCBI IDs: {result[3]:,}")
+                print(f"- Genes with RefSeq IDs: {result[4]:,}")
+                print(f"- Transcripts with alternative transcript IDs: {result[5]:,}")
                 
         except Exception as e:
             logger.error(f"Error verifying ID enrichment: {e}")

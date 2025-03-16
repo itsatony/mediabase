@@ -225,9 +225,8 @@ class TranscriptProcessor:
     ) -> List[Tuple[str, str, str, str, str, Dict[str, Any], Dict[str, str], Dict[str, str]]]:
         """Prepare transcript records for database insertion.
         
-        Prioritizes protein_coding transcripts while strictly limiting other types 
-        to a maximum ratio of 4 per 100. Selection is done by examining one record
-        at a time to ensure the ratio is maintained throughout the process.
+        Randomly selects transcripts while enforcing that each non-coding gene type
+        cannot exceed 4% of the total selected transcripts.
         
         Args:
             df: DataFrame containing transcript data
@@ -235,112 +234,116 @@ class TranscriptProcessor:
         Returns:
             List of tuples formatted for database insertion
         """
+        # If no limit is set, process all transcripts
+        if not self.limit_transcripts:
+            logger.info("Processing all transcripts without filtering")
+            return self._prepare_all_records(df)
+            
         # Constants for transcript filtering
         PROTEIN_CODING_TYPE = "protein_coding"
-        NON_CODING_MAX_RATIO = 4 / 100  # 4 per 100 limit
+        MAX_RATIO_PER_TYPE = 4 / 100  # Maximum 4% per non-coding gene type
         
+        logger.info(f"Selecting exactly {self.limit_transcripts} transcripts with maximum {MAX_RATIO_PER_TYPE*100:.2f}% per non-coding gene type")
+        
+        # Shuffle all transcripts randomly
+        shuffled_df = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
+        
+        selected_indices = []
+        selected_type_counts = {}  # Keep track of counts per gene type
+        total_selected = 0
+        
+        # Process each transcript to see if it can be added
+        for idx, row in tqdm(shuffled_df.iterrows(), total=len(shuffled_df), desc="Selecting transcripts"):
+            if total_selected >= self.limit_transcripts:
+                break
+                
+            gene_type = row.get('gene_type', '').lower()
+            
+            # Always accept protein coding genes
+            if gene_type == PROTEIN_CODING_TYPE:
+                selected_indices.append(idx)
+                selected_type_counts[gene_type] = selected_type_counts.get(gene_type, 0) + 1
+                total_selected += 1
+                continue
+            
+            # For non-coding genes, check if adding would exceed the percentage limit
+            current_count = selected_type_counts.get(gene_type, 0)
+            new_total = total_selected + 1
+            new_percentage = (current_count + 1) / new_total
+            
+            if new_percentage <= MAX_RATIO_PER_TYPE:
+                selected_indices.append(idx)
+                selected_type_counts[gene_type] = current_count + 1
+                total_selected += 1
+        
+        # If we went through all transcripts and still haven't reached the limit,
+        # log a warning
+        if total_selected < self.limit_transcripts:
+            logger.warning(
+                f"Could only select {total_selected}/{self.limit_transcripts} transcripts "
+                f"while maintaining the {MAX_RATIO_PER_TYPE*100:.2f}% rule per non-coding gene type."
+            )
+        
+        # Extract the selected transcripts
+        selected_df = shuffled_df.iloc[selected_indices]
+        
+        # Log selection counts
+        logger.info(f"Selected transcript distribution ({total_selected} total):")
+        for gene_type, count in sorted(selected_type_counts.items(), key=lambda x: x[1], reverse=True):
+            percent = (count / total_selected) * 100
+            is_protein_coding = gene_type.lower() == PROTEIN_CODING_TYPE
+            status = "OK" if is_protein_coding or percent <= MAX_RATIO_PER_TYPE * 100 else "OVER LIMIT"
+            logger.info(f"  - {gene_type}: {count} ({percent:.2f}%) {status}")
+        
+        # Format the selected records
         records = []
+        for _, row in tqdm(selected_df.iterrows(), total=len(selected_df), desc="Processing selected transcripts"):
+            try:
+                # Clean transcript_id and gene_id by removing version if present
+                transcript_id = row.get('transcript_id')
+                gene_id = row.get('gene_id', '').split('.')[0] if '.' in row.get('gene_id', '') else row.get('gene_id')
+                
+                record = (
+                    transcript_id,                          # transcript_id
+                    row.get('gene_name', ''),               # gene_symbol
+                    gene_id,                                # gene_id
+                    row.get('gene_type', ''),               # gene_type
+                    row.get('seqname', '').replace('chr', ''),  # chromosome
+                    json.dumps(row.get('coordinates', {})),  # coordinates
+                    json.dumps(row.get('alt_transcript_ids', {})),  # alt_transcript_ids
+                    json.dumps(row.get('alt_gene_ids', {}))  # alt_gene_ids
+                )
+                records.append(record)
+            except Exception as e:
+                logger.warning(f"Error preparing record for {row.get('transcript_id', 'unknown')}: {e}")
         
-        # If we need to apply transcript limit
-        if self.limit_transcripts and self.limit_transcripts < len(df):
-            logger.info(f"Selecting transcripts with strict priority to protein_coding (limit: {self.limit_transcripts})")
-            
-            # Shuffle the dataframe to get random order
-            shuffled_df = df.sample(frac=1.0, random_state=42)
-            
-            # Initialize counters
-            selected_count = 0
-            protein_coding_count = 0
-            non_coding_count = 0
-            
-            # Track skipped types for reporting
-            skipped_types = {}
-            
-            # Process one row at a time
-            for _, row in tqdm(shuffled_df.iterrows(), total=len(shuffled_df), 
-                              desc="Evaluating transcripts for selection"):
-                gene_type = row.get('gene_type', '').lower()
+        return records
+
+    def _prepare_all_records(self, df: pd.DataFrame) -> List[Tuple]:
+        """Prepare all transcript records without filtering."""
+        records = []
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Preparing all transcript records"):
+            try:
+                # Clean transcript_id and gene_id by removing version if present
+                transcript_id = row.get('transcript_id')
+                gene_id = row.get('gene_id', '').split('.')[0] if '.' in row.get('gene_id', '') else row.get('gene_id')
                 
-                # Check if we need to add this transcript
-                add_transcript = False
+                record = (
+                    transcript_id,                       # transcript_id
+                    row.get('gene_name', ''),           # gene_symbol
+                    gene_id,                            # gene_id
+                    row.get('gene_type', ''),           # gene_type
+                    row.get('seqname', '').replace('chr', ''),  # chromosome
+                    json.dumps(row.get('coordinates', {})),      # coordinates
+                    json.dumps(row.get('alt_transcript_ids', {})),  # alt_transcript_ids
+                    json.dumps(row.get('alt_gene_ids', {}))      # alt_gene_ids
+                )
+                records.append(record)
                 
-                if gene_type == PROTEIN_CODING_TYPE:
-                    # Always add protein coding
-                    add_transcript = True
-                    if selected_count < self.limit_transcripts:
-                        protein_coding_count += 1
-                else:
-                    # For non-coding, check if adding would exceed our ratio
-                    if (non_coding_count + 1) / (selected_count + 1) <= NON_CODING_MAX_RATIO:
-                        add_transcript = True
-                        if selected_count < self.limit_transcripts:
-                            non_coding_count += 1
-                    else:
-                        # Track skipped types
-                        skipped_types[gene_type] = skipped_types.get(gene_type, 0) + 1
-                
-                # Process the transcript if we're adding it
-                if add_transcript and selected_count < self.limit_transcripts:
-                    try:
-                        # Clean transcript_id and gene_id by removing version if present
-                        transcript_id = row.get('transcript_id')
-                        gene_id = row.get('gene_id', '').split('.')[0] if '.' in row.get('gene_id', '') else row.get('gene_id')
-                        
-                        record = (
-                            transcript_id,                       # transcript_id
-                            row.get('gene_name', ''),           # gene_symbol
-                            gene_id,                            # gene_id
-                            row.get('gene_type', ''),           # gene_type
-                            row.get('seqname', '').replace('chr', ''),  # chromosome
-                            json.dumps(row.get('coordinates', {})),      # coordinates
-                            json.dumps(row.get('alt_transcript_ids', {})),  # alt_transcript_ids
-                            json.dumps(row.get('alt_gene_ids', {}))      # alt_gene_ids
-                        )
-                        records.append(record)
-                        selected_count += 1
-                        
-                    except Exception as e:
-                        logger.warning(f"Error preparing record for {row.get('transcript_id', 'unknown')}: {e}")
-                
-                # Break if we've reached our limit
-                if selected_count >= self.limit_transcripts:
-                    break
-            
-            # Log selection results
-            logger.info(f"Selected {protein_coding_count} protein_coding and {non_coding_count} non-coding transcripts")
-            logger.info(f"Non-coding ratio achieved: {non_coding_count/selected_count:.2%} (target: {NON_CODING_MAX_RATIO:.2%})")
-            
-            # Log skipped types
-            if skipped_types:
-                skipped_info = ", ".join(f"{t}: {c}" for t, c in sorted(skipped_types.items(), key=lambda x: x[1], reverse=True))
-                logger.info(f"Skipped transcripts by type: {skipped_info}")
-            
-        else:
-            logger.info("Processing all transcripts without filtering")
-            # Process all rows without filtering
-            for _, row in tqdm(df.iterrows(), total=len(df), desc="Preparing transcript records"):
-                try:
-                    # Clean transcript_id and gene_id by removing version if present
-                    transcript_id = row.get('transcript_id')
-                    gene_id = row.get('gene_id', '').split('.')[0] if '.' in row.get('gene_id', '') else row.get('gene_id')
-                    
-                    record = (
-                        transcript_id,                       # transcript_id
-                        row.get('gene_name', ''),           # gene_symbol
-                        gene_id,                            # gene_id
-                        row.get('gene_type', ''),           # gene_type
-                        row.get('seqname', '').replace('chr', ''),  # chromosome
-                        json.dumps(row.get('coordinates', {})),      # coordinates
-                        json.dumps(row.get('alt_transcript_ids', {})),  # alt_transcript_ids
-                        json.dumps(row.get('alt_gene_ids', {}))      # alt_gene_ids
-                    )
-                    records.append(record)
-                    
-                except Exception as e:
-                    logger.warning(f"Error preparing record for {row.get('transcript_id', 'unknown')}: {e}")
-                    continue
-            
-        logger.info(f"Prepared {len(records)} transcript records for insertion")
+            except Exception as e:
+                logger.warning(f"Error preparing record for {row.get('transcript_id', 'unknown')}: {e}")
+        
+        logger.info(f"Prepared {len(records)} transcript records without filtering")
         return records
 
     def load_transcripts(self, records: List[Tuple]) -> None:

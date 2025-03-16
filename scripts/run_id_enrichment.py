@@ -53,6 +53,7 @@ def load_config() -> Dict[str, Any]:
         'hgnc_complete_set_url': os.getenv('MB_HGNC_COMPLETE_SET_URL', 'https://ftp.ebi.ac.uk/pub/databases/genenames/hgnc/tsv/hgnc_complete_set.txt'),
         'ensembl_refseq_url': os.getenv('MB_ENSEMBL_REFSEQ_URL', 'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz'),
         'ensembl_entrez_url': os.getenv('MB_ENSEMBL_ENTREZ_URL', 'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.entrez.tsv.gz'),
+        'vgnc_gene_set_url': os.getenv('MB_VGNC_GENE_SET_URL', 'ftp://ftp.ebi.ac.uk/pub/databases/genenames/vgnc/json/all/all_vgnc_gene_set_All.json'),
         'cache_dir': os.getenv('MB_CACHE_DIR'),
         'cache_ttl': int(os.getenv('MB_CACHE_TTL') or '86400'),
         'batch_size': int(os.getenv('MB_BATCH_SIZE') or '1000'),

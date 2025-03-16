@@ -69,7 +69,7 @@ def run_etl(args: argparse.Namespace) -> None:
         'gtf_url': os.getenv('MB_GENCODE_GTF_URL', 'ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.annotation.gtf.gz'),
         'uniprot_idmapping_selected_url': os.getenv('MB_UNIPROT_IDMAPPING_SELECTED_URL', 'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz'),
         'ncbi_gene_info_url': os.getenv('MB_NCBI_GENE_INFO_URL', 'https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz'),
-        'vgnc_gene_set_url': os.getenv('MB_VGNC_GENE_SET_URL', 'https://ftp.ebi.ac.uk/pub/databases/genenames/vgnc/json/all/all_vgnc_gene_set_All.json'),
+        'vgnc_gene_set_url': os.getenv('MB_VGNC_GENE_SET_URL', 'ftp://ftp.ebi.ac.uk/pub/databases/genenames/vgnc/json/all/all_vgnc_gene_set_All.json'),
         'ensembl_refseq_url': os.getenv('MB_ENSEMBL_REFSEQ_URL', 'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz'),
         'ensembl_entrez_url': os.getenv('MB_ENSEMBL_ENTREZ_URL', 'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.entrez.tsv.gz'),
         'go_obo_url': os.getenv('MB_GO_OBO_URL', 'http://purl.obolibrary.org/obo/go.obo'),

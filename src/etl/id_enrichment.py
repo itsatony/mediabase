@@ -152,29 +152,114 @@ class IDEnrichmentProcessor:
         return file_path
             
     def download_vgnc_gene_set(self) -> Path:
-        """Download VGNC gene set file if not in cache."""
+        """Download the VGNC gene set file.
+        
+        Returns:
+            Path: Path to the downloaded file
+        """
+        from urllib.parse import urlparse
+        import ftplib
+        from tqdm import tqdm
+        import os
+        
+        # Generate cache file path
         cache_key = self._get_cache_key(self.vgnc_gene_set_url)
-        file_path = self.cache_dir / f"vgnc_gene_set_{cache_key}.json"
+        vgnc_file = self.cache_dir / f"vgnc_{cache_key}.json"
         
-        if file_path.exists() and self._is_cache_valid(cache_key):
-            update_progress(f"Using cached VGNC gene set file: {file_path}")
-            return file_path
+        # Check if we have a valid cached file
+        if vgnc_file.exists() and self._is_cache_valid(cache_key):
+            logger.info(f"Using cached VGNC file: {vgnc_file}")
+            return vgnc_file
             
-        update_progress(f"Downloading VGNC gene set from {self.vgnc_gene_set_url}")
-        response = requests.get(self.vgnc_gene_set_url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
+        logger.info(f"Downloading VGNC gene set from {self.vgnc_gene_set_url}")
         
-        with open(file_path, 'wb') as f, tqdm(
-            desc="Downloading VGNC gene set",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=8192):
-                size = f.write(data)
-                pbar.update(size)
+        # Parse URL to get FTP server and path
+        parsed_url = urlparse(self.vgnc_gene_set_url)
+        
+        if parsed_url.scheme == 'ftp':
+            try:
+                # Connect to FTP server
+                server = parsed_url.netloc
+                path = parsed_url.path
                 
-        self._update_cache_meta(cache_key, file_path)
+                # Create an FTP connection
+                ftp = ftplib.FTP(server)
+                ftp.login()  # Anonymous login
+                
+                # Get file size for progress bar
+                ftp.sendcmd("TYPE I")  # Switch to binary mode
+                file_size = ftp.size(path)
+                
+                # Download the file with progress bar
+                with open(vgnc_file, 'wb') as f, tqdm(
+                    desc="Downloading VGNC gene set",
+                    total=file_size,
+                    unit='B',
+                    unit_scale=True
+                ) as pbar:
+                    def callback(data):
+                        f.write(data)
+                        pbar.update(len(data))
+                    
+                    ftp.retrbinary(f"RETR {path}", callback)
+                
+                ftp.quit()
+                
+                # Update cache metadata
+                self._update_cache_meta(cache_key, vgnc_file)
+                logger.info(f"VGNC gene set downloaded to {vgnc_file}")
+                
+            except Exception as e:
+                # If FTP download fails, try HTTP/HTTPS as fallback
+                logger.warning(f"FTP download failed: {e}. Trying HTTP download as fallback.")
+                http_url = f"https://{parsed_url.netloc}{parsed_url.path}"
+                return self._download_http_file(http_url, vgnc_file, cache_key)
+        else:
+            # Use standard HTTP download for non-FTP URLs
+            return self._download_http_file(self.vgnc_gene_set_url, vgnc_file, cache_key)
+            
+        return vgnc_file
+        
+    def _download_http_file(self, url: str, file_path: Path, cache_key: str) -> Path:
+        """Download a file via HTTP/HTTPS.
+        
+        Args:
+            url: URL to download from
+            file_path: Path to save the file to
+            cache_key: Cache key for metadata
+            
+        Returns:
+            Path: Path to the downloaded file
+        """
+        import requests
+        from tqdm import tqdm
+        
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(file_path, 'wb') as f, tqdm(
+                desc=f"Downloading {file_path.name}",
+                total=total_size,
+                unit='B',
+                unit_scale=True
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+            
+            self._update_cache_meta(cache_key, file_path)
+            logger.info(f"File downloaded to {file_path}")
+            
+        except Exception as e:
+            if file_path.exists():
+                file_path.unlink()  # Delete partial download
+            logger.error(f"Failed to download file: {e}")
+            raise
+            
         return file_path
     
     def download_uniprot_idmapping(self) -> Path:
@@ -359,11 +444,14 @@ class IDEnrichmentProcessor:
         GENE_NAME = 2
         
         gene_mappings: Dict[str, Dict[str, Any]] = {}
-        
+        n = 0
         try:
             # Process the file line by line to avoid loading everything into memory
             with gzip.open(file_path, 'rt') as f:
                 for line in tqdm(f, desc="Processing UniProt idmapping"):
+                    n += 1
+                    if n < 2:
+                      logger.debug(f"Line {n}: {line}")
                     # Split the line by tabs
                     fields = line.strip().split('\t')
                     

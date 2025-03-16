@@ -380,7 +380,10 @@ class GOTermProcessor:
                     if 'PubMed:' in part or 'PMID:' in part:
                         pmid = part.split(':')[-1].strip()
                         if pmid.isdigit():
-                            pmids.add(pmid)
+                            # Using a set, so we need pmids as a set
+                            pmids_set = set(pmids)
+                            pmids_set.add(pmid)
+                            pmids = list(pmids_set)
             
             # Create publication references for each PMID found
             for pmid in pmids:

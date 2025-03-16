@@ -1,16 +1,17 @@
-# MEDIA / Cancer Transcriptome Base
+# MEDIABASE: Cancer Transcriptome Base
 
-A comprehensive database system for cancer transcriptome analysis with LLM-agent assistance. The system provides a unified PostgreSQL-based resource for querying relationships between transcripts, pathways, and drug interactions.
+A comprehensive database for cancer transcriptomics analysis, enriched with gene products, GO terms, pathways, drugs, and scientific publications.
 
 ## Overview
 
-This project creates a pre-joined database table optimized for LLM-agent queries about cancer transcriptome data, enabling:
+MEDIABASE integrates various biological databases to provide a unified interface for cancer transcriptome exploration:
 
-- Fast pathway analysis
-- Drug interaction lookups
-- Gene product classification
-- Literature-backed insights
-- Patient-specific expression analysis
+- Gene transcript information from GENCODE
+- Gene product classification from UniProt
+- GO terms enrichment for functional analysis
+- Pathway integration from Reactome
+- Drug interactions from DrugCentral
+- Scientific literature from PubMed
 
 ## Setup
 
@@ -265,6 +266,35 @@ After completing the setup, you can:
    # Run with coverage
    poetry run pytest tests/etl/test_drugs.py --cov=src.etl.drugs
    ```
+
+### Publication Enrichment
+
+The publication enrichment module enhances existing transcript records with metadata from scientific literature. It:
+
+1. Extracts PubMed IDs (PMIDs) from GO terms, pathways, drugs, and UniProt references
+2. Retrieves comprehensive publication metadata from PubMed's E-utilities API
+3. Caches responses for efficient future use
+4. Enhances source-specific publication references with titles, authors, abstracts, etc.
+
+To run only the publications enrichment:
+```
+poetry run python scripts/run_etl.py --module publications
+```
+
+Additional options for publication enrichment:
+```
+# Force refresh all cached publication data
+poetry run python scripts/run_etl.py --module publications --force-refresh
+
+# Adjust API rate limiting (requests per second)
+poetry run python scripts/run_etl.py --module publications --rate-limit 0.1
+```
+
+Required environment variables for PubMed API:
+```
+MB_PUBMED_EMAIL=your.email@example.com  # Required by NCBI
+MB_PUBMED_API_KEY=your_api_key          # Optional, allows higher request rates
+```
 
 ## Documentation
 

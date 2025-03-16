@@ -75,7 +75,13 @@ def run_etl(args: argparse.Namespace) -> None:
         'go_obo_url': os.getenv('MB_GO_OBO_URL', 'http://purl.obolibrary.org/obo/go.obo'),
         'go_basic_url': os.getenv('MB_GO_BASIC_URL', 'http://purl.obolibrary.org/obo/go/go-basic.obo'),
         'drugcentral_url': os.getenv('MB_DRUGCENTRAL_DATA_URL', 'https://unmtid-shinyapps.net/download/DrugCentral/20231006/drugcentral-pgdump_20231006.sql.gz'),
-        'reactome_url': os.getenv('MB_REACTOME_DOWNLOAD_URL', 'https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt')
+        'reactome_url': os.getenv('MB_REACTOME_DOWNLOAD_URL', 'https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt'),
+        
+        # Add PubMed specific configurations
+        'pubmed_api_key': os.getenv('MB_PUBMED_API_KEY', ''),
+        'pubmed_email': os.getenv('MB_PUBMED_EMAIL', ''),
+        'force_refresh': args.force_refresh,
+        'rate_limit': args.rate_limit,
     }
 
     # Validate required URLs
@@ -84,7 +90,8 @@ def run_etl(args: argparse.Namespace) -> None:
         'id_enrichment': ['ncbi_gene_info_url', 'vgnc_gene_set_url', 'uniprot_idmapping_selected_url', 'ensembl_refseq_url', 'ensembl_entrez_url'],
         'go_terms': ['go_obo_url', 'go_basic_url'],
         'pathways': ['reactome_url'],
-        'drugs': ['drugcentral_url']
+        'drugs': ['drugcentral_url'],
+        'publications': []  # PubMed API doesn't need URLs, just API credentials
     }
 
     if args.module != 'all':
@@ -152,7 +159,8 @@ def run_etl(args: argparse.Namespace) -> None:
             'products': 3,      # Products need transcript data and IDs
             'go_terms': 4,      # GO terms can enhance product classification
             'pathways': 5,      # Pathways may reference products and GO terms
-            'drugs': 6          # Drugs need all previous data
+            'drugs': 6,         # Drugs need all previous data
+            'publications': 7   # Publications should be processed last
         }
         
         # Sort modules if running multiple
@@ -201,6 +209,13 @@ def run_etl(args: argparse.Namespace) -> None:
                 drug_processor = DrugProcessor(config)
                 drug_processor.run()
                 console.print("[green]Drug integration completed[/green]")
+            
+            elif module == 'publications':
+                console.print("[bold green]Running publications enrichment...[/bold green]")
+                from src.etl.publications import PublicationsProcessor
+                publications_processor = PublicationsProcessor(config)
+                publications_processor.run()
+                console.print("[green]Publications enrichment completed[/green]")
         
         # Verify data integrity with proper null checks
         if db_manager.cursor:
@@ -245,7 +260,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Run ETL pipeline')
     parser.add_argument(
         '--module', 
-        choices=['all', 'transcript', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs'],
+        choices=['all', 'transcript', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs', 'publications'],
         default='all',
         help='ETL module to run'
     )
@@ -281,6 +296,19 @@ def main() -> None:
         '--force',
         action='store_true',
         help='Force operation without confirmation prompts'
+    )
+    
+    # Add publication-specific arguments
+    parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Force refresh of cached data (including publications)'
+    )
+    parser.add_argument(
+        '--rate-limit',
+        type=float,
+        default=0.34,
+        help='Rate limit for API calls in seconds (default: 0.34, ~3 requests/sec)'
     )
     
     args = parser.parse_args()

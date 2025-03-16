@@ -1,65 +1,101 @@
-"""Utility functions for working with publication references."""
+"""Utilities for processing publication references."""
 
 import re
 import logging
-from typing import Optional, Dict, List, Any, Set, Union, cast
+from typing import List, Optional, Dict, Any, Set, Union, cast
 from ..etl.publications import Publication
 
 logger = logging.getLogger(__name__)
 
+# Regular expressions for different PMID formats
+PMID_PATTERNS = [
+    # Standard format: PMID: 12345678
+    re.compile(r'PMID:\s*(\d+)', re.IGNORECASE),
+    # PubMed ID: 12345678
+    re.compile(r'PubMed\s+ID:?\s*(\d+)', re.IGNORECASE),
+    # PubMed:12345678
+    re.compile(r'PubMed:?\s*(\d+)', re.IGNORECASE),
+    # PMID=12345678
+    re.compile(r'PMID\s*=\s*(\d+)', re.IGNORECASE),
+    # Bare PMID in parentheses: (12345678)
+    re.compile(r'\((\d{1,8})\)'),
+    # URLs: /pubmed/12345678
+    re.compile(r'/pubmed/(\d+)', re.IGNORECASE),
+]
+
 def extract_pmid_from_text(text: str) -> Optional[str]:
-    """Extract PubMed ID from text.
+    """Extract a PMID from text if present.
     
     Args:
-        text: Text containing a PMID reference (PMID:12345678, PMID 12345678, etc.)
+        text: Text that might contain a PMID
         
     Returns:
-        str: Extracted PMID or None if not found
+        Extracted PMID or None if not found
     """
     if not text:
         return None
         
-    # Common patterns for PMID references
-    patterns = [
-        r'PMID:(\d+)',           # PMID:12345678
-        r'PMID\s+(\d+)',         # PMID 12345678
-        r'pubmed/(\d+)',         # pubmed/12345678
-        r'PubMed ID:\s*(\d+)',   # PubMed ID: 12345678
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+    # Try all patterns
+    for pattern in PMID_PATTERNS:
+        match = pattern.search(text)
         if match:
-            return match.group(1)
-            
+            pmid = match.group(1).strip()
+            if pmid.isdigit() and 1 <= len(pmid) <= 8:
+                return pmid
+                
     return None
 
-def extract_pmids_from_text(text: str) -> Set[str]:
-    """Extract all PubMed IDs from text.
+def extract_pmids_from_text(text: str) -> List[str]:
+    """Extract all PMIDs from text.
     
     Args:
-        text: Text containing PMID references
+        text: Text that might contain PMIDs
         
     Returns:
-        Set[str]: All extracted PMIDs
+        List of extracted PMIDs (empty if none found)
     """
     if not text:
-        return set()
+        return []
         
-    # Common patterns for PMID references
-    patterns = [
-        r'PMID:(\d+)',           # PMID:12345678
-        r'PMID\s+(\d+)',         # PMID 12345678
-        r'pubmed/(\d+)',         # pubmed/12345678
-        r'PubMed ID:\s*(\d+)',   # PubMed ID: 12345678
-    ]
+    pmids = []
     
-    pmids = set()
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        pmids.update(matches)
-            
+    # Try all patterns
+    for pattern in PMID_PATTERNS:
+        matches = pattern.finditer(text)
+        for match in matches:
+            pmid = match.group(1).strip()
+            if pmid.isdigit() and 1 <= len(pmid) <= 8 and pmid not in pmids:
+                pmids.append(pmid)
+                
     return pmids
+
+def is_valid_pmid(pmid: str) -> bool:
+    """Check if a string is a valid PMID.
+    
+    Args:
+        pmid: String to check
+        
+    Returns:
+        True if valid PMID, False otherwise
+    """
+    if not pmid:
+        return False
+        
+    # PMIDs are 1-8 digit numbers
+    return pmid.isdigit() and 1 <= len(pmid) <= 8
+
+def format_pmid_url(pmid: str) -> str:
+    """Format a PMID as a PubMed URL.
+    
+    Args:
+        pmid: PubMed ID
+        
+    Returns:
+        URL to PubMed page for the given PMID
+    """
+    if not is_valid_pmid(pmid):
+        return ""
+    return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 
 def format_publication_citation(pub: Publication) -> str:
     """Format a publication reference as a citation.

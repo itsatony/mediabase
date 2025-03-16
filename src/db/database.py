@@ -580,19 +580,32 @@ class DatabaseManager:
                 if not self.cursor or self.cursor.closed:
                     self.cursor = self.conn.cursor()
                 
-                # Simple query to test connection
+                # Simple query to test connection - with timeout to prevent hanging
+                self.conn.set_isolation_level(0)  # Set to AUTOCOMMIT to avoid transaction blocks
+                self.cursor.execute("SET statement_timeout = 3000")  # 3 second timeout
                 self.cursor.execute("SELECT 1")
                 result = self.cursor.fetchone()
+                self.cursor.execute("RESET statement_timeout")  # Reset timeout
+                self.conn.set_isolation_level(2)  # Reset to normal transaction isolation
+                
                 return bool(result and result[0] == 1)
             except psycopg2.Error as e:
                 logger.warning(f"Connection test failed: {e}. Reconnecting...")
-                self.close()  # Close the invalid connection
+                try:
+                    self.close()  # Close the invalid connection
+                except:
+                    pass  # Ignore errors on closing
                 return self.connect()  # Try to reconnect
                 
         except Exception as e:
             logger.error(f"Error ensuring database connection: {e}")
-            return False
-    
+            # Try one more time with a fresh connection
+            try:
+                self.close()
+            except:
+                pass
+            return self.connect()
+
     def execute_safely(self, query: str, params: Optional[Tuple] = None, 
                        commit: bool = True) -> Optional[pg_cursor]:
         """Execute a query safely with proper error handling and transaction management.
@@ -638,7 +651,7 @@ def get_db_manager(config: Dict[str, Any]) -> DatabaseManager:
         config: Database configuration dictionary
         
     Returns:
-        DatabaseManager: Initialized database manager
+            DatabaseManager: Initialized database manager
     """
     manager = DatabaseManager(config)
     manager.connect()

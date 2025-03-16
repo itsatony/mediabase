@@ -444,7 +444,10 @@ class DrugProcessor:
     def calculate_drug_scores(self) -> None:
         """Calculate synergy-based drug scores using pathways and GO terms."""
         if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
+            if not self.db_manager.ensure_connection():
+                raise RuntimeError("Failed to establish database connection for drug score calculation")
+            if not self.db_manager.cursor:  # Check again after connection attempt
+                raise RuntimeError("Could not create database cursor for drug score calculation")
             
         try:
             # Create temporary scoring tables
@@ -479,9 +482,15 @@ class DrugProcessor:
             
             while True:
                 # Ensure cursor is still valid
-                if not self.db_manager.cursor:
-                    raise RuntimeError("Database cursor is no longer valid")
-                    
+                if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                    if not self.db_manager.ensure_connection():
+                        logger.warning("Database connection lost during batch processing, attempting to reconnect...")
+                        if not self.db_manager.ensure_connection():
+                            raise RuntimeError("Failed to reestablish database connection")
+                        logger.info("Database connection reestablished")
+                    if not self.db_manager.cursor:  # Double-check after reconnection
+                        raise RuntimeError("Could not create database cursor after reconnection")
+                        
                 # Get batch of genes with drugs
                 self.db_manager.cursor.execute("""
                     SELECT gene_symbol, drugs, pathways, go_terms
@@ -491,6 +500,9 @@ class DrugProcessor:
                     LIMIT %s OFFSET %s
                 """, (batch_size, offset))
                 
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor lost during query execution")
+                    
                 rows = self.db_manager.cursor.fetchall()
                 if not rows:
                     break
@@ -498,6 +510,9 @@ class DrugProcessor:
                 logger.info(f"Processing batch of {len(rows)} genes (offset {offset})")
                 
                 # Process pathway scores for this batch
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor is None before pathway scores query")
+                    
                 self.db_manager.cursor.execute("""
                     INSERT INTO temp_pathway_scores
                     WITH batch_genes AS (
@@ -521,6 +536,9 @@ class DrugProcessor:
                 """, ([row[0] for row in rows],))
                 
                 # Process GO term scores for this batch
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor is None before GO scores query")
+                    
                 self.db_manager.cursor.execute("""
                     INSERT INTO temp_go_scores
                     WITH batch_genes AS (
@@ -549,8 +567,11 @@ class DrugProcessor:
                 
                 # Combine scores for this batch
                 pathway_weight = float(self.config.get('drug_pathway_weight', 1.0))
-                go_weight = pathway_weight * GO_TERM_WEIGHT_FACTOR  # Use constant instead of magic number
+                go_weight = pathway_weight * GO_TERM_WEIGHT_FACTOR
                 
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor is None before combined scores query")
+                    
                 self.db_manager.cursor.execute("""
                     INSERT INTO temp_final_scores
                     SELECT 
@@ -569,6 +590,9 @@ class DrugProcessor:
                 """, (pathway_weight, go_weight, [row[0] for row in rows]))
                 
                 # Update main table for this batch
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor is None before updating main table")
+                    
                 self.db_manager.cursor.execute("""
                     UPDATE cancer_transcript_base cb
                     SET drug_scores = fs.drug_scores
@@ -577,6 +601,9 @@ class DrugProcessor:
                 """)
                 
                 # Clear temporary tables for next batch
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Database cursor is None before clearing temp tables")
+                    
                 self.db_manager.cursor.execute("""
                     TRUNCATE temp_pathway_scores, temp_go_scores, temp_final_scores
                 """)
@@ -585,25 +612,27 @@ class DrugProcessor:
                 offset += batch_size
                 
                 # Commit each batch
-                if self.db_manager.conn:
+                if self.db_manager.conn and not self.db_manager.conn.closed:
                     self.db_manager.conn.commit()
                 logger.info(f"Processed and committed {total_processed} genes so far")
             
             # Log final statistics
             logger.info(f"Drug score calculation completed. Total genes processed: {total_processed}")
             
-            # Sample verification
-            # Ensure cursor is still valid before executing
-            if not self.db_manager.cursor:
-                logger.warning("Cannot verify results - database cursor is no longer valid")
+            # Sample verification with proper null checks
+            cursor = self.db_manager.cursor if self.db_manager.ensure_connection() else None
+            if not cursor:
+                logger.warning("Cannot verify results - unable to establish database connection")
+            elif cursor.closed:
+                logger.warning("Cannot verify results - database cursor is closed")
             else:
-                self.db_manager.cursor.execute("""
+                cursor.execute("""
                     SELECT gene_symbol, drug_scores 
                     FROM cancer_transcript_base 
                     WHERE drug_scores IS NOT NULL 
                     LIMIT 3
                 """)
-                samples = self.db_manager.cursor.fetchall() if self.db_manager.cursor else []
+                samples = cursor.fetchall() if cursor and not cursor.closed else []
                 if samples:
                     logger.debug("Sample drug scores:")
                     for sample in samples:
@@ -611,12 +640,23 @@ class DrugProcessor:
             
         except Exception as e:
             logger.error(f"Drug score calculation failed: {e}")
-            if self.db_manager.conn:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
         finally:
-            if self.db_manager.conn:
-                self.db_manager.conn.close()
+            # Only clean up temporary tables
+            cursor = self.db_manager.cursor if self.db_manager.ensure_connection() else None
+            if cursor and not cursor.closed:
+                try:
+                    cursor.execute("""
+                        DROP TABLE IF EXISTS temp_pathway_scores;
+                        DROP TABLE IF EXISTS temp_go_scores;
+                        DROP TABLE IF EXISTS temp_final_scores;
+                    """)
+                    if self.db_manager.conn and not self.db_manager.conn.closed:
+                        self.db_manager.conn.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temporary tables: {e}")
 
     def load_drugs(self, records: List[tuple]) -> None:
         """Load drug records into database."""
@@ -675,7 +715,9 @@ class DrugProcessor:
             
             # Ensure we have a valid database connection before proceeding
             if not self.db_manager.ensure_connection():
-                raise RuntimeError("Database connection lost before integrating drug data")
+                logger.info("Establishing database connection for drug integration...")
+                if not self.db_manager.ensure_connection():
+                    raise RuntimeError("Failed to establish database connection for drug integration")
             
             self.integrate_drugs(drug_targets)
             
@@ -683,12 +725,26 @@ class DrugProcessor:
             logger.info("Calculating drug interaction scores...")
             self.calculate_drug_scores()
             
-            # Verify results
-            if not self.db_manager.cursor:
-                logger.warning("Cannot verify results - database cursor is no longer valid")
+            # Verify results - ensure connection is still valid
+            cursor = None
+            if not self.db_manager.ensure_connection():
+                logger.warning("Database connection lost. Attempting to reconnect for verification...")
+                if not self.db_manager.ensure_connection():
+                    logger.error("Failed to reestablish database connection for verification")
+                    return
+            
+            # Create a new cursor if needed
+            if not self.db_manager.cursor or self.db_manager.cursor.closed:
+                logger.warning("Database cursor is not valid. Creating new cursor for verification...")
+                if self.db_manager.conn and not self.db_manager.conn.closed:
+                    self.db_manager.cursor = self.db_manager.conn.cursor()
+            
+            cursor = self.db_manager.cursor
+            if not cursor or cursor.closed:
+                logger.warning("Cannot verify results - unable to create valid database cursor")
                 return
                 
-            self.db_manager.cursor.execute("""
+            cursor.execute("""
                 SELECT 
                     COUNT(*) as total,
                     COUNT(CASE WHEN drugs != '{}'::jsonb THEN 1 END) as with_drugs,
@@ -700,7 +756,7 @@ class DrugProcessor:
             """)
             
             # Null-check before accessing fetchone
-            stats = self.db_manager.cursor.fetchone() if self.db_manager.cursor else None
+            stats = cursor.fetchone() if cursor and not cursor.closed else None
             if stats:
                 logger.info(
                     f"Pipeline completed:\n"
@@ -714,7 +770,14 @@ class DrugProcessor:
             
         except Exception as e:
             logger.error(f"Drug processing pipeline failed: {e}")
+            if self.db_manager.conn and not self.db_manager.conn.closed:
+                self.db_manager.conn.rollback()
             raise
+        finally:
+            # Only close at the end of the complete pipeline run
+            if self.db_manager.conn and not self.db_manager.conn.closed:
+                logger.debug("Closing database connection at end of drug pipeline")
+                self.db_manager.conn.close()
 
     def extract_publication_references(self, drug_references: str) -> List[Publication]:
         """Extract publication references from drug evidence data.

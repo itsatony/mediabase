@@ -331,6 +331,9 @@ class PathwayProcessor:
     def _get_ncbi_mapping(self, cur) -> Dict[str, str]:
         """Get mapping between NCBI gene IDs and gene IDs."""
         # First, get all gene IDs from database
+        if not cur:
+            raise RuntimeError("No database cursor provided")
+            
         cur.execute("""
             SELECT DISTINCT gene_id, gene_symbol 
             FROM cancer_transcript_base 
@@ -384,16 +387,19 @@ class PathwayProcessor:
             logger.warning("No pathway data to process!")
             return
             
-        if not self.db_manager.cursor or self.db_manager.cursor.closed:
-            logger.info("Reopening database connection...")
-            self.db_manager = get_db_manager(self.config)
-            
-        if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
+        # Improved connection handling
+        if not self.db_manager.ensure_connection():
+            logger.info("Establishing database connection for pathway enrichment...")
+            if not self.db_manager.ensure_connection():
+                raise RuntimeError("Failed to establish database connection for pathway enrichment")
+            if not self.db_manager.cursor:
+                raise RuntimeError("Could not create database cursor for pathway enrichment")
             
         try:
             cur = self.db_manager.cursor
-            
+            if not cur:
+                raise RuntimeError("Database cursor is None")
+                
             # Get initial statistics
             cur.execute("""
                 SELECT 
@@ -403,7 +409,7 @@ class PathwayProcessor:
                 FROM cancer_transcript_base 
                 WHERE gene_type = 'protein_coding'
             """)
-            before_stats = cur.fetchone()
+            before_stats = cur.fetchone() if cur and not cur.closed else None
             if before_stats:
                 logger.info(
                     f"\nBefore enrichment:\n"
@@ -414,6 +420,13 @@ class PathwayProcessor:
                 logger.warning("No data found in the database for enrichment statistics.")
             
             # Get NCBI ID to gene symbol mapping
+            if not cur or cur.closed:
+                if not self.db_manager.ensure_connection():
+                    raise RuntimeError("Lost database connection before mapping gene IDs")
+                cur = self.db_manager.cursor
+                if not cur:
+                    raise RuntimeError("Could not create database cursor after connection refresh")
+                    
             ncbi_mapping = self._get_ncbi_mapping(cur)
             
             # Now map pathways using NCBI IDs
@@ -429,45 +442,78 @@ class PathwayProcessor:
                     updates.append((pathway_list, gene_symbol))
                     
                     if len(updates) >= self.batch_size:
+                        # Verify connection before batch update
+                        if not self.db_manager.ensure_connection():
+                            logger.warning("Connection lost during pathway batch update, reconnecting...")
+                            if not self.db_manager.ensure_connection():
+                                raise RuntimeError("Failed to reestablish database connection")
+                            cur = self.db_manager.cursor
+                            if not cur:
+                                raise RuntimeError("Could not create database cursor after reconnection")
+                        
                         self._update_batch(cur, updates)
-                        if self.db_manager.conn is not None:
+                        if self.db_manager.conn and not self.db_manager.conn.closed:
                             self.db_manager.conn.commit()
                         processed += len(updates)
                         updates = []
             
             if updates:
+                # Verify connection before final update
+                if not self.db_manager.ensure_connection():
+                    logger.warning("Connection lost before final pathway update, reconnecting...")
+                    if not self.db_manager.ensure_connection():
+                        raise RuntimeError("Failed to reestablish database connection")
+                    cur = self.db_manager.cursor
+                    if not cur:
+                        raise RuntimeError("Could not create database cursor after reconnection")
+                        
                 self._update_batch(cur, updates)
-                if self.db_manager.conn is not None:
+                if self.db_manager.conn and not self.db_manager.conn.closed:
                     self.db_manager.conn.commit()
                 processed += len(updates)
+                    
+                # Log statistics with better error handling
+                # Verify connection before statistics query
+                if not self.db_manager.ensure_connection():
+                    logger.warning("Connection lost before collecting statistics, reconnecting...")
+                    if not self.db_manager.ensure_connection():
+                        logger.error("Failed to reestablish database connection, skipping statistics")
+                        return
+                    cur = self.db_manager.cursor
+                    if not cur:
+                        logger.error("Could not create database cursor, skipping statistics")
+                        return
+                    
+            # Final statistics query
+            if cur and not cur.closed:
+                cur.execute("""
+                    SELECT 
+                        COUNT(*) as total_genes,
+                        COUNT(CASE WHEN array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
+                        COALESCE(AVG(array_length(pathways, 1)), 0) as avg_pathways
+                    FROM cancer_transcript_base
+                    WHERE gene_type = 'protein_coding'
+                """)
+                stats = cur.fetchone() if cur and not cur.closed else None
                 
-            # Log statistics with better error handling
-            cur.execute("""
-                SELECT 
-                    COUNT(*) as total_genes,
-                    COUNT(CASE WHEN array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
-                    COALESCE(AVG(array_length(pathways, 1)), 0) as avg_pathways
-                FROM cancer_transcript_base
-                WHERE gene_type = 'protein_coding'
-            """)
-            stats = cur.fetchone()
-            
-            if stats:
-                logger.info(
-                    f"\nEnrichment Results:\n"
-                    f"- Total genes processed: {stats[0]:,}\n"
-                    f"- NCBI IDs matched: {matched:,}\n"
-                    f"- Updates processed: {processed:,}\n"
-                    f"- Final genes with pathways: {stats[1]:,}\n"
-                    f"- Average pathways per gene: {stats[2]:.1f}"
-                )
-                
+                if stats:
+                    logger.info(
+                        f"\nEnrichment Results:\n"
+                        f"- Total genes processed: {stats[0]:,}\n"
+                        f"- NCBI IDs matched: {matched:,}\n"
+                        f"- Updates processed: {processed:,}\n"
+                        f"- Final genes with pathways: {stats[1]:,}\n"
+                        f"- Average pathways per gene: {stats[2]:.1f}"
+                    )
+                    
+            else:
+                logger.warning("Unable to collect final statistics - cursor is not available")
+                    
         except Exception as e:
             logger.error(f"Pathway enrichment failed: {e}")
-            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
-        # Remove the finally block with connection closing - this is now handled in run()
 
     def _update_batch(self, cur, updates: List[Tuple[List[str], str]]) -> None:
         """Update a batch of pathway data."""
@@ -537,17 +583,21 @@ class PathwayProcessor:
         try:
             logger.info("Starting pathway enrichment pipeline...")
             
-            # More thorough schema verification
-            if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                logger.info("Opening database connection...")
-                self.db_manager = get_db_manager(self.config)
-                
-            if not self.db_manager.cursor:
-                raise RuntimeError("No database connection")
+            # More thorough connection management
+            if not self.db_manager.ensure_connection():
+                logger.info("Establishing initial database connection for pathway pipeline...")
+                if not self.db_manager.ensure_connection():
+                    raise RuntimeError("Failed to establish database connection")
+                if not self.db_manager.cursor:
+                    raise RuntimeError("Could not create database cursor")
+            
+            cursor = self.db_manager.cursor
+            if not cursor:
+                raise RuntimeError("Database cursor is None after connection check")
                 
             # Check schema version
-            self.db_manager.cursor.execute("SELECT version FROM schema_version")
-            version = self.db_manager.cursor.fetchone()
+            cursor.execute("SELECT version FROM schema_version")
+            version = cursor.fetchone() if cursor and not cursor.closed else None
             if not version:
                 raise RuntimeError("Could not determine schema version")
                 
@@ -564,7 +614,7 @@ class PathwayProcessor:
                 'gene_symbol',
                 'gene_type'
             ]
-            
+                
             for column in required_columns:
                 if not self.db_manager.check_column_exists('cancer_transcript_base', column):
                     raise RuntimeError(
@@ -575,16 +625,21 @@ class PathwayProcessor:
             # Run enrichment after schema verification
             self.enrich_transcripts()
             
-            # Verify connection is still open
-            if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                logger.info("Reopening database connection for verification...")
-                self.db_manager = get_db_manager(self.config)
+            # Verify connection before verification
+            cursor = None
+            if not self.db_manager.ensure_connection():
+                logger.warning("Connection lost after pathway enrichment, reconnecting for verification...")
+                if not self.db_manager.ensure_connection():
+                    logger.error("Failed to reestablish connection for verification, skipping verification step")
+                    return
                 
-            if not self.db_manager.cursor:
-                raise RuntimeError("Could not reestablish database connection for verification")
-            
+            cursor = self.db_manager.cursor
+            if not cursor:
+                logger.error("No database cursor available for verification")
+                return
+                
             # Verify results
-            self.db_manager.cursor.execute("""
+            cursor.execute("""
                 SELECT 
                     COUNT(*) as total,
                     COUNT(CASE WHEN pathways IS NOT NULL 
@@ -593,7 +648,7 @@ class PathwayProcessor:
                           THEN 1 END) as with_refs
                 FROM cancer_transcript_base
             """)
-            stats = self.db_manager.cursor.fetchone()
+            stats = cursor.fetchone() if cursor and not cursor.closed else None
             if stats:
                 logger.info(
                     f"Pipeline completed:\n"
@@ -604,11 +659,11 @@ class PathwayProcessor:
             
         except Exception as e:
             logger.error(f"Pathway enrichment pipeline failed: {e}")
-            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 self.db_manager.conn.rollback()
             raise
         finally:
             # Only close the connection here, at the end of the entire pipeline
-            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
+            if self.db_manager.conn and not self.db_manager.conn.closed:
                 logger.debug("Closing database connection at end of pathway pipeline")
                 self.db_manager.conn.close()

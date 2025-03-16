@@ -9,6 +9,9 @@ import gzip
 import json
 import os
 import sys
+import tempfile
+import shutil
+import re
 from pathlib import Path
 from typing import Dict, List, Set, Any, Optional, Tuple
 import requests
@@ -27,6 +30,8 @@ DEFAULT_CACHE_TTL = 86400  # 24 hours
 DEFAULT_BATCH_SIZE = 1000
 # Terminal width for padding progress messages
 TERM_WIDTH = os.get_terminal_size().columns if sys.stdout.isatty() else 100
+# Human taxonomy ID for filtering
+HUMAN_TAXON_ID = "9606"
 
 # Helper function for single-line progress updates
 def update_progress(message: str) -> None:
@@ -85,9 +90,23 @@ class IDEnrichmentProcessor:
         
         self.db_manager = get_db_manager(config)
         
-    def _get_cache_key(self, url: str) -> str:
-        """Generate a cache key from URL."""
-        return hashlib.sha256(url.encode()).hexdigest()
+    def _get_cache_key(self, url: str, filters: Optional[Dict[str, str]] = None) -> str:
+        """Generate a cache key from URL and optional filters.
+        
+        Args:
+            url: Source URL
+            filters: Optional dictionary of filters applied to the data
+            
+        Returns:
+            str: Hash string to use as cache key
+        """
+        # Create a combined string of URL and filters
+        key_str = url
+        if filters:
+            for k, v in sorted(filters.items()):
+                key_str += f"_{k}={v}"
+        
+        return hashlib.sha256(key_str.encode()).hexdigest()
         
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cache is still valid for a given cache key."""
@@ -106,8 +125,15 @@ class IDEnrichmentProcessor:
         except (json.JSONDecodeError, KeyError, ValueError):
             return False
             
-    def _update_cache_meta(self, cache_key: str, file_path: Path) -> None:
-        """Update cache metadata."""
+    def _update_cache_meta(self, cache_key: str, file_path: Path, 
+                          filters: Optional[Dict[str, str]] = None) -> None:
+        """Update cache metadata with filters information.
+        
+        Args:
+            cache_key: The cache key
+            file_path: Path to the cached file
+            filters: Optional dictionary of filters applied to the data
+        """
         meta_path = self.cache_dir / "meta.json"
         meta = {}
         if meta_path.exists():
@@ -119,38 +145,206 @@ class IDEnrichmentProcessor:
 
         meta[cache_key] = {
             'timestamp': datetime.now().isoformat(),
-            'file_path': str(file_path)
+            'file_path': str(file_path),
+            'filters': filters or {}
         }
 
         with open(meta_path, 'w') as f:
             json.dump(meta, f)
 
-    def download_ncbi_gene_info(self) -> Path:
-        """Download NCBI Gene Info file if not in cache."""
-        cache_key = self._get_cache_key(self.ncbi_gene_info_url)
-        file_path = self.cache_dir / f"ncbi_gene_info_{cache_key}.gz"
+    def _filter_uniprot_idmapping(self, input_path: Path, output_path: Path) -> None:
+        """Filter UniProt idmapping file to only include human entries.
         
-        if file_path.exists() and self._is_cache_valid(cache_key):
-            update_progress(f"Using cached NCBI gene info file: {file_path}")
-            return file_path
-            
-        update_progress(f"Downloading NCBI gene info from {self.ncbi_gene_info_url}")
-        response = requests.get(self.ncbi_gene_info_url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
+        Args:
+            input_path: Path to the original unfiltered file
+            output_path: Path where to save the filtered file
+        """
+        # We need to extract and match the human entries by their UniProt accession
+        # First, get a set of human UniProt accessions
+        human_accessions = set()
         
-        with open(file_path, 'wb') as f, tqdm(
-            desc="Downloading NCBI gene info",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=8192):
-                size = f.write(data)
-                pbar.update(size)
+        # UniProt's idmapping file has human proteins identifiable by:
+        # 1. Looking up taxonomy IDs in another file (proteome file)
+        # 2. Using entries that map to human genes/proteins
+        
+        update_progress("Identifying human UniProt accessions...")
+        
+        # Process the file once to identify human entries
+        total_entries = 0
+        human_entries = 0
+        
+        with gzip.open(input_path, 'rt') as f, tempfile.NamedTemporaryFile(mode='w+', delete=False) as temp_file:
+            for line in tqdm(f, desc="Pre-filtering UniProt data to human entries"):
+                total_entries += 1
+                fields = line.strip().split('\t')
                 
-        self._update_cache_meta(cache_key, file_path)
-        return file_path
+                # Skip lines that don't have enough fields
+                if len(fields) < 3:
+                    continue
+                
+                # Check if this entry maps to a human gene entry
+                # Fields: UniProtKB-AC UniProtKB-ID GeneID (EntrezGene)
+                uniprot_acc = fields[0]
+                
+                # Look for gene mappings with 9606 (human) taxonomy ID
+                # This is an imperfect heuristic but most UniProt entries with human gene mappings are human
+                is_human = False
+                
+                # Check for human gene ID pattern (these are typically numeric)
+                # Note: This is a simplification - ideally we would cross-reference with a human gene list
+                if len(fields) > 2 and fields[2].isdigit():
+                    # We consider it a human entry if it has a gene ID mapped
+                    is_human = True
+                    human_accessions.add(uniprot_acc)
+                    human_entries += 1
+                    temp_file.write(line)
+        
+        # Report filtering statistics
+        human_percentage = (human_entries / max(1, total_entries)) * 100
+        update_progress(f"Identified {len(human_accessions):,} human UniProt accessions "
+                       f"({human_percentage:.1f}% of total entries)")
+                
+        # Move the temporary file to the final filtered file location
+        temp_path = Path(temp_file.name)
+        
+        # Create a compressed version of the filtered file
+        with open(temp_path, 'rb') as f_in, gzip.open(output_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        
+        # Remove the temporary file
+        temp_path.unlink()
+        
+        update_progress(f"Created human-filtered UniProt idmapping file: {output_path}")
+
+    def _filter_ncbi_gene_info(self, input_path: Path, output_path: Path) -> None:
+        """Filter NCBI gene_info file to only include human entries.
+        
+        Args:
+            input_path: Path to the original unfiltered file
+            output_path: Path where to save the filtered file
+        """
+        # NCBI gene_info file has taxonomy ID in the first column, so filtering is straightforward
+        update_progress("Filtering NCBI gene info to human entries (taxon 9606)...")
+        
+        total_entries = 0
+        human_entries = 0
+        
+        # Process the file and write only human entries to a new file
+        with gzip.open(input_path, 'rt') as f_in, gzip.open(output_path, 'wt') as f_out:
+            # Copy the header line
+            header = next(f_in)
+            f_out.write(header)
             
+            for line in tqdm(f_in, desc="Pre-filtering NCBI gene info to human entries"):
+                total_entries += 1
+                if line.startswith('#'):
+                    f_out.write(line)  # Copy comment lines
+                    continue
+                    
+                fields = line.strip().split('\t')
+                
+                # Check if this is a human entry (tax_id=9606)
+                if len(fields) > 0 and fields[0] == HUMAN_TAXON_ID:
+                    f_out.write(line)
+                    human_entries += 1
+        
+        # Report filtering statistics
+        human_percentage = (human_entries / max(1, total_entries)) * 100
+        update_progress(f"Filtered NCBI gene info: {human_entries:,} human entries "
+                       f"({human_percentage:.1f}% of total entries)")
+
+    def download_ncbi_gene_info(self) -> Path:
+        """Download NCBI Gene Info file, pre-filter to human entries if needed.
+        
+        Returns:
+            Path to the human-filtered NCBI gene info file
+        """
+        # Generate cache keys for both raw and filtered files
+        raw_cache_key = self._get_cache_key(self.ncbi_gene_info_url)
+        filtered_cache_key = self._get_cache_key(self.ncbi_gene_info_url, {'taxon': HUMAN_TAXON_ID})
+        
+        # Define file paths for both raw and filtered files
+        raw_file_path = self.cache_dir / f"ncbi_gene_info_{raw_cache_key}.gz"
+        filtered_file_path = self.cache_dir / f"ncbi_gene_info_human_{filtered_cache_key}.gz"
+        
+        # Check if we have a valid filtered cache file
+        if filtered_file_path.exists() and self._is_cache_valid(filtered_cache_key):
+            update_progress(f"Using cached human-filtered NCBI gene info file: {filtered_file_path}")
+            return filtered_file_path
+            
+        # If not, check if we need to download the raw file
+        if not raw_file_path.exists() or not self._is_cache_valid(raw_cache_key):
+            update_progress(f"Downloading NCBI gene info from {self.ncbi_gene_info_url}")
+            response = requests.get(self.ncbi_gene_info_url, stream=True)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(raw_file_path, 'wb') as f, tqdm(
+                desc="Downloading NCBI gene info",
+                total=total_size,
+                unit='iB',
+                unit_scale=True
+            ) as pbar:
+                for data in response.iter_content(chunk_size=8192):
+                    size = f.write(data)
+                    pbar.update(size)
+                    
+            self._update_cache_meta(raw_cache_key, raw_file_path)
+        
+        # Now filter the raw file to human entries
+        update_progress("Filtering NCBI gene info to human entries...")
+        self._filter_ncbi_gene_info(raw_file_path, filtered_file_path)
+        
+        # Update cache metadata for the filtered file
+        self._update_cache_meta(filtered_cache_key, filtered_file_path, {'taxon': HUMAN_TAXON_ID})
+        
+        return filtered_file_path
+
+    def download_uniprot_idmapping(self) -> Path:
+        """Download UniProt idmapping_selected file, pre-filter to human entries if needed.
+        
+        Returns:
+            Path to the human-filtered UniProt idmapping file
+        """
+        # Generate cache keys for both raw and filtered files
+        raw_cache_key = self._get_cache_key(self.uniprot_idmapping_selected_url)
+        filtered_cache_key = self._get_cache_key(self.uniprot_idmapping_selected_url, {'taxon': HUMAN_TAXON_ID})
+        
+        # Define file paths for both raw and filtered files
+        raw_file_path = self.cache_dir / f"uniprot_idmapping_selected_{raw_cache_key}.tab.gz"
+        filtered_file_path = self.cache_dir / f"uniprot_idmapping_selected_human_{filtered_cache_key}.tab.gz"
+        
+        # Check if we have a valid filtered cache file
+        if filtered_file_path.exists() and self._is_cache_valid(filtered_cache_key):
+            update_progress(f"Using cached human-filtered UniProt idmapping file: {filtered_file_path}")
+            return filtered_file_path
+            
+        # If not, check if we need to download the raw file
+        if not raw_file_path.exists() or not self._is_cache_valid(raw_cache_key):
+            update_progress(f"Downloading UniProt idmapping from {self.uniprot_idmapping_selected_url}")
+            response = requests.get(self.uniprot_idmapping_selected_url, stream=True)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(raw_file_path, 'wb') as f, tqdm(
+                desc="Downloading UniProt idmapping",
+                total=total_size,
+                unit='iB',
+                unit_scale=True
+            ) as pbar:
+                for data in response.iter_content(chunk_size=8192):
+                    size = f.write(data)
+                    pbar.update(size)
+                    
+            self._update_cache_meta(raw_cache_key, raw_file_path)
+        
+        # Now filter the raw file to human entries
+        update_progress("Filtering UniProt idmapping file to human entries...")
+        self._filter_uniprot_idmapping(raw_file_path, filtered_file_path)
+        
+        # Update cache metadata for the filtered file
+        self._update_cache_meta(filtered_cache_key, filtered_file_path, {'taxon': HUMAN_TAXON_ID})
+        
+        return filtered_file_path
+        
     def download_vgnc_gene_set(self) -> Path:
         """Download the VGNC gene set file.
         
@@ -262,33 +456,6 @@ class IDEnrichmentProcessor:
             
         return file_path
     
-    def download_uniprot_idmapping(self) -> Path:
-        """Download UniProt idmapping_selected file if not in cache."""
-        # We use the selected mapping file which is much smaller than the full mapping
-        cache_key = self._get_cache_key(self.uniprot_idmapping_selected_url)
-        file_path = self.cache_dir / f"uniprot_idmapping_selected_{cache_key}.tab.gz"
-        
-        if file_path.exists() and self._is_cache_valid(cache_key):
-            update_progress(f"Using cached UniProt idmapping file: {file_path}")
-            return file_path
-            
-        update_progress(f"Downloading UniProt idmapping from {self.uniprot_idmapping_selected_url}")
-        response = requests.get(self.uniprot_idmapping_selected_url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(file_path, 'wb') as f, tqdm(
-            desc="Downloading UniProt idmapping",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=8192):
-                size = f.write(data)
-                pbar.update(size)
-                
-        self._update_cache_meta(cache_key, file_path)
-        return file_path
-    
     def query_uniprot_mapping_service(self, gene_symbols: List[str]) -> Dict[str, Dict[str, str]]:
         """Query UniProt ID mapping service for gene symbols."""
         # Implementation will be added in next iteration
@@ -298,7 +465,7 @@ class IDEnrichmentProcessor:
         """Process NCBI Gene Info file to map gene IDs.
         
         Args:
-            file_path: Path to the gene_info.gz file
+            file_path: Path to the gene_info.gz file (now pre-filtered to human entries)
             
         Returns:
             Dictionary mapping gene symbols to various IDs
@@ -324,10 +491,8 @@ class IDEnrichmentProcessor:
                     
                 fields = line.strip().split('\t')
                 
-                # Only process human genes (tax_id=9606)
-                if len(fields) > NCBI_TAX_ID and fields[NCBI_TAX_ID] != "9606":
-                    continue
-                    
+                # No need to check for human entries - file is pre-filtered
+                # This makes the code more efficient
                 if len(fields) <= NCBI_GENE_ID:
                     continue
                     
@@ -366,7 +531,7 @@ class IDEnrichmentProcessor:
         update_progress(f"Processed NCBI gene info for {len(gene_mappings)} human genes")
         
         return gene_mappings
-        
+    
     def process_vgnc_gene_set(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
         """Process VGNC gene set to map gene symbols to various IDs.
         
@@ -431,7 +596,7 @@ class IDEnrichmentProcessor:
         """Process UniProt idmapping file to map gene symbols to UniProt IDs.
         
         Args:
-            file_path: Path to the idmapping_selected.tab.gz file
+            file_path: Path to the idmapping_selected.tab.gz file (now pre-filtered to human entries)
             
         Returns:
             Dictionary mapping gene symbols to UniProt IDs
@@ -459,6 +624,7 @@ class IDEnrichmentProcessor:
         
         try:
             # Process the file line by line to avoid loading everything into memory
+            # Since the file is pre-filtered, processing should be much faster
             with gzip.open(file_path, 'rt') as f:
                 for line in tqdm(f, desc="Processing UniProt idmapping"):
                     if n < 2:

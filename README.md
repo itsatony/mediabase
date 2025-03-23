@@ -426,19 +426,19 @@ Current development status and upcoming milestones:
     - Enhanced publication tracking in all processors
     - Standardized database access patterns
     - Added comprehensive validation
-- [x] STEP_AQ: Introduce config var to limit the pipeline to n transcripts (2025-04-16)
+- [x] STEP_AQ: Introduce config var to limit the pipeline to n transcripts (2025-03-16)
   - Added --limit-transcripts option to run_etl.py
   - Allows limiting the number of transcripts processed
   - Useful for testing and development
   - Best used in conjunction with --reset-db to ensure consistent state
   - Documentation updated with example command usage
-- [x] STEP_AR: Implement auto-download of UniProt data in ProductClassifier (2025-04-18)
+- [x] STEP_AR: Implement auto-download of UniProt data in ProductClassifier (2025-03-16)
   - Added automatic download of UniProt data when file is missing
   - Integrates with existing download script functionality
   - Provides clear error messages when download fails
   - Ensures seamless ETL pipeline execution without manual downloads
   - Maintains compatibility with standalone download script
-- [x] STEP_AS: Fixed Database Module Connection Errors (2025-04-20)
+- [x] STEP_AS: Fixed Database Module Connection Errors (2025-03-16)
   - Fixed module import/export structures
   - Added proper error handling for SQL operations
   - Added type-safe connection management
@@ -446,13 +446,13 @@ Current development status and upcoming milestones:
   - Ensured proper NULL checks before operations on connections
   - Fixed reset method to properly handle errors
   - Added additional database management utilities
-- [x] STEP_AT: Fixed pathway enrichment SQL error (2025-04-22)
+- [x] STEP_AT: Fixed pathway enrichment SQL error (2025-03-16)
   - Fixed array formatting issue in pathway enrichment module
   - Improved connection handling to prevent "connection already closed" errors
   - Added proper exception handling for database operations
   - Enhanced update_batch method to process genes individually
   - Added more robust connection state checking
-- [x] STEP_AU: Enhanced Publication Reference Structure (2025-05-01)
+- [x] STEP_AU: Enhanced Publication Reference Structure (2025-03-16)
   - Defined comprehensive publication reference structure
   - Added support for abstracts, authors, DOIs, and URLs
   - Implemented utility functions for extracting PMIDs from text
@@ -461,7 +461,7 @@ Current development status and upcoming milestones:
   - Enhanced PubMed metadata retrieval to include abstracts
   - Improved publication reference storage and retrieval
   - Added documentation for the publication reference structure
-- [x] STEP_AV: GO Term Publication Reference Extraction (2025-05-02)
+- [x] STEP_AV: GO Term Publication Reference Extraction (2025-03-16)
   - Enhanced GO term processor to extract PMIDs from evidence codes
   - Added utility script for extracting PMIDs from existing GO annotations
   - Implemented pattern recognition for multiple evidence code formats
@@ -470,7 +470,7 @@ Current development status and upcoming milestones:
   - Integrated with the publication enrichment pipeline
   - Added comprehensive logging and progress tracking
   - Supported batch processing for high performance
-- [x] STEP_AW: Pathway Publication Reference Enhancement (2025-05-03)
+- [x] STEP_AW: Pathway Publication Reference Enhancement (2025-03-16)
   - Added extraction of publication references from Reactome pathway data
   - Created pathway-to-publication mapping infrastructure
   - Implemented pattern recognition for Reactome pathway IDs
@@ -481,7 +481,7 @@ Current development status and upcoming milestones:
   - Added simulation mode for development and testing without API access
   - Enhanced database update operations to merge and deduplicate references
   - Added comprehensive documentation and logging
-- [x] STEP_AX: UniProt Publication Reference Extraction (2025-05-04)
+- [x] STEP_AX: UniProt Publication Reference Extraction (2025-03-16)
   - Added extraction of publication references from UniProt feature annotations
   - Enhanced ProductClassifier to identify PMIDs in features, citations, and functions
   - Created dedicated utility script for extracting from existing UniProt data
@@ -491,8 +491,8 @@ Current development status and upcoming milestones:
   - Added automatic schema checking and migration
   - Implemented batch processing for optimal performance
   - Enhanced command-line options for publication reference control
-- [x] STEP_AY: Drug Publication Reference Extraction (2025-05-05)
-  - Enhanced DrugProcessor to extract publication references from drug evidence data
+- [x] STEP_AY: Drug Publication Reference Extraction (2025-03-16)
+  - Enhanced DrugProcessor to extract publication references from drug evidsence data
   - Created dedicated utility script for extracting references from existing drug data
   - Implemented reference extraction from multiple drug evidence fields
   - Added automated reference extraction during drug data integration
@@ -501,7 +501,7 @@ Current development status and upcoming milestones:
   - Implemented batch processing for optimal database performance
   - Added status reporting for drug publication extraction
   - Enhanced statistics tracking in drug integration pipeline
-- [x] STEP_AZ: ID Enrichment Pre-filtering Optimization (2023-05-10)
+- [x] STEP_AZ: ID Enrichment Pre-filtering Optimization (2025-03-16)
   - Added pre-filtering of large database files to human entries only
   - Implemented smart caching of both raw and filtered files
   - Reduced UniProt idmapping processing time by 90%+ 
@@ -511,7 +511,50 @@ Current development status and upcoming milestones:
   - Improved memory usage by employing streaming processing
   - Added proper validation of filtered content
   - Maintained data completeness and accuracy while improving performance
-- [ ] STEP_CA: AI Agent System Prompt Development
+- [x] STEP_BA: Bug Fix - TranscriptProcessor Limit Handling (2025-03-16)
+  - Fixed NoneType multiplication error in transcript limit handling 
+  - Improved configuration variable access consistency
+  - Enhanced error handling for limit settings
+  - Added proper fallback to use all transcripts when limit is not set
+  - Updated documentation for limit usage
+- [ ] STEP_CA: unify console logging for all system parts / modules. especially for ETLs. prefix each line with source module name, add timestamp of start, progress should be filling bars with time elapsed, percentage and counter of total, live-updating this one line.
+- [ ] STEP_DA: fix the publication enrichment part. this is the error we got last:
+  ```console
+  DEBUG:src.etl.publications:Error parsing XML: 'NoneType' object has no attribute 'xpath'
+  INFO:src.etl.publications:Saved 199 publications to cache
+  Fetching PubMed data:  83%|████████████████████████████████▎                                      | 200/240 [00:03<00:00, 57.33it/s]DEBUG:urllib3.connectionpool:Starting new HTTPS connection (1): eutils.ncbi.nlm.nih.gov:443
+  DEBUG:urllib3.connectionpool:https://eutils.ncbi.nlm.nih.gov:443 "GET /entrez/eutils/esummary.fcgi?db=pubmed&tool=mediabase&email=toni.wagner%40vaudience.ai&retmode=json&api_key=0fcaac3eb246f10a2414b27f354b9f1cf609&id=28859078%2C9989505%2C25691535%2C28083649%2C35947500%2C17357160%2C17671431%2C28017370%2C25877302%2C17569869%2C1373383%2C12183469%2C24498351%2C8054366%2C9%2C26647308%2C7539744%2C18976966%2C10%2C58%2C20573744%2C20519654%2C11115895%2C15031724%2C15314609%2C17359283%2C23589386%2C34507348%2C17294403%2C16636079%2C10806483%2C15522866%2C29249973%2C22940612%2C1710033%2C18228599%2C22325362%2C23468431%2C44%2C9427755 HTTP/1.1" 200 None
+  DEBUG:urllib3.connectionpool:Starting new HTTPS connection (1): eutils.ncbi.nlm.nih.gov:443
+  DEBUG:urllib3.connectionpool:https://eutils.ncbi.nlm.nih.gov:443 "GET /entrez/eutils/efetch.fcgi?db=pubmed&tool=mediabase&email=toni.wagner%40vaudience.ai&retmode=json&api_key=0fcaac3eb246f10a2414b27f354b9f1cf609&id=28859078%2C9989505%2C25691535%2C28083649%2C35947500%2C17357160%2C17671431%2C28017370%2C25877302%2C17569869%2C1373383%2C12183469%2C24498351%2C8054366%2C9%2C26647308%2C7539744%2C18976966%2C10%2C58%2C20573744%2C20519654%2C11115895%2C15031724%2C15314609%2C17359283%2C23589386%2C34507348%2C17294403%2C16636079%2C10806483%2C15522866%2C29249973%2C22940612%2C1710033%2C18228599%2C22325362%2C23468431%2C44%2C9427755&rettype=abstract HTTP/1.1" 200 None
+  DEBUG:src.etl.publications:Error parsing XML: 'NoneType' object has no attribute 'xpath'
+  Fetching PubMed data: 100%|████████████████████████████████████| 240/240 [00:05<00:00, 46.98it/s]
+  INFO:src.etl.publications:Saved 239 publications to cache
+  INFO:src.etl.publications:Updating 239 publications in the database
+  Enriching references in database: 100%|███████████████████████████████████████████| 72228/72228 [00:01<00:00, 70493.16it/s]
+  INFO:src.etl.publications:Enrichment completed. Enriched 1003 records. Processed 1003 updates.
+  ERROR:src.etl.publications:Publications enrichment failed: function round(double precision, integer) does not exist
+  LINE 64:                     ROUND((enriched_pmids::float / NULLIF(un...
+                              ^
+  HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+
+  ETL pipeline failed: function round(double precision, integer) does not exist
+  LINE 64:                     ROUND((enriched_pmids::float / NULLIF(un...
+                              ^
+  HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+
+  ERROR:master_etl:Detailed error trace:
+  Traceback (most recent call last):
+    File "/home/itsatony/code/mediabase/scripts/run_etl.py", line 217, in run_etl
+      publications_processor.run()
+    File "/home/itsatony/code/mediabase/src/etl/publications.py", line 729, in run
+      cursor.execute("""
+  psycopg2.errors.UndefinedFunction: function round(double precision, integer) does not exist
+  LINE 64:                     ROUND((enriched_pmids::float / NULLIF(un...
+                              ^
+  HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+  ```
+- [ ] STEP_EA: Add ETL for cancer/disease association
+- [ ] STEP_FA: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
   - Build oncology-specific terminology mapping (German/English)
   - Document all available data relationships
@@ -519,10 +562,10 @@ Current development status and upcoming milestones:
   - Create German-English medical term mapping
   - Document query patterns and best practices
   - Create mapping of colloquial to technical terms
-- [ ] STEP_CB: Query optimization
-- [ ] STEP_CC: LLM-agent integration tests
-- [ ] STEP_DA: Documentation
-- [ ] STEP_FA: Production deployment
+- [ ] STEP_FB: Query optimization
+- [ ] STEP_FC: LLM-agent integration tests
+- [ ] STEP_GA: Documentation
+- [ ] STEP_HA: Production deployment
 
 ## Database Management
 
@@ -539,6 +582,12 @@ The project uses a centralized DatabaseManager class that provides:
 - Comprehensive error handling
 
 ### Usage
+
+To use the existing management script for backup and restore and stats, run the following commands:
+
+```bash
+$ poetry run scripts/manage_db.py 
+```
 
 1. Basic database operations:
    ```python

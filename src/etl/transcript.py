@@ -232,7 +232,9 @@ class TranscriptProcessor:
             List of tuples formatted for database insertion
         """
         MAX_PERCENT_NON_CODING = 0.04  # 4% limit for each non-coding gene type
-        TARGET_COUNT = self.config.get('limit_transcripts', len(df))  # Target number of records to return
+        
+        # FIX: Use self.limit_transcripts directly instead of trying to access it from self.config
+        TARGET_COUNT = self.limit_transcripts if self.limit_transcripts is not None else len(df)
         PROTEIN_CODING_TARGET = int(TARGET_COUNT * 0.70)  # 70% protein coding genes target
         
         # Initialize tracking variables

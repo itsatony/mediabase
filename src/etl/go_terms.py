@@ -603,16 +603,38 @@ class GOTermProcessor(BaseProcessor):
                     ) ON COMMIT DROP
                 """)
                 
-                # Insert batch data into temp table
-                batch_data = [(update[4], update[0], update[1], update[2], update[3]) for update in updates]
-                transaction.cursor.executemany(
-                    """
-                    INSERT INTO temp_go_terms 
-                    (gene_symbol, go_terms, molecular_functions, cellular_location, publications)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    batch_data
-                )
+                # Insert batch data one at a time with conflict handling
+                for update in updates:
+                    # Extract data from update tuple
+                    gene_symbol = update[4]
+                    go_terms_json = update[0] 
+                    molecular_functions = update[1]
+                    cellular_location = update[2]
+                    publications = update[3]
+                    
+                    # Use ON CONFLICT to handle duplicate gene symbols by merging data
+                    transaction.cursor.execute(
+                        """
+                        INSERT INTO temp_go_terms 
+                        (gene_symbol, go_terms, molecular_functions, cellular_location, publications)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (gene_symbol) DO UPDATE SET
+                            go_terms = temp_go_terms.go_terms || EXCLUDED.go_terms,
+                            molecular_functions = array(
+                                SELECT DISTINCT unnest(
+                                    array_cat(temp_go_terms.molecular_functions, EXCLUDED.molecular_functions)
+                                )
+                            ),
+                            cellular_location = array(
+                                SELECT DISTINCT unnest(
+                                    array_cat(temp_go_terms.cellular_location, EXCLUDED.cellular_location)
+                                )
+                            ),
+                            publications = COALESCE(temp_go_terms.publications, '[]'::jsonb) || 
+                                          COALESCE(EXCLUDED.publications, '[]'::jsonb)
+                        """,
+                        (gene_symbol, go_terms_json, molecular_functions, cellular_location, publications)
+                    )
                 
                 # Update from temp table to main table in same transaction
                 transaction.cursor.execute("""
@@ -765,16 +787,35 @@ class GOTermProcessor(BaseProcessor):
                     ) ON COMMIT DROP
                 """)
                 
-                # Insert batch data into temp table
-                batch_data = [(update[3], update[0], update[1], update[2]) for update in updates]
-                transaction.cursor.executemany(
-                    """
-                    INSERT INTO temp_enriched_terms 
-                    (gene_symbol, go_terms, molecular_functions, cellular_location)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    batch_data
-                )
+                # Insert batch data one at a time with conflict handling
+                for update in updates:
+                    # Extract data from update tuple
+                    gene_symbol = update[3]
+                    go_terms_json = update[0]
+                    molecular_functions = update[1]
+                    cellular_location = update[2]
+                    
+                    # Use ON CONFLICT to handle duplicate gene symbols by merging data
+                    transaction.cursor.execute(
+                        """
+                        INSERT INTO temp_enriched_terms 
+                        (gene_symbol, go_terms, molecular_functions, cellular_location)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (gene_symbol) DO UPDATE SET
+                            go_terms = temp_enriched_terms.go_terms || EXCLUDED.go_terms,
+                            molecular_functions = array(
+                                SELECT DISTINCT unnest(
+                                    array_cat(temp_enriched_terms.molecular_functions, EXCLUDED.molecular_functions)
+                                )
+                            ),
+                            cellular_location = array(
+                                SELECT DISTINCT unnest(
+                                    array_cat(temp_enriched_terms.cellular_location, EXCLUDED.cellular_location)
+                                )
+                            )
+                        """,
+                        (gene_symbol, go_terms_json, molecular_functions, cellular_location)
+                    )
                 
                 # Update from temp table to main table in same transaction
                 transaction.cursor.execute("""
@@ -870,7 +911,7 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
             if self.db_manager.cursor:
                 self.db_manager.cursor.execute("""
                     SELECT uniprot_ids 
-                    FROM cancer_transcript_base
+                    FROM cancer_transcript_base 
                     WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
                 """, (gene_symbol,))
                 result = self.db_manager.cursor.fetchone()
@@ -880,14 +921,12 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
             # Format GO terms as JSONB object with evidence codes
             go_terms_json = {}
             go_references = []
-            
             for go_id, details in terms.items():
                 go_terms_json[go_id] = {
                     'name': details.get('name', ''),
                     'namespace': details.get('namespace', ''),
                     'evidence': details.get('evidence', [])
                 }
-                
                 # Extract references for this GO term
                 if 'references' in details:
                     go_references.extend(details['references'])
@@ -899,7 +938,7 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
                 json.dumps(go_references)
             ))
             processed += 1
-        
+            
             # Process in batches
             if len(updates) >= self.batch_size:
                 self._update_go_batch(updates)
@@ -931,6 +970,7 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
                 FROM temp_go_data go
                 WHERE cb.gene_symbol = go.gene_symbol
             """)
+            
             # Also update by UniProt ID for broader coverage
             transaction.cursor.execute("""
                 UPDATE cancer_transcript_base cb
@@ -953,11 +993,11 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
                 AND go.uniprot_ids IS NOT NULL
                 AND array_length(go.uniprot_ids, 1) > 0
             """)
+            
             # Clean up
             transaction.cursor.execute("DROP TABLE IF EXISTS temp_go_data")
         
         self.logger.info(f"Successfully integrated GO terms for {processed} genes")
-        
     except Exception as e:
         self.logger.error(f"Failed to integrate GO terms: {e}")
         raise DatabaseError(f"GO term integration failed: {e}")

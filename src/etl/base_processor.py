@@ -1,24 +1,32 @@
-"""Base processor class for ETL modules.
+"""Base processor for ETL workflows.
 
-This module provides a base class with common functionality for all ETL processors,
-reducing code duplication and standardizing patterns across the application.
+This module provides a common base class for all ETL processor implementations,
+standardizing configuration, logging, and database operations.
 """
 
-import logging
-import hashlib
+# Standard library imports
 import json
-import requests
+import os
+import time
+import logging
+import warnings
+import hashlib
 import gzip
 import shutil
 from pathlib import Path
+from typing import Dict, Any, Optional, List, Tuple, Union, TypeVar, Callable
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Union, List, Tuple, Callable, TypeVar, Generic
 
+# Third party imports
+import requests
 from tqdm import tqdm
+import psycopg2
+from psycopg2.extensions import connection as pg_connection
 from psycopg2.extras import execute_batch
 
+# Local imports
+from ..utils.logging import setup_logging, get_progress_bar
 from ..db.database import get_db_manager, DatabaseManager
-from ..utils.logging import get_etl_logger
 
 # Type variables for generic methods
 T = TypeVar('T')
@@ -65,7 +73,7 @@ class BaseProcessor:
         
         # Set up module-specific logger
         module_name = self.__class__.__module__.split('.')[-1]
-        self.logger = get_etl_logger(module_name, config.get('log_level', 'INFO'))
+        self.logger = setup_logging(module_name=module_name, log_level=config.get('log_level', 'INFO'))
         
         # Extract nested db config if present
         db_config = config.get('db')

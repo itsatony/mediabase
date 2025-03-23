@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set, Tuple, DefaultDict
 from collections import defaultdict
+from datetime import datetime
 import re
 
 # Third party imports
@@ -21,6 +22,7 @@ from rich.table import Table
 
 # Local imports
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
+from ..utils.logging import get_progress_bar
 
 # Constants
 HUMAN_TAXID = '9606'  # NCBI taxonomy ID for humans
@@ -98,8 +100,8 @@ class IDEnrichmentProcessor(BaseProcessor):
                         f"from {self.filter_metadata['uniprot'].get('total', 0):,} total"
                     )
                     return output_path
-            except Exception:
-                pass  # Proceed with filtering if metadata is invalid
+            except Exception as e:
+                self.logger.warning(f"Error reading filter metadata, will re-filter: {e}")
         
         try:
             self.logger.info("Filtering UniProt ID mapping to ensure human entries only")
@@ -107,32 +109,67 @@ class IDEnrichmentProcessor(BaseProcessor):
             total_entries = 0
             human_entries = 0
             
-            with gzip.open(input_path, 'rt') as f_in, gzip.open(output_path, 'wt') as f_out:
+            # Improved filtering with better progress reporting
+            with gzip.open(input_path, 'rt') as f_in:
                 # Count lines first to set up progress bar
+                self.logger.info("Counting lines in UniProt mapping file...")
                 line_count = sum(1 for _ in f_in)
+                self.logger.info(f"UniProt mapping file contains {line_count:,} lines")
                 f_in.seek(0)  # Reset file pointer
                 
-                # Process with progress tracking
-                with tqdm(total=line_count, desc="Filtering UniProt mapping") as pbar:
+                # First pass: identify human UniProt IDs 
+                human_uniprot_ids = set()
+                self.logger.info("First pass: identifying human UniProt IDs...")
+                
+                # Fix: Use get_progress_bar instead of direct tqdm
+                pbar = get_progress_bar(
+                    total=line_count,
+                    desc="Identifying human entries",
+                    module_name="etl.id_enrichment"
+                )
+                
+                for line in f_in:
+                    total_entries += 1
+                    pbar.update(1)
+                    
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 3 and parts[1] == "NCBI_TaxID" and parts[2] == HUMAN_TAXID:
+                        human_uniprot_ids.add(parts[0])
+                
+                # Close the first progress bar
+                pbar.close()
+                
+                # Reset file pointer for second pass
+                f_in.seek(0)
+                
+                # Second pass: extract all entries for human UniProt IDs
+                self.logger.info(f"Second pass: extracting {len(human_uniprot_ids):,} human UniProt entries...")
+                
+                # Fix: Use get_progress_bar again for the second pass
+                pbar = get_progress_bar(
+                    total=line_count,
+                    desc="Filtering human entries",
+                    module_name="etl.id_enrichment"
+                )
+                
+                with gzip.open(output_path, 'wt') as f_out:
                     for line in f_in:
-                        total_entries += 1
                         pbar.update(1)
-                        
-                        # Parse line and check if it's human
                         parts = line.strip().split('\t')
-                        if len(parts) >= 3 and parts[1] == "NCBI_TaxID" and parts[2] == HUMAN_TAXID:
+                        if parts[0] in human_uniprot_ids:
                             human_entries += 1
-                            continue  # Skip taxonomy entries
-                            
-                        # Include all entries as we're using human-specific file
-                        human_entries += 1
-                        f_out.write(line)
+                            f_out.write(line)
+                
+                # Close the second progress bar
+                pbar.close()
             
             # Update and save metadata
             self.filter_metadata['uniprot'] = {
                 'filtered': True,
                 'total': total_entries,
-                'human': human_entries
+                'human': human_entries,
+                'uniprot_ids': len(human_uniprot_ids),
+                'filter_date': datetime.now().isoformat()
             }
             
             with open(meta_path, 'w') as f:
@@ -196,55 +233,64 @@ class IDEnrichmentProcessor(BaseProcessor):
                 line_count = sum(1 for _ in f)
                 f.seek(0)  # Reset file pointer
                 
-                with tqdm(total=line_count, desc="Processing UniProt mapping") as pbar:
-                    for line in f:
-                        pbar.update(1)
+                # Fix: Use get_progress_bar instead of direct tqdm
+                pbar = get_progress_bar(
+                    total=line_count,
+                    desc="Processing UniProt mapping",
+                    module_name="etl.id_enrichment"
+                )
+                
+                for line in f:
+                    pbar.update(1)
+                    
+                    parts = line.strip().split('\t')
+                    if len(parts) < 3:
+                        continue
                         
-                        parts = line.strip().split('\t')
-                        if len(parts) < 3:
-                            continue
-                            
-                        uniprot_id = parts[0]
-                        id_type = parts[1]
-                        id_value = parts[2]
+                    uniprot_id = parts[0]
+                    id_type = parts[1]
+                    id_value = parts[2]
+                    
+                    # Skip empty values
+                    if not id_value or id_value == '-':
+                        continue
                         
-                        # Skip empty values
-                        if not id_value or id_value == '-':
-                            continue
-                            
-                        # Map ID types to our standardized types and collect in uniprot_mapping
-                        if id_type == "Gene_Name":
-                            uniprot_mapping[uniprot_id]["gene_symbol"].append(id_value)
-                            id_stats['gene_symbols'] += 1
-                        elif id_type == "GeneID":
-                            uniprot_mapping[uniprot_id]["ncbi_id"].append(id_value)
-                            id_stats['ncbi_ids'] += 1
-                        elif id_type == "Ensembl":
-                            if id_value.startswith('ENSG'):  # Ensembl gene ID
-                                uniprot_mapping[uniprot_id]["ensembl_gene_id"].append(id_value)
-                                id_stats['ensembl_ids'] += 1
-                            elif id_value.startswith('ENST'):  # Ensembl transcript ID
-                                uniprot_mapping[uniprot_id]["ensembl_transcript_id"].append(id_value)
-                                id_stats['ensembl_ids'] += 1
-                        elif id_type == "RefSeq":
-                            if id_value.startswith('NP_') or id_value.startswith('XP_'):
-                                uniprot_mapping[uniprot_id]["refseq_protein_id"].append(id_value)
-                                id_stats['refseq_ids'] += 1
-                            elif id_value.startswith('NM_') or id_value.startswith('XM_'):
-                                uniprot_mapping[uniprot_id]["refseq_mrna_id"].append(id_value)
-                                id_stats['refseq_ids'] += 1
-                        elif id_type == "HGNC":
-                            uniprot_mapping[uniprot_id]["hgnc_id"].append(id_value)
-                            id_stats['hgnc_ids'] += 1
-                        elif id_type == "MIM":
-                            uniprot_mapping[uniprot_id]["omim_id"].append(id_value)
-                            id_stats['mim_ids'] += 1
-                        elif id_type == "KEGG":
-                            uniprot_mapping[uniprot_id]["kegg_id"].append(id_value)
-                            id_stats['kegg_ids'] += 1
-                        elif id_type == "PDB":
-                            uniprot_mapping[uniprot_id]["pdb_id"].append(id_value)
-                            id_stats['pdb_ids'] += 1
+                    # Map ID types to our standardized types and collect in uniprot_mapping
+                    if id_type == "Gene_Name":
+                        uniprot_mapping[uniprot_id]["gene_symbol"].append(id_value)
+                        id_stats['gene_symbols'] += 1
+                    elif id_type == "GeneID":
+                        uniprot_mapping[uniprot_id]["ncbi_id"].append(id_value)
+                        id_stats['ncbi_ids'] += 1
+                    elif id_type == "Ensembl":
+                        if id_value.startswith('ENSG'):  # Ensembl gene ID
+                            uniprot_mapping[uniprot_id]["ensembl_gene_id"].append(id_value)
+                            id_stats['ensembl_ids'] += 1
+                        elif id_value.startswith('ENST'):  # Ensembl transcript ID
+                            uniprot_mapping[uniprot_id]["ensembl_transcript_id"].append(id_value)
+                            id_stats['ensembl_ids'] += 1
+                    elif id_type == "RefSeq":
+                        if id_value.startswith('NP_') or id_value.startswith('XP_'):
+                            uniprot_mapping[uniprot_id]["refseq_protein_id"].append(id_value)
+                            id_stats['refseq_ids'] += 1
+                        elif id_value.startswith('NM_') or id_value.startswith('XM_'):
+                            uniprot_mapping[uniprot_id]["refseq_mrna_id"].append(id_value)
+                            id_stats['refseq_ids'] += 1
+                    elif id_type == "HGNC":
+                        uniprot_mapping[uniprot_id]["hgnc_id"].append(id_value)
+                        id_stats['hgnc_ids'] += 1
+                    elif id_type == "MIM":
+                        uniprot_mapping[uniprot_id]["omim_id"].append(id_value)
+                        id_stats['mim_ids'] += 1
+                    elif id_type == "KEGG":
+                        uniprot_mapping[uniprot_id]["kegg_id"].append(id_value)
+                        id_stats['kegg_ids'] += 1
+                    elif id_type == "PDB":
+                        uniprot_mapping[uniprot_id]["pdb_id"].append(id_value)
+                        id_stats['pdb_ids'] += 1
+            
+                # Close the progress bar
+                pbar.close()
             
             # Now reorganize by gene symbol for easier database updates
             for uniprot_id, id_dict in uniprot_mapping.items():

@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -12,7 +13,7 @@ src_path = Path(__file__).resolve().parent.parent
 sys.path.append(str(src_path))
 
 # Import our centralized logging first
-from src.utils.logging import setup_logging, get_progress, console
+from src.utils.logging import setup_logging, get_progress_bar, console
 
 # Use centralized logging with proper module name
 logger = setup_logging(
@@ -28,6 +29,7 @@ from src.etl.go_terms import GOTermProcessor
 from src.etl.pathways import PathwayProcessor
 from src.etl.drugs import DrugProcessor
 from src.etl.publications import PublicationsProcessor
+from src.etl.id_enrichment import IDEnrichmentProcessor
 
 def get_config() -> Dict[str, Any]:
     """Load configuration from environment variables."""
@@ -68,6 +70,10 @@ def run_module(
         bool: True if successful
     """
     try:
+        # Ensure any previous progress bars are completed
+        from src.utils.logging import complete_all_progress_bars
+        complete_all_progress_bars()
+        
         if limit_transcripts:
             logger.info(f"Processing limited to {limit_transcripts} transcripts")
             config['limit_transcripts'] = limit_transcripts
@@ -86,12 +92,24 @@ def run_module(
                 logger.error("Schema validation failed after reset")
                 return False
                 
-            logger.info("Database reset complete with schema v0.1.5 applied")
+            logger.info("Database reset complete with schema v0.1.6 applied")
+        else:
+            # Check and upgrade schema if needed
+            db = get_db_manager(config['db'])
+            current_version = db.get_current_version()
+            if current_version and current_version < 'v0.1.6':
+                logger.info(f"Upgrading database schema from {current_version} to v0.1.6")
+                if not db.migrate_to_version('v0.1.6'):
+                    logger.error("Schema migration failed")
+                    return False
+                logger.info("Schema successfully upgraded to v0.1.6")
 
         # Construct the processor for the requested module
         processor = None
         if module_name == 'transcripts':
             processor = TranscriptProcessor(config)
+        elif module_name == 'id_enrichment':  # Add the ID enrichment module
+            processor = IDEnrichmentProcessor(config)
         elif module_name == 'products':
             processor = ProductProcessor(config)
         elif module_name == 'go_terms':
@@ -108,10 +126,18 @@ def run_module(
             
         # Run the processor
         processor.run()
+        
+        # Make sure progress bars are completed before logging
+        complete_all_progress_bars()
+        
         logger.info(f"Module {module_name} completed successfully")
         return True
 
     except Exception as e:
+        # Complete any progress bars before logging errors
+        from src.utils.logging import complete_all_progress_bars
+        complete_all_progress_bars()
+        
         logger.error(f"Module {module_name} failed: {e}", exc_info=True)
         return False
 
@@ -121,16 +147,10 @@ def run_pipeline(
     limit_transcripts: Optional[int] = None,
     reset_db: bool = False
 ) -> None:
-    """Run the complete ETL pipeline or specified modules.
-    
-    Args:
-        config: Configuration dictionary
-        modules: Optional list of specific modules to run
-        limit_transcripts: Optional limit on number of transcripts to process
-        reset_db: Optional flag to reset database before running pipeline
-    """
+    """Run the complete ETL pipeline or specified modules."""
     all_modules = [
         'transcripts',
+        'id_enrichment',  # Add ID enrichment as second step
         'products',
         'go_terms',
         'pathways',
@@ -146,13 +166,19 @@ def run_pipeline(
         logger.error("Failed to establish database connection")
         return
 
-    # Get shared progress instance
-    progress = get_progress()
+    # Create the progress bar AFTER completing any existing ones
+    from src.utils.logging import complete_all_progress_bars
+    complete_all_progress_bars()
     
-    # Single progress instance for all modules
-    with progress:
-        task = progress.add_task("[bold green]Running ETL pipeline...", total=len(modules_to_run))
-        
+    # Use our enhanced progress bar for the pipeline
+    progress_bar = get_progress_bar(
+        total=len(modules_to_run),
+        desc="Running ETL pipeline",
+        module_name="pipeline",
+        unit="modules"
+    )
+    
+    try:
         # If reset_db is True, handle it once at the start
         if reset_db:
             logger.info("Resetting database once for all modules")
@@ -165,16 +191,32 @@ def run_pipeline(
                 logger.error("Schema validation failed after reset")
                 return
                 
-            logger.info("Database has been reset and schema v0.1.5 applied")
+            logger.info("Database has been reset and schema v0.1.6 applied")
         
-        for module in modules_to_run:
-            progress.update(task, description=f"[bold cyan]Processing {module}...")
-            if not run_module(module, config, limit_transcripts, reset_db=False):  # Don't reset again
+        # Process each module in sequence
+        for i, module in enumerate(modules_to_run):
+            # Log the start of module processing
+            logger.info(f"Processing module: {module}")
+            
+            # Run the module (no progress bar completion here to avoid deadlocks)
+            success = run_module(module, config, limit_transcripts, reset_db=False)
+            
+            if not success:
                 logger.error(f"Pipeline failed at module: {module}")
-                return
-            progress.advance(task)
+                break
+                
+            # Update pipeline progress
+            progress_bar.update(1)
+            
+            # Log a separator between modules
+            if i < len(modules_to_run) - 1:
+                logger.info("-" * 40)
 
-        progress.update(task, description="[bold green]Pipeline completed!", completed=len(modules_to_run))
+        logger.info("Pipeline completed successfully!")
+    finally:
+        # Close progress bar if it exists and is not already closed
+        if 'progress_bar' in locals() and not progress_bar._is_finished:
+            progress_bar.close()
 
 def main() -> int:  # Change return type to int for clarity
     """Main entry point for ETL pipeline.
@@ -231,6 +273,10 @@ def main() -> int:  # Change return type to int for clarity
         config['rate_limit'] = args.rate_limit
 
     try:
+        # Make sure any previous progress bars are completed
+        from src.utils.logging import complete_all_progress_bars
+        complete_all_progress_bars()
+        
         # Modify the section where database reset is performed
         if args.reset_db:
             logger.info("Resetting database...")
@@ -250,7 +296,7 @@ def main() -> int:  # Change return type to int for clarity
                     logger.error("Schema validation failed after reset")
                     return 1
                     
-                logger.info("Database reset complete with schema v0.1.5 properly applied")
+                logger.info("Database reset complete with schema v0.1.6 properly applied")
             except Exception as e:
                 logger.error(f"Database reset error: {e}")
                 return 1
@@ -266,9 +312,17 @@ def main() -> int:  # Change return type to int for clarity
         )
         return 0  # Explicit successful return
     except KeyboardInterrupt:
+        # Ensure progress bars are completed on interruption
+        from src.utils.logging import complete_all_progress_bars
+        complete_all_progress_bars()
+        
         logger.info("Pipeline interrupted by user")
         return 1
     except Exception as e:
+        # Ensure progress bars are completed on error
+        from src.utils.logging import complete_all_progress_bars
+        complete_all_progress_bars()
+        
         logger.error(f"Pipeline failed: {e}")
         return 1
 

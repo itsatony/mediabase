@@ -150,11 +150,48 @@ SCHEMA_VERSIONS = {
         EXCEPTION
             WHEN duplicate_object THEN null;
         END $$;
+    """,
+    "v0.1.6": """
+        -- Add PDB IDs array for protein structure references
+        ALTER TABLE cancer_transcript_base
+        ADD COLUMN IF NOT EXISTS pdb_ids TEXT[] DEFAULT '{}';
+
+        -- Add cross-reference index
+        CREATE INDEX IF NOT EXISTS idx_cross_ref_ids ON cancer_transcript_base 
+        USING GIN(uniprot_ids, ncbi_ids, refseq_ids, pdb_ids);
+
+        -- Update source_references to include all reference types
+        ALTER TABLE cancer_transcript_base
+        ALTER COLUMN source_references SET DEFAULT jsonb_build_object(
+            'go_terms', jsonb_build_array(),
+            'uniprot', jsonb_build_array(),
+            'drugs', jsonb_build_array(),
+            'pathways', jsonb_build_array(),
+            'publications', jsonb_build_array()
+        );
+
+        -- Update existing rows to include publications array if missing
+        UPDATE cancer_transcript_base
+        SET source_references = source_references || '{"publications": []}'::jsonb
+        WHERE NOT (source_references ? 'publications');
+
+        -- Create optimized view for ID lookups
+        CREATE OR REPLACE VIEW gene_id_lookup AS
+        SELECT 
+            transcript_id,
+            gene_symbol,
+            gene_id,
+            uniprot_ids,
+            ncbi_ids,
+            refseq_ids,
+            alt_gene_ids,
+            alt_transcript_ids
+        FROM cancer_transcript_base;
     """
 }
 
 # Minimum supported version constant
-MIN_SUPPORTED_VERSION = "v0.1.5"
+MIN_SUPPORTED_VERSION = "v0.1.6"
 
 class DatabaseManager:
     """Manages database operations including connection, schema, and migrations."""
@@ -817,13 +854,14 @@ class DatabaseManager:
             'v0.1.2',
             'v0.1.3',
             'v0.1.4',
-            'v0.1.5'  # Add new version
+            'v0.1.5',  # Add new version
+            'v0.1.6'
         ]
 
     def reset_database(self) -> bool:
         """Reset the database to the latest schema version directly.
         
-        This method drops all tables and applies the full v0.1.5 schema in one step,
+        This method drops all tables and applies the full v0.1.6 schema in one step,
         without going through incremental migrations.
         
         Returns:
@@ -939,8 +977,12 @@ class DatabaseManager:
                     END $$;
                 """)
                 
-                # Create schema_version table and record that we're at v0.1.5
-                self.logger.info("Creating schema_version table with v0.1.5")
+                # Apply the schema v0.1.6 changes
+                self.logger.info("Applying schema changes for v0.1.6")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.6"])
+                
+                # Create schema_version table and record that we're at v0.1.6
+                self.logger.info("Creating schema_version table with v0.1.6")
                 self.cursor.execute("""
                     CREATE TABLE schema_version (
                         version_name TEXT PRIMARY KEY,
@@ -948,9 +990,9 @@ class DatabaseManager:
                         description TEXT
                     );
                     
-                    -- Insert the schema version record directly as v0.1.5
+                    -- Insert the schema version record directly as v0.1.6
                     INSERT INTO schema_version (version_name, description) 
-                    VALUES ('v0.1.5', 'Direct schema reset to v0.1.5');
+                    VALUES ('v0.1.6', 'Direct schema reset to v0.1.6');
                 """)
                 
                 # Commit all changes
@@ -960,11 +1002,11 @@ class DatabaseManager:
                     
                 # Verify the schema is correctly set up
                 current_version = self.get_current_version()
-                if current_version != "v0.1.5":
-                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.1.5")
+                if current_version != "v0.1.6":
+                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.1.6")
                     return False
                     
-                self.logger.info("Database reset completed successfully with schema v0.1.5")
+                self.logger.info("Database reset completed successfully with schema v0.1.6")
                 return True
             else:
                 self.logger.error("Database cursor is None, cannot reset database")
@@ -1094,7 +1136,7 @@ class DatabaseManager:
                 'expression_fold_change', 'expression_freq', 'cancer_types',
                 'features', 'molecular_functions', 'cellular_location', 'drug_scores',
                 'alt_transcript_ids', 'alt_gene_ids', 'uniprot_ids', 'ncbi_ids', 
-                'refseq_ids', 'source_references'
+                'refseq_ids', 'source_references', 'pdb_ids'
             ]
             
             missing_columns = []

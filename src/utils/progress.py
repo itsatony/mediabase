@@ -5,9 +5,8 @@ import time
 from functools import wraps
 import warnings
 import pandas as pd
-import tqdm as tqdm_module
 
-from .logging import get_progress_bar, setup_logging
+from .logging import get_progress_bar, setup_logging, get_progress_manager
 
 # Create module logger
 logger = setup_logging(module_name=__name__)
@@ -41,17 +40,26 @@ def track_progress(
         except (TypeError, AttributeError):
             total = 0  # Unknown
     
-    # Create progress bar
+    # Create unified progress bar
     progress = get_progress_bar(total, desc, module_name, unit)
+    items_processed = 0
     
     # Iterate and update progress
     try:
         for item in iterable:
             yield item
+            items_processed += 1
             progress.update(1)
     finally:
-        # Ensure progress bar is closed
-        progress.close()
+        # Safely complete and close the progress bar
+        try:
+            if items_processed < total and total > 0:
+                progress.n = total
+                progress._update_progress()
+            progress.close()
+        except Exception:
+            # Ignore errors during completion
+            pass
 
 # Replacement for tqdm that follows our formatting rules
 def tqdm_with_logging(
@@ -97,11 +105,18 @@ class tqdm_replacement:
         # Use our unified progress bar
         return tqdm_with_logging(iterable, desc, module_name, total, unit)
 
-# Monkey patch tqdm.tqdm in imported modules to use our version
+# Improved monkey patch function
 def patch_tqdm_globally():
     """Monkey patch tqdm in imported modules to use our unified format."""
+    import tqdm as tqdm_module
+    import tqdm.notebook as tqdm_notebook
+    
     # Replace tqdm in tqdm module
     tqdm_module.tqdm = tqdm_replacement.tqdm
+    
+    # Also patch the notebook version for Jupyter integration
+    if hasattr(tqdm_notebook, 'tqdm'):
+        tqdm_notebook.tqdm = tqdm_replacement.tqdm
     
     # Also patch the tqdm function in the module
     globals()['tqdm'] = tqdm_replacement.tqdm
@@ -180,23 +195,33 @@ def batch_process(
     logger.info(f"Processing {total_items} items in {total_batches} batches")
     
     results = []
+    batches_processed = 0
     
-    # Create progress bar for batch tracking
+    # Create unified progress bar for batch tracking
     progress = get_progress_bar(total_batches, desc, module_name, "batches")
     
-    for i in range(0, total_items, batch_size):
-        batch = items[i:i+batch_size]
-        
-        # Process batch and capture result
-        result = process_func(batch)
-        if result is not None:
-            results.append(result)
+    try:
+        for i in range(0, total_items, batch_size):
+            batch = items[i:i+batch_size]
             
-        # Update progress
-        progress.update(1)
-    
-    # Close progress bar
-    progress.close()
+            # Process batch and capture result
+            result = process_func(batch)
+            if result is not None:
+                results.append(result)
+                
+            # Update progress
+            batches_processed += 1
+            progress.update(1)
+    finally:
+        # Safely complete and close the progress bar
+        try:
+            if batches_processed < total_batches:
+                progress.n = total_batches
+                progress._update_progress()
+            progress.close()
+        except Exception:
+            # Ignore errors during completion
+            pass
     
     return results
 
@@ -223,7 +248,7 @@ def progress_decorator(
             if module_name is None:
                 module_name = func.__module__.split('.')[-1]
                 
-            # Log start of operation
+            # Log start of operation - no need to complete progress bars here
             func_logger = setup_logging(module_name=module_name)
             func_logger.info(f"Starting: {desc}")
             

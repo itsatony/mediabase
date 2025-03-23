@@ -752,3 +752,159 @@ class GOTermProcessor(BaseProcessor):
             self.logger.error(f"GO term processing failed: {e}")
             raise
 
+def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
+    """Integrate GO term data into the transcript database.
+    
+    Args:
+        go_data: Dictionary containing GO term data by gene ID
+        
+    Raises:
+        DatabaseError: If database operations fail
+    """
+    if not self.ensure_connection():
+        raise DatabaseError("Database connection failed")
+        
+    try:
+        self.logger.info("Integrating GO terms with transcript data")
+        
+        # Create temp table for batch updates with additional ID support
+        with self.get_db_transaction() as transaction:
+            transaction.cursor.execute("""
+                CREATE TEMP TABLE temp_go_data (
+                    gene_symbol TEXT,
+                    uniprot_ids TEXT[],
+                    go_terms JSONB,
+                    go_references JSONB
+                ) ON COMMIT DROP
+            """)
+        
+        updates = []
+        processed = 0
+        
+        # Prepare gene mappings using all ID types
+        for gene_symbol, terms in go_data.items():
+            # Skip empty or invalid data
+            if not gene_symbol or not terms:
+                continue
+                
+            # Get additional IDs for this gene for more comprehensive mapping
+            uniprot_ids = []
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    SELECT uniprot_ids 
+                    FROM cancer_transcript_base
+                    WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
+                """, (gene_symbol,))
+                result = self.db_manager.cursor.fetchone()
+                if result and result[0]:
+                    uniprot_ids = result[0]
+            
+            # Format GO terms as JSONB object with evidence codes
+            go_terms_json = {}
+            go_references = []
+            
+            for go_id, details in terms.items():
+                go_terms_json[go_id] = {
+                    'name': details.get('name', ''),
+                    'namespace': details.get('namespace', ''),
+                    'evidence': details.get('evidence', [])
+                }
+                
+                # Extract references for this GO term
+                if 'references' in details:
+                    go_references.extend(details['references'])
+            
+            updates.append((
+                gene_symbol,
+                uniprot_ids,
+                json.dumps(go_terms_json),
+                json.dumps(go_references)
+            ))
+            
+            processed += 1
+            
+            # Process in batches
+            if len(updates) >= self.batch_size:
+                self._update_go_batch(updates)
+                updates = []
+                self.logger.info(f"Processed {processed} genes with GO terms")
+        
+        # Process any remaining updates
+        if updates:
+            self._update_go_batch(updates)
+        
+        # Update main table from temp table with both gene symbol and UniProt ID mappings
+        with self.get_db_transaction() as transaction:
+            # Update by gene symbol first
+            transaction.cursor.execute("""
+                UPDATE cancer_transcript_base cb
+                SET 
+                    go_terms = COALESCE(cb.go_terms, '{}'::jsonb) || go.go_terms,
+                    source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": []
+                        }'::jsonb),
+                        '{go_terms}',
+                        go.go_references,
+                        true
+                    )
+                FROM temp_go_data go
+                WHERE cb.gene_symbol = go.gene_symbol
+            """)
+            
+            # Also update by UniProt ID for broader coverage
+            transaction.cursor.execute("""
+                UPDATE cancer_transcript_base cb
+                SET 
+                    go_terms = COALESCE(cb.go_terms, '{}'::jsonb) || go.go_terms,
+                    source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": []
+                        }'::jsonb),
+                        '{go_terms}',
+                        go.go_references,
+                        true
+                    )
+                FROM temp_go_data go
+                WHERE cb.uniprot_ids && go.uniprot_ids
+                AND cb.gene_symbol != go.gene_symbol  -- Only update non-direct matches
+                AND go.uniprot_ids IS NOT NULL
+                AND array_length(go.uniprot_ids, 1) > 0
+            """)
+            
+            # Clean up
+            transaction.cursor.execute("DROP TABLE IF EXISTS temp_go_data")
+        
+        self.logger.info(f"Successfully integrated GO terms for {processed} genes")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to integrate GO terms: {e}")
+        raise DatabaseError(f"GO term integration failed: {e}")
+
+def _update_go_batch(self, updates: List[Tuple[str, List[str], str, str]]) -> None:
+    """Update a batch of GO term data.
+    
+    Args:
+        updates: List of tuples with (gene_symbol, uniprot_ids, go_terms_json, go_references_json)
+        
+    Raises:
+        DatabaseError: If batch update fails
+    """
+    try:
+        self.execute_batch(
+            """
+            INSERT INTO temp_go_data 
+            (gene_symbol, uniprot_ids, go_terms, go_references)
+            VALUES (%s, %s, %s::jsonb, %s::jsonb)
+            """,
+            updates
+        )
+    except Exception as e:
+        raise DatabaseError(f"Failed to update GO term batch: {e}")
+

@@ -20,6 +20,13 @@ from rich.table import Table
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 from .publications import Publication, PublicationsProcessor
 from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url, merge_publication_references
+from ..utils.pandas_helpers import (
+    safe_assign, 
+    safe_batch_assign, 
+    safe_fillna, 
+    clean_dataframe, 
+    PandasOperationSafe
+)
 
 # Constants
 GO_TERM_WEIGHT_FACTOR = 0.5  # GO terms weighted at 50% of pathway weight
@@ -226,22 +233,42 @@ class DrugProcessor(BaseProcessor):
         
         # Clean and standardize
         df = df.dropna(subset=['drug_id', 'gene_symbol'])
-        df['gene_symbol'] = df['gene_symbol'].str.upper()
-        df['drug_name'] = df['drug_name'].str.strip() if 'drug_name' in df.columns else df['drug_id']
-        
-        # Convert evidence score to float where possible
-        if 'evidence_score' in df.columns:
-            df['evidence_score'] = pd.to_numeric(df['evidence_score'], errors='coerce')
-        
-        # Fill missing values with defaults
-        df['mechanism'] = df.get('mechanism', pd.Series('unknown')).fillna('unknown')
-        df['action_type'] = df.get('action_type', pd.Series('unknown')).fillna('unknown')
-        df['evidence_type'] = df.get('evidence_type', pd.Series('experimental')).fillna('experimental')
-        df['evidence_score'] = df.get('evidence_score', pd.Series(1.0)).fillna(1.0)
-        df['references'] = df.get('references', pd.Series('')).fillna('')
+        df = self._normalize_drug_data(df)
         
         return df
     
+    def _normalize_drug_data(self, df):
+        """Normalize drug data to ensure consistent format.
+        
+        Args:
+            df: DataFrame containing drug data
+            
+        Returns:
+            Normalized DataFrame with consistent column values
+        """
+        self.logger.info("Normalizing drug data...")
+        
+        # First, create an explicit copy to avoid SettingWithCopyWarning
+        df = df.copy()
+        
+        # Use safe operations from pandas_helpers.py
+        with PandasOperationSafe():
+            # Use .loc accessor as recommended in the warning message
+            df.loc[:, 'gene_symbol'] = df['gene_symbol'].str.upper()
+            df.loc[:, 'drug_name'] = df['drug_name'].str.strip() if 'drug_name' in df.columns else df['drug_id']
+            
+            # Convert scores to numeric
+            df.loc[:, 'evidence_score'] = pd.to_numeric(df['evidence_score'], errors='coerce')
+            
+            # Fill missing values
+            df.loc[:, 'mechanism'] = df.get('mechanism', pd.Series('unknown')).fillna('unknown')
+            df.loc[:, 'action_type'] = df.get('action_type', pd.Series('unknown')).fillna('unknown')
+            df.loc[:, 'evidence_type'] = df.get('evidence_type', pd.Series('experimental')).fillna('experimental')
+            df.loc[:, 'evidence_score'] = df.get('evidence_score', pd.Series(1.0)).fillna(1.0)
+            df.loc[:, 'references'] = df.get('references', pd.Series('')).fillna('')
+        
+        return df
+
     def _process_drug_rows(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """Process each row in the drug data.
         
@@ -300,6 +327,7 @@ class DrugProcessor(BaseProcessor):
                 transaction.cursor.execute("""
                     CREATE TEMP TABLE IF NOT EXISTS temp_drug_data (
                         gene_symbol TEXT,
+                        uniprot_ids TEXT[],
                         drug_data JSONB,
                         drug_references JSONB
                     ) ON COMMIT PRESERVE ROWS
@@ -344,8 +372,20 @@ class DrugProcessor(BaseProcessor):
                                     'drug_id': row.get('drug_id', '')
                                 })
                 
+                # Get UniProt IDs for this gene if available
+                uniprot_ids = []
+                if self.db_manager.cursor:
+                    self.db_manager.cursor.execute("""
+                        SELECT uniprot_ids FROM cancer_transcript_base
+                        WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
+                    """, (gene,))
+                    result = self.db_manager.cursor.fetchone()
+                    if result and result[0]:
+                        uniprot_ids = result[0]
+                
                 updates.append((
                     gene,
+                    uniprot_ids,
                     json.dumps(drug_info),
                     json.dumps(references)
                 ))
@@ -362,7 +402,7 @@ class DrugProcessor(BaseProcessor):
             if updates:
                 self._update_drug_batch(updates)
             
-            # Update main table from temp table with enhanced reference handling
+            # Update main table from temp table with enhanced ID mapping awareness
             with self.get_db_transaction() as transaction:
                 self.logger.debug("Updating main table from temporary table...")
                 transaction.cursor.execute("""
@@ -384,6 +424,29 @@ class DrugProcessor(BaseProcessor):
                     WHERE cb.gene_symbol = tdd.gene_symbol
                 """)
                 
+                # Add secondary mapping for UniProt IDs to ensure complete coverage
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET 
+                        drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data,
+                        source_references = jsonb_set(
+                            COALESCE(cb.source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
+                            '{drugs}',
+                            tdd.drug_references,
+                            true
+                        )
+                    FROM temp_drug_data tdd
+                    WHERE cb.uniprot_ids && tdd.uniprot_ids
+                    AND cb.gene_symbol != tdd.gene_symbol
+                    AND tdd.uniprot_ids IS NOT NULL
+                    AND array_length(tdd.uniprot_ids, 1) > 0
+                """)
+                
                 # Drop temporary table
                 transaction.cursor.execute("DROP TABLE IF EXISTS temp_drug_data")
                 
@@ -401,11 +464,11 @@ class DrugProcessor(BaseProcessor):
             except Exception as e:
                 self.logger.warning(f"Cleanup failed: {e}")
 
-    def _update_drug_batch(self, updates: List[Tuple[str, str, str]]) -> None:
+    def _update_drug_batch(self, updates: List[Tuple[str, List[str], str, str]]) -> None:
         """Update a batch of drug data.
         
         Args:
-            updates: List of tuples with (gene_symbol, drug_data_json, drug_references_json)
+            updates: List of tuples with (gene_symbol, uniprot_ids, drug_data_json, drug_references_json)
             
         Raises:
             DatabaseError: If batch update fails
@@ -414,8 +477,8 @@ class DrugProcessor(BaseProcessor):
             self.execute_batch(
                 """
                 INSERT INTO temp_drug_data 
-                (gene_symbol, drug_data, drug_references)
-                VALUES (%s, %s::jsonb, %s::jsonb)
+                (gene_symbol, uniprot_ids, drug_data, drug_references)
+                VALUES (%s, %s, %s::jsonb, %s::jsonb)
                 """,
                 updates
             )

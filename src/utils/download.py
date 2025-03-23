@@ -7,6 +7,7 @@ from pathlib import Path
 import logging
 import gzip
 import shutil
+import time
 
 from .logging import create_download_progress_bar, setup_logging
 
@@ -42,6 +43,8 @@ def download_file(
         logger.info(f"File already exists: {destination_path}")
         return True
         
+    # Initialize progress variable
+    progress = None
     try:
         # Start the request
         logger.info(f"Downloading {url}")
@@ -63,18 +66,35 @@ def download_file(
         
         # Download with progress
         with open(destination_path, 'wb') as f:
+            downloaded = 0
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
+                    downloaded += len(chunk)
                     progress.update(len(chunk))
-                    
-        # Close the progress bar
-        progress.close()
+        
+        # Make sure progress is at 100% before closing
+        if progress is not None:
+            try:
+                if downloaded < total_size and total_size > 0:
+                    progress.n = total_size
+                    progress._update_progress()
+                progress.close()
+            except Exception:
+                # Ignore errors during progress bar operations
+                pass
         
         logger.info(f"Download completed: {destination_path}")
         return True
         
     except Exception as e:
+        # Safely close progress bar on error
+        if progress is not None:
+            try:
+                progress.close()
+            except Exception:
+                pass
+        
         logger.error(f"Download failed: {e}")
         # Remove partial downloads
         if destination_path.exists():

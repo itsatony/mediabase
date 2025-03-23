@@ -469,3 +469,172 @@ class ProductProcessor(BaseProcessor):
         except Exception as e:
             self.logger.error(f"Gene product processing failed: {e}")
             raise
+
+def integrate_products(self, product_data: Dict[str, Dict[str, Any]]) -> None:
+    """Integrate product data with transcripts in the database.
+    
+    Args:
+        product_data: Dictionary mapping transcript IDs to product data
+        
+    Raises:
+        DatabaseError: If database operations fail
+    """
+    if not self.ensure_connection():
+        raise DatabaseError("Database connection failed")
+        
+    try:
+        self.logger.info("Integrating product data with transcript records")
+        
+        # Create temporary table for batch updates with enhanced ID mapping
+        with self.get_db_transaction() as transaction:
+            transaction.cursor.execute("""
+                CREATE TEMP TABLE temp_product_data (
+                    transcript_id TEXT PRIMARY KEY,
+                    alt_transcript_ids JSONB,
+                    product_type TEXT[],
+                    product_details JSONB
+                ) ON COMMIT DROP
+            """)
+        
+        updates = []
+        processed = 0
+        
+        # Process each transcript's product data
+        for transcript_id, product_info in product_data.items():
+            # Skip empty data
+            if not transcript_id or not product_info:
+                continue
+                
+            # Get alternative transcript IDs for this transcript if available from the database
+            alt_transcript_ids = {}
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    SELECT alt_transcript_ids 
+                    FROM cancer_transcript_base
+                    WHERE transcript_id = %s AND alt_transcript_ids IS NOT NULL
+                """, (transcript_id,))
+                result = self.db_manager.cursor.fetchone()
+                if result and result[0]:
+                    alt_transcript_ids = result[0]
+            
+            # Extract product types and details
+            product_types = product_info.get('types', [])
+            product_details = {
+                'protein_length': product_info.get('protein_length'),
+                'domains': product_info.get('domains', []),
+                'cellular_location': product_info.get('cellular_location', []),
+                'functions': product_info.get('functions', [])
+            }
+            
+            updates.append((
+                transcript_id,
+                json.dumps(alt_transcript_ids),
+                product_types,
+                json.dumps(product_details)
+            ))
+            
+            processed += 1
+            
+            # Process in batches
+            if len(updates) >= self.batch_size:
+                self._update_product_batch(updates)
+                updates = []
+                self.logger.info(f"Processed {processed} transcripts with product data")
+        
+        # Process any remaining updates
+        if updates:
+            self._update_product_batch(updates)
+        
+        # Update main table from temp table using both primary and alternate transcript IDs
+        with self.get_db_transaction() as transaction:
+            # First update by direct transcript ID
+            transaction.cursor.execute("""
+                UPDATE cancer_transcript_base cb
+                SET 
+                    product_type = COALESCE(cb.product_type, '{}'::text[]) || pd.product_type,
+                    features = COALESCE(cb.features, '{}'::jsonb) || pd.product_details
+                FROM temp_product_data pd
+                WHERE cb.transcript_id = pd.transcript_id
+            """)
+            
+            # Update cellular location for better filtering/querying
+            transaction.cursor.execute("""
+                UPDATE cancer_transcript_base cb
+                SET 
+                    cellular_location = ARRAY(
+                        SELECT DISTINCT jsonb_array_elements_text(pd.product_details->'cellular_location')
+                        FROM temp_product_data pd
+                        WHERE cb.transcript_id = pd.transcript_id
+                    )
+                FROM temp_product_data pd
+                WHERE cb.transcript_id = pd.transcript_id
+                AND pd.product_details->'cellular_location' IS NOT NULL
+                AND jsonb_array_length(pd.product_details->'cellular_location') > 0
+            """)
+            
+            # Update molecular functions from the product details
+            transaction.cursor.execute("""
+                UPDATE cancer_transcript_base cb
+                SET 
+                    molecular_functions = ARRAY(
+                        SELECT DISTINCT jsonb_array_elements_text(pd.product_details->'functions')
+                        FROM temp_product_data pd
+                        WHERE cb.transcript_id = pd.transcript_id
+                    )
+                FROM temp_product_data pd
+                WHERE cb.transcript_id = pd.transcript_id
+                AND pd.product_details->'functions' IS NOT NULL
+                AND jsonb_array_length(pd.product_details->'functions') > 0
+            """)
+            
+            # Then attempt to match by alternative transcript IDs (RefSeq, Ensembl)
+            transaction.cursor.execute("""
+                WITH alt_id_matches AS (
+                    SELECT 
+                        cb.transcript_id as cb_id,
+                        pd.transcript_id as pd_id
+                    FROM cancer_transcript_base cb
+                    JOIN temp_product_data pd ON 
+                        (cb.alt_transcript_ids->>'RefSeq' = pd.alt_transcript_ids->>'RefSeq' AND 
+                         pd.alt_transcript_ids->>'RefSeq' IS NOT NULL) OR
+                        (cb.alt_transcript_ids->>'Ensembl' = pd.alt_transcript_ids->>'Ensembl' AND 
+                         pd.alt_transcript_ids->>'Ensembl' IS NOT NULL)
+                    WHERE cb.transcript_id != pd.transcript_id
+                )
+                UPDATE cancer_transcript_base cb
+                SET 
+                    product_type = COALESCE(cb.product_type, '{}'::text[]) || pd.product_type,
+                    features = COALESCE(cb.features, '{}'::jsonb) || pd.product_details
+                FROM temp_product_data pd, alt_id_matches aim
+                WHERE cb.transcript_id = aim.cb_id AND pd.transcript_id = aim.pd_id
+            """)
+            
+            # Clean up
+            transaction.cursor.execute("DROP TABLE IF EXISTS temp_product_data")
+        
+        self.logger.info(f"Successfully integrated product data for {processed} transcripts")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to integrate product data: {e}")
+        raise DatabaseError(f"Product integration failed: {e}")
+
+def _update_product_batch(self, updates: List[Tuple[str, str, List[str], str]]) -> None:
+    """Update a batch of product data.
+    
+    Args:
+        updates: List of tuples with (transcript_id, alt_transcript_ids_json, product_types, product_details_json)
+        
+    Raises:
+        DatabaseError: If batch update fails
+    """
+    try:
+        self.execute_batch(
+            """
+            INSERT INTO temp_product_data 
+            (transcript_id, alt_transcript_ids, product_type, product_details)
+            VALUES (%s, %s::jsonb, %s, %s::jsonb)
+            """,
+            updates
+        )
+    except Exception as e:
+        raise DatabaseError(f"Failed to update product batch: {e}")

@@ -738,3 +738,200 @@ class PublicationsProcessor(BaseProcessor):
         except Exception as e:
             self.logger.error(f"Publications enrichment failed: {e}")
             raise
+
+    def integrate_publications(self, publications_data: Dict[str, List[Dict[str, Any]]]) -> None:
+        """Integrate publication data into transcript database.
+        
+        Args:
+            publications_data: Dictionary mapping gene IDs to publication lists
+            
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
+            
+        try:
+            self.logger.info("Integrating publication data with transcript records")
+            
+            # Create temporary table for batch updates with multiple ID mapping
+            with self.get_db_transaction() as transaction:
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE temp_publication_data (
+                        gene_symbol TEXT,
+                        uniprot_ids TEXT[],
+                        ncbi_ids TEXT[],
+                        publication_refs JSONB
+                    ) ON COMMIT DROP
+                """)
+            
+            updates = []
+            processed = 0
+            
+            # Process each gene's publication data
+            for gene_symbol, publications in publications_data.items():
+                # Skip empty data
+                if not gene_symbol or not publications:
+                    continue
+                    
+                # Get additional IDs for this gene for more comprehensive mapping
+                uniprot_ids = []
+                ncbi_ids = []
+                if self.db_manager.cursor:
+                    self.db_manager.cursor.execute("""
+                        SELECT uniprot_ids, ncbi_ids 
+                        FROM cancer_transcript_base
+                        WHERE gene_symbol = %s 
+                        AND (uniprot_ids IS NOT NULL OR ncbi_ids IS NOT NULL)
+                    """, (gene_symbol,))
+                    result = self.db_manager.cursor.fetchone()
+                    if result:
+                        uniprot_ids = result[0] or []
+                        ncbi_ids = result[1] or []
+                
+                # Format publication references
+                publication_refs = self._format_publications(publications)
+                
+                updates.append((
+                    gene_symbol,
+                    uniprot_ids,
+                    ncbi_ids,
+                    json.dumps(publication_refs)
+                ))
+                
+                processed += 1
+                
+                # Process in batches
+                if len(updates) >= self.batch_size:
+                    self._update_publication_batch(updates)
+                    updates = []
+                    self.logger.info(f"Processed {processed} genes with publication data")
+            
+            # Process any remaining updates
+            if updates:
+                self._update_publication_batch(updates)
+            
+            # Update main table from temp table using multiple ID types
+            with self.get_db_transaction() as transaction:
+                # First update by gene symbol
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": []
+                        }'::jsonb),
+                        '{publications}',
+                        COALESCE(cb.source_references->'publications', '[]'::jsonb) || pub.publication_refs,
+                        true
+                    )
+                    FROM temp_publication_data pub
+                    WHERE cb.gene_symbol = pub.gene_symbol
+                """)
+                
+                # Then update by UniProt IDs
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": []
+                        }'::jsonb),
+                        '{publications}',
+                        COALESCE(cb.source_references->'publications', '[]'::jsonb) || pub.publication_refs,
+                        true
+                    )
+                    FROM temp_publication_data pub
+                    WHERE cb.uniprot_ids && pub.uniprot_ids
+                    AND cb.gene_symbol != pub.gene_symbol
+                    AND pub.uniprot_ids IS NOT NULL
+                    AND array_length(pub.uniprot_ids, 1) > 0
+                """)
+                
+                # Also update by NCBI IDs
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": []
+                        }'::jsonb),
+                        '{publications}',
+                        COALESCE(cb.source_references->'publications', '[]'::jsonb) || pub.publication_refs,
+                        true
+                    )
+                    FROM temp_publication_data pub
+                    WHERE cb.ncbi_ids && pub.ncbi_ids
+                    AND cb.gene_symbol != pub.gene_symbol
+                    AND pub.ncbi_ids IS NOT NULL
+                    AND array_length(pub.ncbi_ids, 1) > 0
+                """)
+                
+                # Clean up
+                transaction.cursor.execute("DROP TABLE IF EXISTS temp_publication_data")
+            
+            self.logger.info(f"Successfully integrated publication data for {processed} genes")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to integrate publication data: {e}")
+            raise DatabaseError(f"Publication integration failed: {e}")
+
+    def _update_publication_batch(self, updates: List[Tuple[str, List[str], List[str], str]]) -> None:
+        """Update a batch of publication data.
+        
+        Args:
+            updates: List of tuples with (gene_symbol, uniprot_ids, ncbi_ids, publication_refs_json)
+            
+        Raises:
+            DatabaseError: If batch update fails
+        """
+        try:
+            self.execute_batch(
+                """
+                INSERT INTO temp_publication_data 
+                (gene_symbol, uniprot_ids, ncbi_ids, publication_refs)
+                VALUES (%s, %s, %s, %s::jsonb)
+                """,
+                updates
+            )
+        except Exception as e:
+            raise DatabaseError(f"Failed to update publication batch: {e}")
+
+    def _format_publications(self, publications: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Format publication data for database storage.
+        
+        Args:
+            publications: List of publication dictionaries
+            
+        Returns:
+            Formatted publication list with standardized fields
+        """
+        formatted = []
+        
+        for pub in publications:
+            # Convert to our standard publication format
+            formatted_pub = {
+                'pmid': pub.get('pmid'),
+                'title': pub.get('title', ''),
+                'abstract': pub.get('abstract', ''),
+                'authors': pub.get('authors', []),
+                'year': pub.get('year'),
+                'journal': pub.get('journal', ''),
+                'citation_count': pub.get('citation_count'),
+                'evidence_type': pub.get('evidence_type', 'literature'),
+                'source_db': pub.get('source_db', 'pubmed'),
+                'doi': pub.get('doi', ''),
+                'url': pub.get('url', '')
+            }
+            
+            # Only add if we have at least a PMID
+            if formatted_pub['pmid']:
+                formatted.append(formatted_pub)
+        
+        return formatted

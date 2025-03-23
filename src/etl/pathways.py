@@ -342,18 +342,19 @@ class PathwayProcessor(BaseProcessor):
             # First ensure we have a valid transaction
             with self.get_db_transaction():
                 # Execute batch update
+                # FIX: Change $1, $2, $3 style parameters to %s style parameters
                 self.execute_batch(
                     """
                     UPDATE cancer_transcript_base
                     SET 
-                        pathways = $1::text[],
+                        pathways = %s::text[],
                         source_references = jsonb_set(
                             COALESCE(source_references, '{}'::jsonb),
                             '{pathways}',
-                            $2::jsonb,
+                            %s::jsonb,
                             true
                         )
-                    WHERE gene_symbol = $3
+                    WHERE gene_symbol = %s
                     """,
                     [(p, j, g) for p, j, g in updates]
                 )
@@ -392,6 +393,176 @@ class PathwayProcessor(BaseProcessor):
         
         return publications
     
+    def integrate_pathways(self, pathway_data: Dict[str, List[Dict[str, Any]]]) -> None:
+        """Integrate pathway data into transcript database.
+        
+        Args:
+            pathway_data: Dictionary mapping gene IDs to pathway lists
+            
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
+            
+        try:
+            self.logger.info("Integrating pathway data with transcript records")
+            
+            # Create temporary table for batch updates with extended ID support
+            with self.get_db_transaction() as transaction:
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE temp_pathway_data (
+                        gene_symbol TEXT,
+                        uniprot_ids TEXT[],
+                        pathways TEXT[],
+                        pathway_details JSONB,
+                        pathway_references JSONB
+                    ) ON COMMIT DROP
+                """)
+            
+            updates = []
+            processed = 0
+            
+            # Process each gene's pathway data
+            for gene_symbol, pathways in pathway_data.items():
+                # Skip empty data
+                if not gene_symbol or not pathways:
+                    continue
+                    
+                # Get additional IDs for this gene for more comprehensive mapping
+                uniprot_ids = []
+                if self.db_manager.cursor:
+                    self.db_manager.cursor.execute("""
+                        SELECT uniprot_ids 
+                        FROM cancer_transcript_base
+                        WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
+                    """, (gene_symbol,))
+                    result = self.db_manager.cursor.fetchone()
+                    if result and result[0]:
+                        uniprot_ids = result[0]
+                
+                # Extract pathway IDs and details
+                pathway_ids = []
+                pathway_map = {}
+                all_references = []
+                
+                for pathway in pathways:
+                    pathway_id = pathway.get('id')
+                    if not pathway_id:
+                        continue
+                        
+                    pathway_ids.append(pathway_id)
+                    
+                    # Structure detailed pathway info
+                    pathway_map[pathway_id] = {
+                        'name': pathway.get('name', ''),
+                        'source': pathway.get('source', 'reactome'),
+                        'url': pathway.get('url', '')
+                    }
+                    
+                    # Extract references
+                    if 'references' in pathway:
+                        all_references.extend(pathway['references'])
+                
+                updates.append((
+                    gene_symbol,
+                    uniprot_ids,
+                    pathway_ids,
+                    json.dumps(pathway_map),
+                    json.dumps(all_references)
+                ))
+                
+                processed += 1
+                
+                # Process in batches
+                if len(updates) >= self.batch_size:
+                    self._update_pathway_batch(updates)
+                    updates = []
+                    self.logger.info(f"Processed {processed} genes with pathway data")
+            
+            # Process any remaining updates
+            if updates:
+                self._update_pathway_batch(updates)
+            
+            # Update main table from temp table using multiple ID types
+            with self.get_db_transaction() as transaction:
+                # First update by gene symbol
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET 
+                        pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
+                        features = COALESCE(cb.features, '{}'::jsonb) || 
+                                   jsonb_build_object('pathways', pw.pathway_details),
+                        source_references = jsonb_set(
+                            COALESCE(cb.source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
+                            '{pathways}',
+                            pw.pathway_references,
+                            true
+                        )
+                    FROM temp_pathway_data pw
+                    WHERE cb.gene_symbol = pw.gene_symbol
+                """)
+                
+                # Then update by UniProt IDs for better coverage
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET 
+                        pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
+                        features = COALESCE(cb.features, '{}'::jsonb) || 
+                                   jsonb_build_object('pathways', pw.pathway_details),
+                        source_references = jsonb_set(
+                            COALESCE(cb.source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
+                            '{pathways}',
+                            pw.pathway_references,
+                            true
+                        )
+                    FROM temp_pathway_data pw
+                    WHERE cb.uniprot_ids && pw.uniprot_ids
+                    AND cb.gene_symbol != pw.gene_symbol  -- Only update non-direct matches
+                    AND pw.uniprot_ids IS NOT NULL
+                    AND array_length(pw.uniprot_ids, 1) > 0
+                """)
+                
+                # Clean up
+                transaction.cursor.execute("DROP TABLE IF EXISTS temp_pathway_data")
+            
+            self.logger.info(f"Successfully integrated pathway data for {processed} genes")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to integrate pathway data: {e}")
+            raise DatabaseError(f"Pathway integration failed: {e}")
+
+    def _update_pathway_batch(self, updates: List[Tuple[str, List[str], List[str], str, str]]) -> None:
+        """Update a batch of pathway data.
+        
+        Args:
+            updates: List of tuples with (gene_symbol, uniprot_ids, pathways, pathway_details_json, pathway_references_json)
+            
+        Raises:
+            DatabaseError: If batch update fails
+        """
+        try:
+            self.execute_batch(
+                """
+                INSERT INTO temp_pathway_data 
+                (gene_symbol, uniprot_ids, pathways, pathway_details, pathway_references)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
+                """,
+                updates
+            )
+        except Exception as e:
+            raise DatabaseError(f"Failed to update pathway batch: {e}")
+
     def run(self) -> None:
         """Run the complete pathway enrichment pipeline."""
         try:

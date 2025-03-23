@@ -482,3 +482,36 @@ class BaseProcessor:
         This method should be implemented by subclasses to define the processing pipeline.
         """
         raise NotImplementedError("Subclasses must implement run()")
+
+    def execute_batch_update(self, query: str, params_list: List[Tuple]) -> int:
+        """Execute a batch update with proper transaction handling.
+        
+        Args:
+            query: SQL query to execute
+            params_list: List of parameter tuples for the query
+            
+        Returns:
+            int: Number of rows affected
+            
+        Raises:
+            DatabaseError: If the batch update fails
+        """
+        if not self.db_manager or not self.db_manager.cursor:
+            raise DatabaseError("No database connection available")
+            
+        try:
+            # Execute batch update
+            self.db_manager.cursor.executemany(query, params_list)
+            
+            # Commit if the connection is not in autocommit mode
+            if self.db_manager.conn and not self.db_manager.conn.autocommit:
+                self.db_manager.conn.commit()
+                
+            # Return rowcount if available
+            return self.db_manager.cursor.rowcount if hasattr(self.db_manager.cursor, 'rowcount') else 0
+            
+        except Exception as e:
+            # Rollback if not in autocommit mode
+            if self.db_manager.conn and not self.db_manager.conn.autocommit:
+                self.db_manager.conn.rollback()
+            raise DatabaseError(f"Batch update failed: {e}")

@@ -732,73 +732,86 @@ class ProductProcessor(BaseProcessor):
                 f"- Unmatched genes: {match_stats['unmatched_genes']}"
             )
             
-            # Create temporary table for batch updates
-            self.db_manager.cursor.execute("""
-                CREATE TEMP TABLE temp_gene_types (
-                    gene_symbol TEXT PRIMARY KEY,
-                    product_types TEXT[],
-                    publications JSONB
-                )
-            """)
-            
             # Process in batches for better performance
             total_genes = len(classified_genes)
             total_inserted = 0
             
             with tqdm(total=total_genes, desc="Updating gene types") as pbar:
-                for i in range(0, total_genes, self.batch_size):
-                    batch = classified_genes[i:i+self.batch_size]
+                # Process in smaller batches to avoid memory issues
+                batch_size = min(100, self.batch_size)
+                
+                for i in range(0, total_genes, batch_size):
+                    batch = classified_genes[i:i+batch_size]
                     
-                    # Insert batch into temp table, using matched gene symbols
-                    batch_data = []
-                    for gene, types, pubs in batch:
-                        # Use matched gene symbol if available
-                        db_gene = matched_genes.get(gene, gene)
-                        if db_gene:
-                            batch_data.append((db_gene, types, json.dumps(pubs)))
-                    
-                    # Skip if no valid data
-                    if not batch_data:
-                        continue
+                    # Use a proper transaction with temporary table
+                    with self.get_db_transaction() as transaction:
+                        # Create temporary table within this transaction
+                        transaction.cursor.execute("""
+                            CREATE TEMP TABLE temp_gene_types (
+                                gene_symbol TEXT PRIMARY KEY,
+                                product_types TEXT[],
+                                publications JSONB
+                            ) ON COMMIT DROP
+                        """)
                         
-                    # Insert batch data
-                    self.execute_batch(
-                        """
-                        INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
-                        VALUES (%s, %s, %s::jsonb)
-                        """,
-                        batch_data
-                    )
-                    
-                    # Update from temp table to main table
-                    self.db_manager.cursor.execute("""
-                        UPDATE cancer_transcript_base AS c
-                        SET 
-                            product_type = t.product_types,
-                            source_references = jsonb_set(
-                                COALESCE(c.source_references, '{}'::jsonb),
-                                '{uniprot}',
-                                t.publications,
-                                true
-                            )
-                        FROM temp_gene_types AS t
-                        WHERE c.gene_symbol = t.gene_symbol
-                    """)
-                    
-                    # Clear temp table for next batch
-                    self.db_manager.cursor.execute("TRUNCATE temp_gene_types")
+                        # Insert batch into temp table, using matched gene symbols
+                        batch_data = []
+                        for gene, types, pubs in batch:
+                            # Use matched gene symbol if available
+                            db_gene = matched_genes.get(gene, gene)
+                            if db_gene:
+                                batch_data.append((db_gene, types, json.dumps(pubs)))
+                        
+                        # Skip if no valid data
+                        if not batch_data:
+                            continue
+                        
+                        # Use direct cursor executemany for better transaction control
+                        transaction.cursor.executemany(
+                            """
+                            INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
+                            VALUES (%s, %s, %s::jsonb)
+                            """,
+                            batch_data
+                        )
+                        
+                        # Update from temp table to main table in the same transaction
+                        transaction.cursor.execute("""
+                            UPDATE cancer_transcript_base AS c
+                            SET 
+                                product_type = t.product_types,
+                                source_references = jsonb_set(
+                                    COALESCE(c.source_references, '{}'::jsonb),
+                                    '{uniprot}',
+                                    t.publications,
+                                    true
+                                )
+                            FROM temp_gene_types AS t
+                            WHERE c.gene_symbol = t.gene_symbol
+                        """)
+                        
+                        # The temporary table will be dropped automatically (ON COMMIT DROP)
                     
                     # Update progress
-                    total_inserted += len(batch)
+                    total_inserted += len(batch_data)
                     pbar.update(len(batch))
             
-            # Drop the temporary table
-            self.db_manager.cursor.execute("DROP TABLE temp_gene_types")
-            
-            # Commit changes
-            if self.db_manager.conn:
-                self.db_manager.conn.commit()
-                
+            # Verify the updates
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(CASE WHEN product_type IS NOT NULL AND array_length(product_type, 1) > 0 THEN 1 END) as with_product_type
+                    FROM cancer_transcript_base
+                """)
+                stats = self.db_manager.cursor.fetchone()
+                if stats:
+                    self.logger.info(
+                        f"After product classification:\n"
+                        f"- Total genes: {stats[0]:,}\n"
+                        f"- Genes with product types: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)"
+                    )
+                    
             self.logger.info(f"Updated {total_inserted} genes with product types")
             
         except Exception as e:

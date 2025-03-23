@@ -454,6 +454,32 @@ Current development status and upcoming milestones:
   - Enhanced error handling for limit settings
   - Added proper fallback to use all transcripts when limit is not set
   - Updated documentation for limit usage
+- [x] STEP_CC: Fixed ID Enrichment Transaction Handling (2023-XX-XX)
+  - Fixed transaction handling to ensure ID updates are properly committed
+  - Improved case-insensitive gene symbol matching for better coverage
+  - Enhanced logging and verification for ID enrichment operations
+  - Fixed "set_session cannot be used inside a transaction" error
+  - Improved transaction management to be compatible with existing connection states
+  - Enhanced error handling with proper rollback support
+  - Maintained reliable database updates while avoiding transaction conflicts
+- [x] STEP_CD: Fixed Product Processor Temporary Table Handling (2023-XX-XX)
+  - Fixed issue with temporary table not existing during batch operations
+  - Improved transaction management for temporary table creation and use
+  - Enhanced batch processing with proper transaction isolation
+  - Added automatic temporary table cleanup with ON COMMIT DROP
+  - Improved error handling and rollback support
+  - Added verification of product type updates after processing
+  - Fixed "relation temp_gene_types does not exist" error
+- [x] STEP_CE: Standardized Transaction Handling Across ETL Processors (2023-XX-XX)
+  - Fixed transaction handling in GO Terms, Pathways and Drug processors
+  - Standardized approach to batch operations across all processors
+  - Implemented consistent transaction boundary management
+  - Enhanced temporary table handling with proper ON COMMIT directives
+  - Improved error handling with appropriate logging
+  - Eliminated "relation does not exist" errors in all ETL modules
+  - Consistent use of transaction context managers for database operations
+  - Added robust cleanup of temporary resources
+
 - [x] STEP_CA: ETL Code Refactoring and Optimization
   - [x] Enhanced Logging System (2025-06-01)
     - Created comprehensive logging utility in `src/utils/logging.py`
@@ -1305,4 +1331,3 @@ For reference of the enrichment success of the current ETL pipeline, here are ex
     "pathways": []
   }
 }
-```

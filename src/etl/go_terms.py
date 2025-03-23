@@ -499,52 +499,53 @@ class GOTermProcessor(BaseProcessor):
             initial_count = result[0] if result else 0
             self.logger.info(f"Initial GO terms count: {initial_count}")
             
-            # Use a transaction for the updates
-            with self.get_db_transaction():
+            # Use a separate transaction for clearing existing GO terms
+            with self.get_db_transaction() as transaction:
                 # Clear existing GO terms - REMOVED gene_type filter
-                self.db_manager.cursor.execute("""
+                transaction.cursor.execute("""
                     UPDATE cancer_transcript_base 
                     SET go_terms = NULL, molecular_functions = NULL, cellular_location = NULL
                 """)
-                # Process in smaller batches with regular commits
-                updates = []
-                processed = 0
-                batch_size = min(1000, self.batch_size)
-                
-                # Fix: Use tqdm_with_logging as an iterator rather than a context manager
-                progress_bar = get_progress_bar(len(gene_go_terms), "Updating GO terms", "etl.go_terms")
-                for i, (gene_symbol, go_terms) in enumerate(gene_go_terms.items()):
-                    if go_terms:
-                        # Extract special term arrays
-                        molecular_functions, cellular_locations = self._extract_special_terms(go_terms)
-                        
-                        # Extract publications
-                        publications = self.extract_publication_references(go_terms)
-                        
-                        updates.append((
-                            json.dumps(go_terms),
-                            molecular_functions,
-                            cellular_locations,
-                            json.dumps(publications) if publications else None,
-                            gene_symbol
-                        ))
-                        
-                        if len(updates) >= batch_size:
-                            self._update_go_terms_batch(updates)
-                            processed += len(updates)
-                            progress_bar.update(len(updates))
-                            updates = []
+            
+            # Process in smaller batches with separate transactions
+            updates = []
+            processed = 0
+            batch_size = min(1000, self.batch_size)
+            
+            # Use get_progress_bar for tracking progress
+            progress_bar = get_progress_bar(len(gene_go_terms), "Updating GO terms", "etl.go_terms")
+            for i, (gene_symbol, go_terms) in enumerate(gene_go_terms.items()):
+                if go_terms:
+                    # Extract special term arrays
+                    molecular_functions, cellular_locations = self._extract_special_terms(go_terms)
                     
-                    # Update progress
-                    progress_bar.update(1)
-                
-                # Process remaining updates
-                if updates:
-                    self._update_go_terms_batch(updates)
-                    processed += len(updates)
+                    # Extract publications
+                    publications = self.extract_publication_references(go_terms)
                     
-                # Close progress bar
-                progress_bar.close()
+                    updates.append((
+                        json.dumps(go_terms),
+                        molecular_functions,
+                        cellular_locations,
+                        json.dumps(publications) if publications else None,
+                        gene_symbol
+                    ))
+                    
+                    if len(updates) >= batch_size:
+                        self._update_go_terms_batch(updates)
+                        processed += len(updates)
+                        progress_bar.update(len(updates))
+                        updates = []
+                
+                # Update progress
+                progress_bar.update(1)
+            
+            # Process remaining updates
+            if updates:
+                self._update_go_terms_batch(updates)
+                processed += len(updates)
+                    
+            # Close progress bar
+            progress_bar.close()
             
             # Verify the updates
             if not self.db_manager.cursor:
@@ -589,28 +590,53 @@ class GOTermProcessor(BaseProcessor):
             raise DatabaseError("No database cursor available")
             
         try:
-            self.execute_batch(
-                """
-                UPDATE cancer_transcript_base
-                SET 
-                    go_terms = %s::jsonb,
-                    molecular_functions = %s::text[],
-                    cellular_location = %s::text[],
-                    source_references = jsonb_set(
-                        COALESCE(source_references, '{
-                            "go_terms": [],
-                            "uniprot": [],
-                            "drugs": [],
-                            "pathways": []
-                        }'::jsonb),
-                        '{go_terms}',
-                        COALESCE(%s::jsonb, '[]'::jsonb),
-                        true
-                    )
-                WHERE gene_symbol = %s
-                """,
-                updates
-            )
+            # Use a transaction context manager for better control
+            with self.get_db_transaction() as transaction:
+                # Create temporary table for this batch
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE temp_go_terms (
+                        gene_symbol TEXT PRIMARY KEY,
+                        go_terms JSONB,
+                        molecular_functions TEXT[],
+                        cellular_location TEXT[],
+                        publications JSONB
+                    ) ON COMMIT DROP
+                """)
+                
+                # Insert batch data into temp table
+                batch_data = [(update[4], update[0], update[1], update[2], update[3]) for update in updates]
+                transaction.cursor.executemany(
+                    """
+                    INSERT INTO temp_go_terms 
+                    (gene_symbol, go_terms, molecular_functions, cellular_location, publications)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    batch_data
+                )
+                
+                # Update from temp table to main table in same transaction
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base c
+                    SET 
+                        go_terms = t.go_terms,
+                        molecular_functions = t.molecular_functions,
+                        cellular_location = t.cellular_location,
+                        source_references = jsonb_set(
+                            COALESCE(c.source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
+                            '{go_terms}',
+                            COALESCE(t.publications, '[]'::jsonb),
+                            true
+                        )
+                    FROM temp_go_terms t
+                    WHERE c.gene_symbol = t.gene_symbol
+                """)
+                
+                # The temp table will be automatically dropped on COMMIT
         except Exception as e:
             raise DatabaseError(f"Failed to update GO terms batch: {e}")
     
@@ -643,7 +669,7 @@ class GOTermProcessor(BaseProcessor):
             total_enriched = 0
             
             updates = []
-            # Fix: Use tqdm_with_logging as an iterator rather than a context manager
+            # Use get_progress_bar for progress tracking
             progress_bar = get_progress_bar(len(transcripts), "Enriching GO terms", "etl.go_terms")
             for i, (transcript_id, gene_symbol, go_terms) in enumerate(transcripts):
                 if not go_terms:
@@ -727,17 +753,41 @@ class GOTermProcessor(BaseProcessor):
             raise DatabaseError("No database cursor available")
             
         try:
-            self.execute_batch(
-                """
-                UPDATE cancer_transcript_base
-                SET 
-                    go_terms = %s::jsonb,
-                    molecular_functions = %s::text[],
-                    cellular_location = %s::text[]
-                WHERE gene_symbol = %s
-                """,
-                updates
-            )
+            # Use a transaction context manager for better control
+            with self.get_db_transaction() as transaction:
+                # Create temporary table for this batch
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE temp_enriched_terms (
+                        gene_symbol TEXT PRIMARY KEY,
+                        go_terms JSONB,
+                        molecular_functions TEXT[],
+                        cellular_location TEXT[]
+                    ) ON COMMIT DROP
+                """)
+                
+                # Insert batch data into temp table
+                batch_data = [(update[3], update[0], update[1], update[2]) for update in updates]
+                transaction.cursor.executemany(
+                    """
+                    INSERT INTO temp_enriched_terms 
+                    (gene_symbol, go_terms, molecular_functions, cellular_location)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    batch_data
+                )
+                
+                # Update from temp table to main table in same transaction
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base c
+                    SET 
+                        go_terms = t.go_terms,
+                        molecular_functions = t.molecular_functions,
+                        cellular_location = t.cellular_location
+                    FROM temp_enriched_terms t
+                    WHERE c.gene_symbol = t.gene_symbol
+                """)
+                
+                # The temp table will be automatically dropped on COMMIT
         except Exception as e:
             raise DatabaseError(f"Failed to update enriched GO terms batch: {e}")
     
@@ -776,7 +826,6 @@ class GOTermProcessor(BaseProcessor):
             self.enrich_transcripts()
             
             self.logger.info("GO term processing completed successfully")
-            
         except Exception as e:
             self.logger.error(f"GO term processing failed: {e}")
             raise
@@ -849,9 +898,8 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
                 json.dumps(go_terms_json),
                 json.dumps(go_references)
             ))
-            
             processed += 1
-            
+        
             # Process in batches
             if len(updates) >= self.batch_size:
                 self._update_go_batch(updates)
@@ -924,13 +972,28 @@ def _update_go_batch(self, updates: List[Tuple[str, List[str], str, str]]) -> No
         DatabaseError: If batch update fails
     """
     try:
-        self.execute_batch(
-            """
-            INSERT INTO temp_go_data 
-            (gene_symbol, uniprot_ids, go_terms, go_references)
-            VALUES (%s, %s, %s::jsonb, %s::jsonb)
-            """,
-            updates
-        )
+        # Use transaction context manager for better control
+        with self.get_db_transaction() as transaction:
+            # Create temporary table for this batch if it doesn't exist yet
+            transaction.cursor.execute("""
+                CREATE TEMP TABLE IF NOT EXISTS temp_go_data (
+                    gene_symbol TEXT PRIMARY KEY,
+                    uniprot_ids TEXT[],
+                    go_terms JSONB,
+                    go_references JSONB
+                ) ON COMMIT DROP
+            """)
+            
+            # Insert batch data into temp table
+            transaction.cursor.executemany(
+                """
+                INSERT INTO temp_go_data 
+                (gene_symbol, uniprot_ids, go_terms, go_references)
+                VALUES (%s, %s, %s::jsonb, %s::jsonb)
+                """,
+                updates
+            )
+            
+            # Update operations will happen in the calling function after all batches are processed
     except Exception as e:
         raise DatabaseError(f"Failed to update GO term batch: {e}")

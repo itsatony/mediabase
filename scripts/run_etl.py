@@ -112,10 +112,10 @@ def run_module(
             processor = TranscriptProcessor(config)
         elif module_name == 'id_enrichment':  # Add the ID enrichment module
             processor = IDEnrichmentProcessor(config)
-        elif module_name == 'products':
-            processor = ProductProcessor(config)
         elif module_name == 'go_terms':
             processor = GOTermProcessor(config)
+        elif module_name == 'products':
+            processor = ProductProcessor(config)
         elif module_name == 'pathways':
             processor = PathwayProcessor(config)
         elif module_name == 'drugs':
@@ -152,14 +152,19 @@ def run_pipeline(
     """Run the complete ETL pipeline or specified modules."""
     all_modules = [
         'transcripts',
-        'id_enrichment',  # Add ID enrichment as second step
-        'products',
+        'id_enrichment',  # Make sure id_enrichment comes early
         'go_terms',
+        'products',
         'pathways',
         'drugs',
         'publications'
     ]
 
+    # Now check if modules list is provided and if id_enrichment is in the list
+    if modules and 'id_enrichment' not in modules:
+        # Add warning that we're missing important id mapping steps
+        logger.warning("ID enrichment module is not included. This could affect other modules that rely on ID mappings.")
+    
     modules_to_run = modules if modules else all_modules
     
     # Validate database connection first

@@ -410,29 +410,32 @@ class PathwayProcessor(BaseProcessor):
             raise DatabaseError("No database cursor available")
         
         try:
-            # First ensure we have a valid transaction
-            with self.get_db_transaction():
-                # Execute batch update
-                # FIX: Change $1, $2, $3 style parameters to %s style parameters
-                self.execute_batch(
+            # Use a single transaction context for the update
+            with self.get_db_transaction() as transaction:
+                # Execute the batch update within the transaction
+                transaction.cursor.executemany(
                     """
                     UPDATE cancer_transcript_base
                     SET 
                         pathways = %s::text[],
                         source_references = jsonb_set(
-                            COALESCE(source_references, '{}'::jsonb),
+                            COALESCE(source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
                             '{pathways}',
-                            %s::jsonb,
+                            COALESCE(%s::jsonb, '[]'::jsonb),
                             true
                         )
                     WHERE gene_symbol = %s
                     """,
-                    [(p, j, g) for p, j, g in updates]
+                    updates
                 )
-                
         except Exception as e:
-            self.logger.error(f"Batch update failed: {e}")
-            raise DatabaseError(f"Failed to update pathways batch: {e}")
+            self.logger.error(f"Pathway batch update failed: {e}")
+            raise DatabaseError(f"Failed to update pathway batch: {e}")
     
     def extract_pathway_references(self, pathway_data: Dict[str, Any]) -> List[Publication]:
         """Extract publication references from pathway data.

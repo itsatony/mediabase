@@ -348,6 +348,7 @@ class IDEnrichmentProcessor(BaseProcessor):
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
                 
+            # Improved query to handle case-insensitive matching
             self.db_manager.cursor.execute("""
                 SELECT DISTINCT gene_symbol 
                 FROM cancer_transcript_base 
@@ -357,9 +358,27 @@ class IDEnrichmentProcessor(BaseProcessor):
             db_gene_symbols = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
             self.logger.info(f"Found {len(db_gene_symbols):,} unique gene symbols in database")
             
-            # Find overlapping gene symbols
+            # Find overlapping gene symbols with improved case handling
             mapping_symbols = set(gene_mapping.keys())
-            overlap_symbols = db_gene_symbols.intersection(mapping_symbols)
+            
+            # Create case-insensitive mappings for better matching
+            case_insensitive_mapping = {}
+            for symbol in mapping_symbols:
+                case_insensitive_mapping[symbol.upper()] = symbol
+            
+            # Find overlap using case-insensitive matching
+            overlap_symbols = set()
+            for db_symbol in db_gene_symbols:
+                # Direct match
+                if db_symbol in mapping_symbols:
+                    overlap_symbols.add(db_symbol)
+                # Case-insensitive match
+                elif db_symbol.upper() in case_insensitive_mapping:
+                    # Use the original case from UniProt mapping
+                    orig_symbol = case_insensitive_mapping[db_symbol.upper()]
+                    # Add both to ensure we catch all variations
+                    overlap_symbols.add(orig_symbol)
+                    overlap_symbols.add(db_symbol)
             
             self.logger.info(
                 f"ID mapping analysis:\n"
@@ -373,7 +392,17 @@ class IDEnrichmentProcessor(BaseProcessor):
             updates = []
             
             for gene_symbol in tqdm(overlap_symbols, desc="Preparing ID updates"):
-                mapping = gene_mapping.get(gene_symbol, {})
+                # Handle both direct and case-insensitive matches
+                if gene_symbol in gene_mapping:
+                    mapping = gene_mapping[gene_symbol]
+                elif gene_symbol.upper() in case_insensitive_mapping:
+                    orig_symbol = case_insensitive_mapping[gene_symbol.upper()]
+                    mapping = gene_mapping[orig_symbol]
+                else:
+                    continue  # Skip if no match found
+                
+                # Rest of the function remains the same
+                # ...existing code...
                 
                 # Skip empty mappings
                 if not mapping:
@@ -430,14 +459,17 @@ class IDEnrichmentProcessor(BaseProcessor):
                     gene_symbol
                 ))
                 
-                # Process in batches
-                if len(updates) >= self.batch_size:
+                # Process in batches - with a smaller batch size for testing
+                if len(updates) >= min(1000, self.batch_size):
                     self._update_id_batch(updates)
+                    # Add verification after each batch during debugging
+                    self.logger.info(f"Processed batch of {len(updates)} records")
                     updates = []
             
             # Process remaining updates
             if updates:
                 self._update_id_batch(updates)
+                self.logger.info(f"Processed final batch of {len(updates)} records")
                 
             # Verify the updates
             self._verify_id_updates()
@@ -460,21 +492,45 @@ class IDEnrichmentProcessor(BaseProcessor):
             raise DatabaseError("No database cursor available")
             
         try:
-            # Use with context to ensure transaction is managed properly
-            with self.get_db_transaction():
-                self.execute_batch(
-                    """
-                    UPDATE cancer_transcript_base
-                    SET 
-                        uniprot_ids = %s::text[],
-                        ncbi_ids = %s::text[],
-                        refseq_ids = %s::text[],
-                        alt_gene_ids = COALESCE(alt_gene_ids, '{}'::jsonb) || %s::jsonb,
-                        alt_transcript_ids = COALESCE(alt_transcript_ids, '{}'::jsonb) || %s::jsonb
-                    WHERE gene_symbol = %s
-                    """,
-                    updates
-                )
+            # Log some sample updates for debugging
+            sample_update = updates[0] if updates else None
+            self.logger.info(f"Processing batch update with {len(updates)} records")
+            if sample_update:
+                self.logger.debug(f"Sample update - Gene: {sample_update[5]}, " +
+                                 f"UniProt IDs: {sample_update[0]}, " +
+                                 f"NCBI IDs: {sample_update[1]}")
+            
+            # Use our database manager's connection and cursor directly
+            if self.db_manager.conn and self.db_manager.cursor:
+                # Safer approach that doesn't alter connection state during a transaction
+                try:
+                    # Execute the batch update using executemany
+                    self.db_manager.cursor.executemany(
+                        """
+                        UPDATE cancer_transcript_base
+                        SET 
+                            uniprot_ids = %s::text[],
+                            ncbi_ids = %s::text[],
+                            refseq_ids = %s::text[],
+                            alt_gene_ids = COALESCE(alt_gene_ids, '{}'::jsonb) || %s::jsonb,
+                            alt_transcript_ids = COALESCE(alt_transcript_ids, '{}'::jsonb) || %s::jsonb
+                        WHERE gene_symbol = %s
+                        """,
+                        updates
+                    )
+                    
+                    # Only commit if the connection is not in autocommit mode already
+                    if not self.db_manager.conn.autocommit:
+                        self.db_manager.conn.commit()
+                        self.logger.debug(f"Committed batch update of {len(updates)} records")
+                    
+                except Exception as e:
+                    # Rollback only if not in autocommit mode
+                    if self.db_manager.conn and not self.db_manager.conn.autocommit:
+                        self.db_manager.conn.rollback()
+                    raise e
+            else:
+                raise DatabaseError("No database connection or cursor available")
                 
         except Exception as e:
             self.logger.error(f"Batch ID update failed: {e}")

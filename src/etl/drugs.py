@@ -525,15 +525,49 @@ class DrugProcessor(BaseProcessor):
             DatabaseError: If batch update fails
         """
         try:
-            self.execute_batch(
-                """
-                INSERT INTO temp_drug_data 
-                (gene_symbol, uniprot_ids, drug_data, drug_references)
-                VALUES (%s, %s, %s::jsonb, %s::jsonb)
-                """,
-                updates
-            )
+            # Use a single transaction context for the batch
+            with self.get_db_transaction() as transaction:
+                # Make sure the temp table exists within this transaction
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS temp_drug_data (
+                        gene_symbol TEXT PRIMARY KEY,
+                        uniprot_ids TEXT[],
+                        drug_data JSONB,
+                        drug_references JSONB
+                    ) ON COMMIT DROP
+                """)
+                
+                # Execute the batch insert within the same transaction
+                transaction.cursor.executemany(
+                    """
+                    INSERT INTO temp_drug_data 
+                    (gene_symbol, uniprot_ids, drug_data, drug_references)
+                    VALUES (%s, %s, %s::jsonb, %s::jsonb)
+                    """,
+                    updates
+                )
+                
+                # Update the main table from the temp table in the same transaction
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base AS c
+                    SET 
+                        drugs = COALESCE(c.drugs, '{}'::jsonb) || t.drug_data,
+                        source_references = jsonb_set(
+                            COALESCE(c.source_references, '{
+                                "go_terms": [],
+                                "uniprot": [],
+                                "drugs": [],
+                                "pathways": []
+                            }'::jsonb),
+                            '{drugs}',
+                            t.drug_references,
+                            true
+                        )
+                    FROM temp_drug_data t
+                    WHERE c.gene_symbol = t.gene_symbol
+                """)
         except Exception as e:
+            self.logger.error(f"Drug batch update failed: {e}")
             raise DatabaseError(f"Failed to update drug batch: {e}")
 
     def calculate_drug_scores(self) -> None:

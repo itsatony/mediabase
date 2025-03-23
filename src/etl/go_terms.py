@@ -18,6 +18,9 @@ from rich.table import Table
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 from .publications import Publication, PublicationsProcessor
 from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
+# Fix: Add get_progress_bar to the imports
+from ..utils.progress import tqdm_with_logging, SuppressPandasWarnings, get_progress_bar
+from ..utils.pandas_helpers import safe_assign, safe_batch_assign
 
 # Constants
 HUMAN_SPECIES = 'Homo sapiens'
@@ -256,7 +259,7 @@ class GOTermProcessor(BaseProcessor):
             sample_entries: List[List[str]] = []
             
             with gzip.open(goa_path, 'rt') as f:
-                for line in tqdm(f, desc='Processing GOA entries'):
+                for line in tqdm_with_logging(f, desc='Processing GOA entries', module_name="etl.go_terms"):
                     if line.startswith('!'):
                         continue
                     
@@ -477,34 +480,40 @@ class GOTermProcessor(BaseProcessor):
                 processed = 0
                 batch_size = min(1000, self.batch_size)
                 
-                with tqdm(total=len(gene_go_terms), desc="Updating GO terms") as pbar:
-                    for gene_symbol, go_terms in gene_go_terms.items():
-                        if go_terms:
-                            # Extract special term arrays
-                            molecular_functions, cellular_locations = self._extract_special_terms(go_terms)
-                            
-                            # Extract publications
-                            publications = self.extract_publication_references(go_terms)
-                            
-                            updates.append((
-                                json.dumps(go_terms),
-                                molecular_functions,
-                                cellular_locations,
-                                json.dumps(publications) if publications else None,
-                                gene_symbol
-                            ))
-                            
-                            if len(updates) >= batch_size:
-                                self._update_go_terms_batch(updates)
-                                processed += len(updates)
-                                pbar.update(len(updates))
-                                updates = []
+                # Fix: Use tqdm_with_logging as an iterator rather than a context manager
+                progress_bar = get_progress_bar(len(gene_go_terms), "Updating GO terms", "etl.go_terms")
+                for i, (gene_symbol, go_terms) in enumerate(gene_go_terms.items()):
+                    if go_terms:
+                        # Extract special term arrays
+                        molecular_functions, cellular_locations = self._extract_special_terms(go_terms)
+                        
+                        # Extract publications
+                        publications = self.extract_publication_references(go_terms)
+                        
+                        updates.append((
+                            json.dumps(go_terms),
+                            molecular_functions,
+                            cellular_locations,
+                            json.dumps(publications) if publications else None,
+                            gene_symbol
+                        ))
+                        
+                        if len(updates) >= batch_size:
+                            self._update_go_terms_batch(updates)
+                            processed += len(updates)
+                            progress_bar.update(len(updates))
+                            updates = []
+                    
+                    # Update progress
+                    progress_bar.update(1)
                 
                 # Process remaining updates
                 if updates:
                     self._update_go_terms_batch(updates)
                     processed += len(updates)
-                    pbar.update(len(updates))
+                    
+                # Close progress bar
+                progress_bar.close()
             
             # Verify the updates
             if not self.db_manager.cursor:
@@ -605,62 +614,66 @@ class GOTermProcessor(BaseProcessor):
             total_enriched = 0
             
             updates = []
-            with tqdm(total=len(transcripts), desc="Enriching GO terms") as pbar:
-                for transcript_id, gene_symbol, go_terms in transcripts:
-                    if not go_terms:
-                        pbar.update(1)
-                        continue
-                            
-                    initial_term_count = len(go_terms)
-                    enriched_terms = {}
-                    
-                    # Process existing terms
-                    for go_id, term_data in go_terms.items():
-                        # Get original term data
-                        term_info = {
-                            'term': term_data.get('term', ''),
-                            'evidence': term_data.get('evidence', ''),
-                            'aspect': term_data.get('aspect', '')
-                        }
-                        enriched_terms[go_id] = term_info
+            # Fix: Use tqdm_with_logging as an iterator rather than a context manager
+            progress_bar = get_progress_bar(len(transcripts), "Enriching GO terms", "etl.go_terms")
+            for i, (transcript_id, gene_symbol, go_terms) in enumerate(transcripts):
+                if not go_terms:
+                    progress_bar.update(1)
+                    continue
                         
-                        # Add ancestors with inherited evidence
-                        ancestors = self.get_ancestors(go_id, term_data.get('aspect', ''))
-                        for ancestor in ancestors:
-                            if ancestor in self.go_graph.nodes:
-                                ancestor_data = self.go_graph.nodes.get(ancestor, {})
-                                if ancestor not in enriched_terms:
-                                    enriched_terms[ancestor] = {
-                                        'term': ancestor_data.get('name', ''),
-                                        'evidence': f"Inherited from {go_id}",
-                                        'aspect': ancestor_data.get('namespace', '')
-                                    }
+                initial_term_count = len(go_terms)
+                enriched_terms = {}
+                
+                # Process existing terms
+                for go_id, term_data in go_terms.items():
+                    # Get original term data
+                    term_info = {
+                        'term': term_data.get('term', ''),
+                        'evidence': term_data.get('evidence', ''),
+                        'aspect': term_data.get('aspect', '')
+                    }
+                    enriched_terms[go_id] = term_info
                     
-                    final_term_count = len(enriched_terms)
-                    if final_term_count > initial_term_count:
-                        total_enriched += 1
-                        
-                    total_processed += 1
+                    # Add ancestors with inherited evidence
+                    ancestors = self.get_ancestors(go_id, term_data.get('aspect', ''))
+                    for ancestor in ancestors:
+                        if ancestor in self.go_graph.nodes:
+                            ancestor_data = self.go_graph.nodes.get(ancestor, {})
+                            if ancestor not in enriched_terms:
+                                enriched_terms[ancestor] = {
+                                    'term': ancestor_data.get('name', ''),
+                                    'evidence': f"Inherited from {go_id}",
+                                    'aspect': ancestor_data.get('namespace', '')
+                                }
+                
+                final_term_count = len(enriched_terms)
+                if final_term_count > initial_term_count:
+                    total_enriched += 1
                     
-                    # Extract special term arrays for the enriched terms
-                    molecular_functions, cellular_locations = self._extract_special_terms(enriched_terms)
+                total_processed += 1
+                
+                # Extract special term arrays for the enriched terms
+                molecular_functions, cellular_locations = self._extract_special_terms(enriched_terms)
+                
+                updates.append((
+                    json.dumps(enriched_terms),
+                    molecular_functions,
+                    cellular_locations,
+                    gene_symbol
+                ))
+                
+                if len(updates) >= self.batch_size:
+                    self._update_enriched_terms_batch(updates)
+                    updates = []
                     
-                    updates.append((
-                        json.dumps(enriched_terms),
-                        molecular_functions,
-                        cellular_locations,
-                        gene_symbol
-                    ))
-                    
-                    if len(updates) >= self.batch_size:
-                        self._update_enriched_terms_batch(updates)
-                        updates = []
-                        
-                    pbar.update(1)
+                progress_bar.update(1)
             
             # Process remaining updates
             if updates:
                 self._update_enriched_terms_batch(updates)
+                
+            # Close progress bar
+            progress_bar.close()
             
             self.logger.info(
                 f"GO term enrichment completed:\n"

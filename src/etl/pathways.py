@@ -13,6 +13,7 @@ from tqdm import tqdm
 from ..db.database import get_db_manager
 from ..etl.publications import Publication, PublicationsProcessor
 from ..utils.publication_utils import extract_pmid_from_text
+from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 from psycopg2.extras import execute_batch
 
 logger = logging.getLogger(__name__)
@@ -667,3 +668,22 @@ class PathwayProcessor:
             if self.db_manager.conn and not self.db_manager.conn.closed:
                 logger.debug("Closing database connection at end of pathway pipeline")
                 self.db_manager.conn.close()
+
+    def extract_pathway_references(self, pathway_data: Dict[str, Any]) -> List[Publication]:
+        """Extract publication references from pathway data."""
+        publications: List[Publication] = []
+        
+        # Extract PMIDs from pathway evidence text
+        evidence_text = pathway_data.get('evidence', '')
+        pmids = extract_pmids_from_text(evidence_text)
+        
+        for pmid in pmids:
+            publication = PublicationsProcessor.create_publication_reference(
+                pmid=pmid,
+                evidence_type="pathway_association",
+                source_db="Reactome",
+                url=format_pmid_url(pmid)
+            )
+            publications.append(publication)
+        
+        return publications

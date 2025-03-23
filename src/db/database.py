@@ -109,6 +109,45 @@ SCHEMA_VERSIONS = {
 
         -- Drop old publications column as it's replaced by source_references
         ALTER TABLE cancer_transcript_base DROP COLUMN publications;
+    """,
+    "v0.1.5": """
+        -- Set proper default for source_references
+        ALTER TABLE cancer_transcript_base
+        ALTER COLUMN source_references SET DEFAULT jsonb_build_object(
+            'go_terms', jsonb_build_array(),
+            'uniprot', jsonb_build_array(),
+            'drugs', jsonb_build_array(),
+            'pathways', jsonb_build_array()
+        );
+
+        -- Update any existing NULL source_references to the proper default structure
+        UPDATE cancer_transcript_base
+        SET source_references = jsonb_build_object(
+            'go_terms', jsonb_build_array(),
+            'uniprot', jsonb_build_array(),
+            'drugs', jsonb_build_array(),
+            'pathways', jsonb_build_array()
+        )
+        WHERE source_references IS NULL;
+
+        -- Create publication_reference type for better structure
+        DO $$ BEGIN
+            CREATE TYPE publication_reference AS (
+                pmid text,
+                evidence_type text,
+                source_db text,
+                title text,
+                abstract text,
+                year integer,
+                journal text,
+                authors text[],
+                citation_count integer,
+                doi text,
+                url text
+            );
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
     """
 }
 
@@ -643,7 +682,98 @@ class DatabaseManager:
                 self.conn.rollback()
             return None
 
+    def get_version_sequence(self) -> List[str]:
+        """Get the sequence of schema versions."""
+        return [
+            'v0.1.1',
+            'v0.1.2',
+            'v0.1.3',
+            'v0.1.4',
+            'v0.1.5'  # Add new version
+        ]
 
+    def reset_database(self) -> None:
+        """Reset the database to a clean state.
+        
+        This method:
+        1. Drops all tables and objects
+        2. Reinitializes schema version tracking
+        3. Applies all migrations from scratch
+        
+        Raises:
+            RuntimeError: If database connection fails
+        """
+        if not self.ensure_connection():
+            raise RuntimeError("Failed to establish database connection for reset")
+            
+        if not self.cursor:
+            raise RuntimeError("No database cursor available")
+            
+        logger.warning("Resetting database - all data will be lost!")
+        
+        try:
+            # Set to single transaction mode for DDL operations
+            if self.conn:
+                self.conn.set_session(autocommit=True)
+            
+            # Drop all tables and objects
+            self.cursor.execute("""
+                DROP SCHEMA public CASCADE;
+                CREATE SCHEMA public;
+                GRANT ALL ON SCHEMA public TO public;
+            """)
+            
+            logger.info("Dropped all existing database objects")
+            
+            # Reinitialize schema version tracking
+            self.cursor.execute("""
+                CREATE TABLE schema_version (
+                    version TEXT PRIMARY KEY,
+                    applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+                
+                INSERT INTO schema_version (version) VALUES ('v0.0.0');
+            """)
+            
+            logger.info("Reinitialized schema version tracking")
+            
+            # Apply all migrations from scratch
+            migrations_path = Path(__file__).parent / "migrations"
+            if not migrations_path.exists():
+                raise RuntimeError(f"Migrations directory not found at {migrations_path}")
+            
+            # Get all migration files in order
+            migration_files = sorted([
+                f for f in migrations_path.glob("v*.sql")
+                if f.name.startswith('v') and f.suffix == '.sql'
+            ])
+            
+            # Apply each migration
+            for migration_file in migration_files:
+                version = migration_file.stem
+                logger.info(f"Applying migration {version}")
+                
+                with open(migration_file, 'r') as f:
+                    migration_sql = f.read()
+                    
+                self.cursor.execute(migration_sql)
+                self.cursor.execute(
+                    "UPDATE schema_version SET version = %s",
+                    (version,)
+                )
+                
+            logger.info("Database reset and migrations completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Database reset failed: {e}")
+            if self.conn:
+                self.conn.rollback()
+            raise
+        finally:
+            # Reset to normal transaction mode
+            if self.conn:
+                self.conn.set_session(autocommit=False)
+                
 def get_db_manager(config: Dict[str, Any]) -> DatabaseManager:
     """Create and initialize a database manager instance.
     

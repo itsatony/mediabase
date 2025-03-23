@@ -109,12 +109,57 @@ class TranscriptProcessor(BaseProcessor):
             # Normalize gene_id by stripping version number if present
             transcripts['gene_id'] = transcripts['gene_id'].str.split('.').str[0]
             
+            # Initialize transcript type counter
+            selected_transcript_types = {'protein_coding': 0}
+            selected_transcripts = []
+            
             # Apply limit if specified
             if self.limit_transcripts:
                 self.logger.info(f"Limiting to {self.limit_transcripts} transcripts")
-                transcripts = transcripts.head(self.limit_transcripts)
-            
-            self.logger.info(f"Parsed {len(transcripts)} transcripts")
+                max_per_type = int(0.05 * self.limit_transcripts)
+                # if we are limited, we want to make sure that the small samplesize still gives us enough diversity of gene_types with a focus on protein_coding genes
+                # our max shares are 5% of selected transcripts can be any 1 type of non-protein_coding gene. meaning 5% could lcRNA, another 5% could me miRNA, etc.
+                # this is a bit of a hack, but we don't want to limit the number of protein_coding genes
+                # what we will do is:
+                # - establish a loop to randomly pick 1 transcript from all transcripts
+                # - check if our "pool" for the picked transcript is below max and add the picked transcript if it is (or if it is protein_coding)
+                # - if it is not, we will randomly pick another transcript
+                # - we will repeat this until we have our limit
+                total_selected = 0
+                for _ in range(self.limit_transcripts):
+                    while True:
+                        # Randomly select a transcript
+                        selected_transcript = transcripts.sample(1).iloc[0]
+                        
+                        # Check if the selected transcript is protein_coding or if we have space in our pool
+                        if selected_transcript['gene_type'] == 'protein_coding':
+                            selected_transcripts.append(selected_transcript)
+                            selected_transcript_types[selected_transcript['gene_type']] += 1
+                            total_selected += 1
+                            # Check if we have reached the limit
+                            if total_selected >= self.limit_transcripts:
+                                break
+                        else:
+                            # Check if we have space in our pool for this non-protein_coding transcript
+                            if selected_transcript['gene_type'] not in selected_transcript_types:
+                                selected_transcript_types[selected_transcript['gene_type']] = 0
+                            elif selected_transcript_types[selected_transcript['gene_type']] >= max_per_type:
+                                continue
+                            # Add the selected transcript to the pool
+                            selected_transcripts.append(selected_transcript)
+                            selected_transcript_types[selected_transcript['gene_type']] += 1
+                            total_selected += 1
+                            # Check if we have reached the limit
+                            if total_selected >= self.limit_transcripts:
+                                break
+                transcripts = pd.DataFrame(selected_transcripts)                
+                # Log transcript type statistics
+                self.logger.info(f"Parsed {len(transcripts)} transcripts and limited to {self.limit_transcripts}")
+                self.logger.info("Transcript type distribution:")
+                for gene_type, count in selected_transcript_types.items():
+                    self.logger.info(f"  {gene_type}: {count}")
+            else:
+                self.logger.info(f"Parsed {len(transcripts)} transcripts")
             return transcripts
             
         except Exception as e:

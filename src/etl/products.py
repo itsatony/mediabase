@@ -128,6 +128,308 @@ class ProductClassifier(BaseProcessor):
         except Exception as e:
             raise DownloadError(f"Failed to download UniProt data: {e}")
     
+    def parse_uniprot_data(self, uniprot_file: Path) -> Dict[str, Dict[str, Any]]:
+        """Parse UniProt data file to extract features and GO terms.
+        
+        Args:
+            uniprot_file: Path to the UniProt data file
+            
+        Returns:
+            Dictionary mapping gene symbols to features and GO terms
+            
+        Raises:
+            ProcessingError: If parsing fails
+        """
+        try:
+            self.logger.info("Parsing UniProt data to extract features and GO terms")
+            
+            # Initialize mapping from gene symbols to features and GO terms
+            gene_data: Dict[str, Dict[str, Any]] = {}
+            
+            # Track statistics for reporting
+            stats = {
+                'total_entries': 0,
+                'with_gene_symbol': 0,
+                'with_features': 0,
+                'with_go_terms': 0,
+                'with_keywords': 0,
+                'with_function': 0
+            }
+            
+            # Process the file with a progress bar
+            with gzip.open(uniprot_file, 'rt') as f:
+                # First count lines for progress bar
+                self.logger.info("Counting lines in UniProt file...")
+                line_count = sum(1 for _ in f)
+                f.seek(0)  # Reset file pointer
+                
+                self.logger.info(f"Processing {line_count:,} UniProt entries")
+                
+                # Track current entry being processed
+                current_entry = {
+                    'gene_symbol': None,
+                    'features': {},
+                    'go_terms': {},
+                    'keywords': [],
+                    'function': ""
+                }
+                
+                # Use progress bar to show processing status
+                for line in tqdm(f, total=line_count, desc="Parsing UniProt data"):
+                    stats['total_entries'] += 1
+                    
+                    parts = line.strip().split('\t')
+                    if len(parts) < 3:
+                        continue
+                    
+                    uniprot_id, id_type, value = parts[0], parts[1], parts[2]
+                    
+                    # Extract gene symbol
+                    if id_type == "Gene_Name":
+                        current_entry['gene_symbol'] = value.upper()
+                        stats['with_gene_symbol'] += 1
+                    
+                    # Extract features based on various UniProt fields
+                    if id_type == "DOMAIN" or id_type == "REGION" or id_type == "MOTIF":
+                        current_entry['features'][f"{id_type.lower()}_{len(current_entry['features'])}"] = value
+                        stats['with_features'] += 1
+                    
+                    # Extract GO terms
+                    if id_type == "GO" and ":" in value:
+                        go_parts = value.split(';')
+                        if len(go_parts) >= 1:
+                            go_id = go_parts[0].strip()
+                            # Make sure it's a proper GO ID format
+                            if go_id.startswith('GO:'):
+                                go_desc = go_parts[1].strip() if len(go_parts) > 1 else ""
+                                current_entry['go_terms'][go_id] = go_desc
+                                stats['with_go_terms'] += 1
+                    
+                    # Extract keywords
+                    if id_type == "KEYWORDS":
+                        keywords = [k.strip() for k in value.split(';') if k.strip()]
+                        current_entry['keywords'].extend(keywords)
+                        stats['with_keywords'] += 1
+                    
+                    # Extract function descriptions
+                    if id_type == "FUNCTION":
+                        current_entry['function'] = value
+                        stats['with_function'] += 1
+                    
+                    # Store completed entry when we encounter a new gene symbol
+                    if current_entry['gene_symbol'] and (id_type == "Gene_Name" or stats['total_entries'] % 1000 == 0):
+                        gene_symbol = current_entry['gene_symbol']
+                        
+                        # Merge with existing data if this gene already has an entry
+                        if gene_symbol in gene_data:
+                            existing = gene_data[gene_symbol]
+                            
+                            # Merge features
+                            existing['features'].update(current_entry['features'])
+                            
+                            # Merge GO terms
+                            existing['go_terms'].update(current_entry['go_terms'])
+                            
+                            # Merge keywords (avoid duplicates)
+                            for keyword in current_entry['keywords']:
+                                if keyword not in existing['keywords']:
+                                    existing['keywords'].append(keyword)
+                            
+                            # Append function descriptions
+                            if current_entry['function']:
+                                if existing['function']:
+                                    existing['function'] += "; " + current_entry['function']
+                                else:
+                                    existing['function'] = current_entry['function']
+                        else:
+                            # Create new entry for this gene
+                            gene_data[gene_symbol] = {
+                                'features': current_entry['features'].copy(),
+                                'go_terms': current_entry['go_terms'].copy(),
+                                'keywords': current_entry['keywords'].copy(),
+                                'function': current_entry['function']
+                            }
+                        
+                        # Reset current entry
+                        if id_type == "Gene_Name":
+                            current_entry = {
+                                'gene_symbol': value.upper(),
+                                'features': {},
+                                'go_terms': {},
+                                'keywords': [],
+                                'function': ""
+                            }
+                        else:
+                            current_entry = {
+                                'gene_symbol': None,
+                                'features': {},
+                                'go_terms': {},
+                                'keywords': [],
+                                'function': ""
+                            }
+            
+            # Log statistics
+            self.logger.info(f"UniProt parsing statistics:")
+            self.logger.info(f"- Total entries processed: {stats['total_entries']:,}")
+            self.logger.info(f"- Entries with gene symbols: {stats['with_gene_symbol']:,}")
+            self.logger.info(f"- Entries with features: {stats['with_features']:,}")
+            self.logger.info(f"- Entries with GO terms: {stats['with_go_terms']:,}")
+            self.logger.info(f"- Entries with keywords: {stats['with_keywords']:,}")
+            self.logger.info(f"- Entries with function descriptions: {stats['with_function']:,}")
+            self.logger.info(f"- Total genes with data: {len(gene_data):,}")
+            
+            return gene_data
+                
+        except Exception as e:
+            raise ProcessingError(f"Failed to parse UniProt data: {e}")
+    
+    def update_gene_features(self, gene_data: Dict[str, Dict[str, Any]]) -> None:
+        """Update genes in the database with features and GO terms.
+        
+        Args:
+            gene_data: Dictionary mapping gene symbols to features and GO terms
+            
+        Raises:
+            DatabaseError: If database update fails
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
+            
+        try:
+            self.logger.info(f"Updating {len(gene_data):,} genes with features and GO terms")
+            
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            # Get all gene symbols from database for matching
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol FROM cancer_transcript_base
+                WHERE gene_symbol IS NOT NULL
+            """)
+            db_gene_symbols = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
+            self.logger.info(f"Found {len(db_gene_symbols):,} unique gene symbols in database")
+            
+            # Find overlap between our gene data and database genes
+            gene_data_symbols = set(gene_data.keys())
+            overlap_symbols = db_gene_symbols.intersection(gene_data_symbols)
+            
+            self.logger.info(f"Found {len(overlap_symbols):,} overlapping genes to update")
+            
+            # Process in batches
+            batch_size = self.config.get('batch_size', 100)
+            updates = []
+            updated_genes = 0
+            
+            # Create temporary table with IF NOT EXISTS to avoid race conditions
+            with self.get_db_transaction() as transaction:
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS temp_gene_features (
+                        gene_symbol TEXT PRIMARY KEY,
+                        features JSONB,
+                        go_terms JSONB,
+                        keywords TEXT[]
+                    ) ON COMMIT PRESERVE ROWS
+                """)
+            
+            for gene_symbol in tqdm(overlap_symbols, desc="Preparing feature updates"):
+                data = gene_data.get(gene_symbol, {})
+                if not data:
+                    continue
+                    
+                features = data.get('features', {})
+                go_terms = data.get('go_terms', {})
+                keywords = data.get('keywords', [])
+                
+                # Add to updates
+                updates.append((
+                    gene_symbol,
+                    json.dumps(features),
+                    json.dumps(go_terms),
+                    keywords
+                ))
+                
+                # Process in batches
+                if len(updates) >= batch_size:
+                    self._update_feature_batch(updates)
+                    updated_genes += len(updates)
+                    updates = []
+            
+            # Process remaining updates
+            if updates:
+                self._update_feature_batch(updates)
+                updated_genes += len(updates)
+            
+            self.logger.info(f"Updated {updated_genes:,} genes with features and GO terms")
+            
+        except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
+            raise DatabaseError(f"Failed to update gene features: {e}")
+        finally:
+            # Clean up
+            try:
+                if self.db_manager.cursor:
+                    self.db_manager.cursor.execute("DROP TABLE IF EXISTS temp_gene_features")
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+            except Exception as e:
+                self.logger.warning(f"Cleanup failed: {e}")
+    
+    def _update_feature_batch(self, updates: List[Tuple[str, str, str, List[str]]]) -> None:
+        """Update a batch of genes with features and GO terms.
+        
+        Args:
+            updates: List of tuples with (gene_symbol, features_json, go_terms_json, keywords)
+            
+        Raises:
+            DatabaseError: If batch update fails
+        """
+        try:
+            # Instead of checking if the table exists and then creating it,
+            # use IF NOT EXISTS which is handled atomically by PostgreSQL
+            with self.get_db_transaction() as transaction:
+                transaction.cursor.execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS temp_gene_features (
+                        gene_symbol TEXT PRIMARY KEY,
+                        features JSONB,
+                        go_terms JSONB,
+                        keywords TEXT[]
+                    ) ON COMMIT PRESERVE ROWS
+                """)
+            
+            # Now insert into temp table with proper conflict handling
+            self.execute_batch(
+                """
+                INSERT INTO temp_gene_features 
+                (gene_symbol, features, go_terms, keywords)
+                VALUES (%s, %s::jsonb, %s::jsonb, %s)
+                ON CONFLICT (gene_symbol) DO UPDATE SET
+                    features = temp_gene_features.features || EXCLUDED.features,
+                    go_terms = temp_gene_features.go_terms || EXCLUDED.go_terms,
+                    keywords = temp_gene_features.keywords || EXCLUDED.keywords
+                """,
+                updates
+            )
+            
+            # Update from temp table to main table
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    UPDATE cancer_transcript_base AS c
+                    SET 
+                        features = COALESCE(c.features, '{}'::jsonb) || t.features,
+                        go_terms = COALESCE(c.go_terms, '{}'::jsonb) || t.go_terms
+                    FROM temp_gene_features AS t
+                    WHERE c.gene_symbol = t.gene_symbol
+                """)
+                
+                # Clear temp table for next batch
+                self.db_manager.cursor.execute("TRUNCATE temp_gene_features")
+            else:
+                raise DatabaseError("No database cursor available")
+            
+        except Exception as e:
+            raise DatabaseError(f"Failed to update feature batch: {e}")
+    
     def classify_gene(self, gene_data: Dict[str, Any]) -> List[str]:
         """Classify a gene based on its features, GO terms, and keywords.
         
@@ -231,18 +533,29 @@ class ProductClassifier(BaseProcessor):
         return publications
 
     def run(self) -> None:
-        """Run the product classification process."""
+        """Run the product classification process.
+        
+        Steps:
+        1. Download UniProt data
+        2. Parse UniProt data to extract features and GO terms
+        3. Update genes with features and GO terms
+        """
         try:
-            self.logger.info("Starting gene product classification")
+            self.logger.info("Starting gene product feature extraction")
             
             # Download UniProt data
             uniprot_file = self.download_uniprot_data()
             
-            # Process data (would be implemented in a subclass or extended here)
-            self.logger.info("UniProt data downloaded successfully")
+            # Parse UniProt data to extract features and GO terms
+            gene_data = self.parse_uniprot_data(uniprot_file)
+            
+            # Update genes with features and GO terms
+            self.update_gene_features(gene_data)
+            
+            self.logger.info("Gene feature extraction completed successfully")
             
         except Exception as e:
-            self.logger.error(f"Product classification failed: {e}")
+            self.logger.error(f"Product feature extraction failed: {e}")
             raise
 
 
@@ -495,13 +808,44 @@ class ProductProcessor(BaseProcessor):
             raise DatabaseError(f"Failed to update gene product types: {e}")
     
     def run(self) -> None:
-        """Run the complete product processing pipeline."""
+        """Run the complete product processing pipeline.
+        
+        Steps:
+        1. First extract features and GO terms from UniProt data
+        2. Then verify GO terms are present in sufficient quantity
+        3. Then classify genes based on the extracted features
+        4. Update gene product types in database
+        
+        Note: For optimal enrichment, run the GO terms ETL before this processor.
+        This ensures more comprehensive gene classification.
+        """
         try:
             self.logger.info("Starting gene product processing")
             
             # Check schema version using enhanced base class method
             if not self.ensure_schema_version('v0.1.2'):
                 raise DatabaseError("Incompatible database schema version")
+            
+            # First run feature extraction using the classifier
+            self.logger.info("Extracting features from UniProt data")
+            self.classifier.run()
+            
+            # Check if GO terms are present in the database
+            # This helps ensure proper sequencing of ETL steps
+            if self.ensure_connection() and self.db_manager.cursor is not None:
+                self.db_manager.cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total_genes,
+                        COUNT(CASE WHEN go_terms IS NOT NULL AND go_terms != '{}'::jsonb THEN 1 END) as with_go_terms
+                    FROM cancer_transcript_base
+                """)
+                
+                stats = self.db_manager.cursor.fetchone()
+                if stats and stats[1] < (stats[0] * 0.1):  # Less than 10% have GO terms
+                    self.logger.warning(
+                        "Very few genes have GO terms. For optimal classification, "
+                        "run the GO terms ETL process before product classification."
+                    )
             
             # Get genes with features
             genes = self.get_genes_with_features()

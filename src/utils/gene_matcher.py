@@ -1,14 +1,13 @@
 """Gene symbol matching utilities for MediaBase.
 
 This module provides functions for matching gene symbols between different
-data sources with support for case-insensitive matching and fuzzy matching
-to handle minor differences in gene symbol representations.
+data sources with support for case-insensitive matching to handle
+differences in gene symbol representations.
 """
 
 import logging
 import re
 from typing import Dict, List, Set, Tuple, Optional, Union, Any
-from Levenshtein import distance as levenshtein_distance
 
 logger = logging.getLogger(__name__)
 
@@ -62,68 +61,6 @@ def match_exact(symbol: str, targets: Union[List[str], Set[str], Dict[str, Any]]
     
     return None
 
-def match_fuzzy(
-    symbol: str, 
-    targets: Union[List[str], Set[str], Dict[str, Any]], 
-    threshold: int = 2
-) -> Optional[str]:
-    """Find best fuzzy match for a gene symbol using Levenshtein distance.
-    
-    Args:
-        symbol: Gene symbol to match
-        targets: List, set, or dict keys of potential target gene symbols
-        threshold: Maximum edit distance for a match (default: 2)
-        
-    Returns:
-        Best matched symbol from targets or None if no match within threshold
-    """
-    if not symbol or not targets:
-        return None
-        
-    normalized = normalize_gene_symbol(symbol)
-    if not normalized:
-        return None
-        
-    # Skip very short symbols for fuzzy matching to avoid false positives
-    if len(normalized) < 3:
-        return match_exact(symbol, targets)
-    
-    best_match = None
-    best_distance = threshold + 1  # Initialize above threshold
-    
-    # For dict, check against keys
-    if isinstance(targets, dict):
-        target_list = list(targets.keys())
-    else:
-        target_list = list(targets)
-    
-    for target in target_list:
-        norm_target = normalize_gene_symbol(target)
-        
-        # Skip if target is too short or length difference is too big
-        if len(norm_target) < 3 or abs(len(norm_target) - len(normalized)) > threshold:
-            continue
-            
-        # Skip if first letter is different (common for gene families)
-        if norm_target[0] != normalized[0]:
-            continue
-            
-        # Calculate edit distance
-        dist = levenshtein_distance(normalized, norm_target)
-        
-        # Update best match if better
-        if dist < best_distance:
-            best_distance = dist
-            best_match = target
-    
-    # Return best match if within threshold
-    if best_distance <= threshold:
-        if best_match != symbol:  # Log if we're making a fuzzy match
-            logger.debug(f"Fuzzy match: '{symbol}' -> '{best_match}' (distance: {best_distance})")
-        return best_match
-    
-    return None
-
 def build_normalized_map(genes: Union[List[str], Set[str]]) -> Dict[str, str]:
     """Build a map of normalized gene symbols to original symbols.
     
@@ -147,16 +84,16 @@ def build_normalized_map(genes: Union[List[str], Set[str]]) -> Dict[str, str]:
 def match_genes_bulk(
     query_genes: List[str],
     target_genes: Union[List[str], Set[str], Dict[str, Any]],
-    use_fuzzy: bool = True,
-    threshold: int = 2
+    use_fuzzy: bool = False,  # Parameter kept for backward compatibility but ignored
+    threshold: int = 2  # Parameter kept for backward compatibility but ignored
 ) -> Dict[str, str]:
-    """Match gene symbols in bulk with optimized performance.
+    """Match gene symbols in bulk with case-insensitive matching.
     
     Args:
         query_genes: List of gene symbols to match
         target_genes: List, set, or dict keys of potential target gene symbols
-        use_fuzzy: Whether to use fuzzy matching for non-exact matches
-        threshold: Maximum edit distance for fuzzy matches
+        use_fuzzy: Ignored (kept for backward compatibility)
+        threshold: Ignored (kept for backward compatibility)
         
     Returns:
         Dictionary mapping query genes to matched target genes
@@ -178,17 +115,10 @@ def match_genes_bulk(
         if not query:
             continue
             
-        # Try exact match first
+        # Only use exact case-insensitive matching
         norm_query = normalize_gene_symbol(query)
         if norm_query in target_norm_map:
             matches[query] = target_norm_map[norm_query]
-            continue
-        
-        # Try fuzzy match if enabled and exact match failed
-        if use_fuzzy:
-            fuzzy_match = match_fuzzy(query, target_list, threshold)
-            if fuzzy_match:
-                matches[query] = fuzzy_match
     
     return matches
 

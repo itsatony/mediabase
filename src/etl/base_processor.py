@@ -18,7 +18,7 @@ from tqdm import tqdm
 from psycopg2.extras import execute_batch
 
 from ..db.database import get_db_manager, DatabaseManager
-from ..utils.logging import ETLProgressBar, get_etl_logger
+from ..utils.logging import get_etl_logger
 
 # Type variables for generic methods
 T = TypeVar('T')
@@ -202,7 +202,7 @@ class BaseProcessor:
             self.logger.info(f"Using cached file: {file_path}")
             return file_path
         
-        self.logger.info(f"Downloading {url} to {file_path}")
+        self.logger.info(f"Downloading {url}")
         
         try:
             response = requests.get(url, stream=True, params=params)
@@ -210,11 +210,14 @@ class BaseProcessor:
             
             total_size = int(response.headers.get('content-length', 0))
             
+            # Use tqdm with leave=False to ensure it updates in place
             with open(file_path, 'wb') as f, tqdm(
                 desc=f"Downloading {file_path.name}",
                 total=total_size,
                 unit='B',
-                unit_scale=True
+                unit_scale=True,
+                position=0,
+                leave=False
             ) as pbar:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
@@ -327,7 +330,14 @@ class BaseProcessor:
         batch_size_val = batch_size if batch_size is not None else self.batch_size
         total_batches = (len(items) + batch_size_val - 1) // batch_size_val  # Ceiling division
         
-        with tqdm(total=total_batches, desc=desc, unit="batch") as pbar:
+        # Use tqdm with position=0 and leave=False for in-place updates
+        with tqdm(
+            total=total_batches, 
+            desc=desc, 
+            unit="batch",
+            position=0,
+            leave=False
+        ) as pbar:
             for i in range(0, len(items), batch_size_val):
                 batch = items[i:i+batch_size_val]
                 processor(batch)

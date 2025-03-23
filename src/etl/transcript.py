@@ -38,7 +38,7 @@ class TranscriptProcessor(BaseProcessor):
         """
         super().__init__(config)
         
-        self.gtf_url = config.get('gtf_url')
+        self.gtf_url = config.get('gencode_gtf_url')
         if not self.gtf_url:
             raise ValueError("GTF URL not configured")
             

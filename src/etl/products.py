@@ -24,7 +24,8 @@ from rich.console import Console
 # Local imports
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
-from .publications import Publication, PublicationsProcessor
+from ..utils.publication_types import Publication
+from .publications import PublicationsProcessor
 
 # Constants
 DEFAULT_PRODUCT_TYPES = [

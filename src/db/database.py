@@ -23,9 +23,11 @@ from psycopg2.extensions import (
 from rich.console import Console
 from rich.table import Table
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Import our centralized logging
+from ..utils.logging import setup_logging
+
+# Create logger with the module name
+logger = setup_logging(module_name=__name__)
 console = Console()
 
 # Schema version history with migrations
@@ -108,7 +110,7 @@ SCHEMA_VERSIONS = {
         CREATE INDEX idx_source_references ON cancer_transcript_base USING GIN(source_references);
 
         -- Drop old publications column as it's replaced by source_references
-        ALTER TABLE cancer_transcript_base DROP COLUMN publications;
+        ALTER TABLE cancer_transcript_base DROP COLUMN IF EXISTS publications;
     """,
     "v0.1.5": """
         -- Set proper default for source_references
@@ -151,6 +153,9 @@ SCHEMA_VERSIONS = {
     """
 }
 
+# Minimum supported version constant
+MIN_SUPPORTED_VERSION = "v0.1.5"
+
 class DatabaseManager:
     """Manages database operations including connection, schema, and migrations."""
     
@@ -160,6 +165,9 @@ class DatabaseManager:
         Args:
             config: Database configuration dictionary with connection parameters
         """
+        # Set up instance logger using our centralized logger
+        self.logger = setup_logging(module_name=f"{__name__}.DatabaseManager")
+        
         # Ensure we have the required database configuration
         self.db_config = {
             'host': config.get('host', 'localhost'),
@@ -269,24 +277,67 @@ class DatabaseManager:
             if self.cursor is None:
                 return None
                 
-            # Create version table if it doesn't exist
+            # First check if schema_version table exists at all
             self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS schema_version (
-                    id SERIAL PRIMARY KEY,
-                    version TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'schema_version'
                 )
             """)
             
-            # Get current version
-            self.cursor.execute(
-                "SELECT version FROM schema_version ORDER BY id DESC LIMIT 1"
-            )
+            # Add null check before accessing result
             result = self.cursor.fetchone()
-            return result[0] if result else None
+            if result is None:
+                return None
+            
+            if not result[0]:
+                self.logger.info("Schema version table doesn't exist. Creating it...")
+                
+                # Create the schema_version table with the correct columns
+                self.cursor.execute("""
+                    CREATE TABLE schema_version (
+                        version_name TEXT PRIMARY KEY,
+                        applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        description TEXT
+                    )
+                """)
+                
+                # Apply the initial version
+                self.cursor.execute("""
+                    INSERT INTO schema_version (version_name) VALUES ('v0.1.0')
+                """)
+                
+                return 'v0.1.0'
+            
+            # Next check which version of the schema_version table we have
+            # It could have different column names depending on how it was created
+            self.cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'schema_version'
+            """)
+            
+            # Add null check for columns
+            columns_result = self.cursor.fetchall()
+            if columns_result is None:
+                return None
+            
+            columns = [row[0] for row in columns_result if row is not None]
+            
+            # Handle different column name possibilities
+            version_column = 'version_name' if 'version_name' in columns else 'version'
+            order_column = 'applied_at' if 'applied_at' in columns else 'id'
+            order_direction = 'DESC' if order_column == 'applied_at' else 'DESC'
+            
+            query = f"SELECT {version_column} FROM schema_version ORDER BY {order_column} {order_direction} LIMIT 1"
+            self.cursor.execute(query)
+            
+            result = self.cursor.fetchone()
+            return result[0] if result is not None else None
             
         except psycopg2.Error as e:
-            logger.error(f"Version check failed: {e}")
+            self.logger.error(f"Version check failed: {e}")
             return None
 
     def get_current_schemaversion_number(self) -> Optional[int]:
@@ -313,6 +364,9 @@ class DatabaseManager:
     def migrate_to_version(self, target_version: str) -> bool:
         """Migrate schema to target version.
         
+        This method has been simplified to only support migrations from v0.1.5 onwards.
+        For older versions, use reset_database() to create a fresh schema.
+        
         Args:
             target_version: Target schema version
             
@@ -321,31 +375,80 @@ class DatabaseManager:
         """
         try:
             current_version = self.get_current_version()
+            
+            # If current version is below minimum supported, recommend reset
+            if not current_version or current_version < MIN_SUPPORTED_VERSION:
+                self.logger.error(f"Current version {current_version} is below minimum supported version {MIN_SUPPORTED_VERSION}")
+                self.logger.error("Please use reset_database() to create a fresh schema")
+                return False
+            
             if current_version == target_version:
-                logger.info(f"Already at version {target_version}")
+                self.logger.info(f"Already at version {target_version}")
                 return True
                 
+            # Get ordered list of versions
             versions = list(SCHEMA_VERSIONS.keys())
-            current_idx = versions.index(current_version) if current_version else -1
+            
+            if current_version not in versions:
+                self.logger.error(f"Current version {current_version} not in known versions")
+                return False
+                
+            if target_version not in versions:
+                self.logger.error(f"Target version {target_version} not in known versions")
+                return False
+                
+            current_idx = versions.index(current_version)
             target_idx = versions.index(target_version)
             
-            # Apply all migrations between current and target
-            for version in versions[current_idx + 1:target_idx + 1]:
-                logger.info(f"Migrating to {version}")
-                if self.cursor:
-                    self.cursor.execute(SCHEMA_VERSIONS[version])
-                else:
-                    logger.error("Cursor is None, cannot execute migration.")
-                    return False
-                self.cursor.execute(
-                    "INSERT INTO schema_version (version) VALUES (%s)",
-                    (version,)
-                )
+            if current_idx >= target_idx:
+                self.logger.info(f"No migration needed: current {current_version} >= target {target_version}")
+                return True
             
+            # Start a transaction for the migration
+            if self.conn:
+                self.conn.autocommit = False
+                
+            # Apply all migrations between current and target
+            for i in range(current_idx + 1, target_idx + 1):
+                version = versions[i]
+                self.logger.info(f"Migrating to {version}")
+                
+                if self.cursor:
+                    # Execute each statement in the migration
+                    statements = SCHEMA_VERSIONS[version].strip().split(';')
+                    for stmt in statements:
+                        if stmt.strip():  # Skip empty statements
+                            try:
+                                self.cursor.execute(stmt + ';')
+                            except psycopg2.Error as e:
+                                if "already exists" in str(e):
+                                    self.logger.warning(f"Ignoring 'already exists' error: {e}")
+                                else:
+                                    raise
+                    
+                    # Record the applied migration
+                    self.cursor.execute(
+                        """
+                        INSERT INTO schema_version (version_name) 
+                        VALUES (%s)
+                        ON CONFLICT (version_name) DO NOTHING
+                        """,
+                        (version,)
+                    )
+            
+            # Commit the transaction
+            if self.conn:
+                self.conn.commit()
+                self.conn.autocommit = True
+                
+            self.logger.info(f"Successfully migrated from {current_version} to {target_version}")
             return True
             
-        except psycopg2.Error as e:
-            logger.error(f"Migration failed: {e}")
+        except Exception as e:
+            self.logger.error(f"Migration failed: {e}")
+            if self.conn:
+                self.conn.rollback()
+                self.conn.autocommit = True
             return False
 
     def get_table_stats(self) -> Dict[str, Any]:
@@ -358,8 +461,9 @@ class DatabaseManager:
             self.cursor.execute(
                 "SELECT COUNT(*) FROM cancer_transcript_base"
             )
+            # Add null check
             result = self.cursor.fetchone()
-            row_count = result[0] if result else 0
+            row_count = result[0] if result is not None else 0
 
             # Get table size
             self.cursor.execute("""
@@ -368,8 +472,9 @@ class DatabaseManager:
                 FROM pg_catalog.pg_tables
                 WHERE tablename = 'cancer_transcript_base'
             """)
+            # Add null check
             result = self.cursor.fetchone()
-            size_mb = result[1] if result else 0
+            size_mb = result[1] if result is not None else 0
 
             return {
                 "row_count": row_count,
@@ -482,7 +587,9 @@ class DatabaseManager:
                 "SELECT 1 FROM pg_database WHERE datname = %s",
                 (dbname,)
             )
-            return bool(self.cursor.fetchone())
+            result = self.cursor.fetchone()
+            # Add null check before accessing result
+            return bool(result is not None and result[0] == 1)
         except psycopg2.Error as e:
             logger.error(f"Database check failed: {e}")
             return False
@@ -713,88 +820,389 @@ class DatabaseManager:
             'v0.1.5'  # Add new version
         ]
 
-    def reset_database(self) -> None:
-        """Reset the database to a clean state.
+    def reset_database(self) -> bool:
+        """Reset the database to the latest schema version directly.
         
-        This method:
-        1. Drops all tables and objects
-        2. Reinitializes schema version tracking
-        3. Applies all migrations from scratch
+        This method drops all tables and applies the full v0.1.5 schema in one step,
+        without going through incremental migrations.
         
-        Raises:
-            RuntimeError: If database connection fails
+        Returns:
+            bool: True if successful, False otherwise
         """
         if not self.ensure_connection():
-            raise RuntimeError("Failed to establish database connection for reset")
+            self.logger.error("Cannot reset database: no connection")
+            return False
             
-        if not self.cursor:
-            raise RuntimeError("No database cursor available")
-            
-        logger.warning("Resetting database - all data will be lost!")
-        
         try:
-            # Set to single transaction mode for DDL operations
+            self.logger.warning("Resetting database - all data will be lost!")
+            
+            # Start a fresh transaction
             if self.conn:
-                self.conn.set_session(autocommit=True)
-            
-            # Drop all tables and objects
-            self.cursor.execute("""
-                DROP SCHEMA public CASCADE;
-                CREATE SCHEMA public;
-                GRANT ALL ON SCHEMA public TO public;
-            """)
-            
-            logger.info("Dropped all existing database objects")
-            
-            # Reinitialize schema version tracking
-            self.cursor.execute("""
-                CREATE TABLE schema_version (
-                    version TEXT PRIMARY KEY,
-                    applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                );
+                self.conn.autocommit = False
                 
-                INSERT INTO schema_version (version) VALUES ('v0.0.0');
-            """)
-            
-            logger.info("Reinitialized schema version tracking")
-            
-            # Apply all migrations from scratch
-            migrations_path = Path(__file__).parent / "migrations"
-            if not migrations_path.exists():
-                raise RuntimeError(f"Migrations directory not found at {migrations_path}")
-            
-            # Get all migration files in order
-            migration_files = sorted([
-                f for f in migrations_path.glob("v*.sql")
-                if f.name.startswith('v') and f.suffix == '.sql'
-            ])
-            
-            # Apply each migration
-            for migration_file in migration_files:
-                version = migration_file.stem
-                logger.info(f"Applying migration {version}")
+            # Drop all database objects in a clean sweep
+            if self.cursor:
+                # Drop everything first
+                self.cursor.execute("""
+                    DO $$ 
+                    DECLARE
+                        r RECORD;
+                    BEGIN
+                        -- Disable triggers
+                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
+                            EXECUTE 'ALTER TABLE IF EXISTS ' || quote_ident(r.tablename) || ' DISABLE TRIGGER ALL';
+                        END LOOP;
+                        
+                        -- Drop tables with cascade
+                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
+                            EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                        END LOOP;
+                        
+                        -- Drop custom types
+                        FOR r IN (SELECT typname FROM pg_type WHERE typtype = 'c' AND typnamespace = current_schema()::regnamespace) LOOP
+                            EXECUTE 'DROP TYPE IF EXISTS ' || quote_ident(r.typname) || ' CASCADE';
+                        END LOOP;
+                        
+                        -- Drop views
+                        FOR r IN (SELECT viewname FROM pg_views WHERE schemaname = current_schema()) LOOP
+                            EXECUTE 'DROP VIEW IF EXISTS ' || quote_ident(r.viewname) || ' CASCADE';
+                        END LOOP;
+                    END $$;
+                """)
                 
-                with open(migration_file, 'r') as f:
-                    migration_sql = f.read()
+                self.logger.info("Successfully dropped all database objects")
+                
+                # Create the target database structure in one go
+                # First, create the base structure for v0.1.0
+                self.logger.info("Creating base database schema (v0.1.0)")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.0"])
+                
+                # Add the schema v0.1.1 changes
+                self.logger.info("Applying schema changes for v0.1.1")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.1"])
+                
+                # Add the schema v0.1.2 changes
+                self.logger.info("Applying schema changes for v0.1.2")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.2"])
+                
+                # Add the schema v0.1.3 changes
+                self.logger.info("Applying schema changes for v0.1.3")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.3"])
+                
+                # Add the schema v0.1.4 changes
+                self.logger.info("Applying schema changes for v0.1.4")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.4"])
+                
+                # Add the schema v0.1.5 changes, handling the DO block separately
+                self.logger.info("Applying schema changes for v0.1.5")
+                
+                # Apply standard SQL statements first
+                self.cursor.execute("""
+                    -- Set proper default for source_references
+                    ALTER TABLE cancer_transcript_base
+                    ALTER COLUMN source_references SET DEFAULT jsonb_build_object(
+                        'go_terms', jsonb_build_array(),
+                        'uniprot', jsonb_build_array(),
+                        'drugs', jsonb_build_array(),
+                        'pathways', jsonb_build_array()
+                    );
+
+                    -- Update any existing NULL source_references to the proper default structure
+                    UPDATE cancer_transcript_base
+                    SET source_references = jsonb_build_object(
+                        'go_terms', jsonb_build_array(),
+                        'uniprot', jsonb_build_array(),
+                        'drugs', jsonb_build_array(),
+                        'pathways', jsonb_build_array()
+                    )
+                    WHERE source_references IS NULL;
+                """)
+                
+                # Apply the DO block separately since it contains exception handling
+                self.cursor.execute("""
+                    DO $$ BEGIN
+                        CREATE TYPE publication_reference AS (
+                            pmid text,
+                            evidence_type text,
+                            source_db text,
+                            title text,
+                            abstract text,
+                            year integer,
+                            journal text,
+                            authors text[],
+                            citation_count integer,
+                            doi text,
+                            url text
+                        );
+                    EXCEPTION
+                        WHEN duplicate_object THEN null;
+                    END $$;
+                """)
+                
+                # Create schema_version table and record that we're at v0.1.5
+                self.logger.info("Creating schema_version table with v0.1.5")
+                self.cursor.execute("""
+                    CREATE TABLE schema_version (
+                        version_name TEXT PRIMARY KEY,
+                        applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        description TEXT
+                    );
                     
-                self.cursor.execute(migration_sql)
-                self.cursor.execute(
-                    "UPDATE schema_version SET version = %s",
-                    (version,)
-                )
+                    -- Insert the schema version record directly as v0.1.5
+                    INSERT INTO schema_version (version_name, description) 
+                    VALUES ('v0.1.5', 'Direct schema reset to v0.1.5');
+                """)
                 
-            logger.info("Database reset and migrations completed successfully")
-            
+                # Commit all changes
+                if self.conn:
+                    self.conn.commit()
+                    self.conn.autocommit = True
+                    
+                # Verify the schema is correctly set up
+                current_version = self.get_current_version()
+                if current_version != "v0.1.5":
+                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.1.5")
+                    return False
+                    
+                self.logger.info("Database reset completed successfully with schema v0.1.5")
+                return True
+            else:
+                self.logger.error("Database cursor is None, cannot reset database")
+                return False
+                    
         except Exception as e:
-            logger.error(f"Database reset failed: {e}")
+            self.logger.error(f"Database reset failed: {e}")
             if self.conn:
                 self.conn.rollback()
-            raise
-        finally:
-            # Reset to normal transaction mode
-            if self.conn:
-                self.conn.set_session(autocommit=False)
+                self.conn.autocommit = True
+            return False
+
+    def apply_full_schema(self) -> bool:
+        """Apply the full schema in one step up to the latest version.
+        
+        Instead of applying migrations incrementally, this method applies
+        the entire schema in one go to ensure consistency.
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if not self.cursor:
+                self.logger.error("No database cursor available")
+                return False
                 
+            self.logger.info(f"Applying full schema up to {MIN_SUPPORTED_VERSION}")
+            
+            # Apply each schema statement one by one
+            # We'll build a combined schema SQL by concatenating all schema versions
+            full_schema = ""
+            versions = sorted(SCHEMA_VERSIONS.keys())
+            
+            for version in versions:
+                full_schema += f"\n-- Schema version: {version}\n"
+                full_schema += SCHEMA_VERSIONS[version]
+            
+            # Split the combined schema into individual statements
+            statements = []
+            current_statement = []
+            in_do_block = False
+            
+            for line in full_schema.strip().split('\n'):
+                # Check if we're entering a DO block
+                if 'DO $$' in line and not in_do_block:
+                    in_do_block = True
+                    
+                # Add current line to the statement
+                current_statement.append(line)
+                
+                # Check if we're exiting a DO block
+                if '$$;' in line and in_do_block:
+                    in_do_block = False
+                    statements.append('\n'.join(current_statement))
+                    current_statement = []
+                    continue
+                    
+                # For normal statements, split by semicolon
+                if ';' in line and not in_do_block and '$$;' not in line:
+                    statements.append('\n'.join(current_statement))
+                    current_statement = []
+            
+            # Add any remaining statement
+            if current_statement:
+                statements.append('\n'.join(current_statement))
+            
+            # Execute each statement, ignoring "already exists" errors
+            # These can happen when applying parts of schema more than once
+            for stmt in statements:
+                if stmt.strip():  # Skip empty statements
+                    try:
+                        self.cursor.execute(stmt)
+                    except psycopg2.Error as e:
+                        if "already exists" in str(e):
+                            self.logger.warning(f"Ignoring 'already exists' error: {e}")
+                        else:
+                            raise
+            
+            # Record all schema versions as applied
+            for version in versions:
+                self.cursor.execute("""
+                    INSERT INTO schema_version (version_name)
+                    VALUES (%s)
+                    ON CONFLICT (version_name) DO UPDATE 
+                    SET applied_at = CURRENT_TIMESTAMP
+                """, (version,))
+            
+            # Validate schema to make sure all required columns exist
+            if not self.validate_schema():
+                raise Exception("Schema validation failed after applying full schema")
+                
+            self.logger.info(f"Successfully applied full schema up to {MIN_SUPPORTED_VERSION}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to apply full schema: {e}")
+            return False
+    
+    def validate_schema(self) -> bool:
+        """Validate that the schema matches the expected structure.
+        
+        This checks if all expected tables, columns, and indices exist.
+        
+        Returns:
+            bool: True if schema is valid, False otherwise
+        """
+        try:
+            if not self.cursor:
+                return False
+                
+            # Check if cancer_transcript_base table exists
+            self.cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'cancer_transcript_base'
+                )
+            """)
+            result = self.cursor.fetchone()
+            if not result or not result[0]:
+                self.logger.error("cancer_transcript_base table does not exist")
+                return False
+                
+            # Check if all expected columns exist
+            expected_columns = [
+                'transcript_id', 'gene_symbol', 'gene_id', 'gene_type', 'chromosome', 
+                'coordinates', 'product_type', 'go_terms', 'pathways', 'drugs',
+                'expression_fold_change', 'expression_freq', 'cancer_types',
+                'features', 'molecular_functions', 'cellular_location', 'drug_scores',
+                'alt_transcript_ids', 'alt_gene_ids', 'uniprot_ids', 'ncbi_ids', 
+                'refseq_ids', 'source_references'
+            ]
+            
+            missing_columns = []
+            for column in expected_columns:
+                self.cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.columns 
+                        WHERE table_name = 'cancer_transcript_base' 
+                        AND column_name = %s
+                    )
+                """, (column,))
+                result = self.cursor.fetchone()
+                if not result or not result[0]:
+                    missing_columns.append(column)
+            
+            if missing_columns:
+                self.logger.error(f"Missing columns in cancer_transcript_base: {', '.join(missing_columns)}")
+                return False
+                
+            # Check if schema_version table exists
+            self.cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'schema_version'
+                )
+            """)
+            result = self.cursor.fetchone()
+            if not result or not result[0]:
+                self.logger.error("schema_version table does not exist")
+                return False
+                
+            # Check if latest version is recorded
+            current_version = self.get_current_version()
+            if not current_version or current_version < MIN_SUPPORTED_VERSION:
+                self.logger.error(f"Schema version {current_version} is below minimum required {MIN_SUPPORTED_VERSION}")
+                return False
+                
+            self.logger.info(f"Schema validation successful - version {current_version}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Schema validation failed: {e}")
+            return False
+
+    def ensure_schema_version(self, required_version: str) -> bool:
+        """Ensure the database schema is at least at the required version.
+        
+        If the schema is older than the required version, attempt to migrate.
+        If migration fails or the version is below v0.1.5, return False.
+        
+        Args:
+            required_version: Minimum required schema version
+            
+        Returns:
+            bool: True if schema version is at or above required version
+        """
+        try:
+            current_version = self.get_current_version()
+            
+            # Handle case where we can't determine the version
+            if not current_version:
+                self.logger.error("Could not determine current schema version")
+                return False
+                
+            # Check if current version is below minimum supported
+            if current_version < MIN_SUPPORTED_VERSION:
+                self.logger.error(f"Current schema version {current_version} is below minimum supported version {MIN_SUPPORTED_VERSION}")
+                self.logger.error("Please use reset_database() to create a fresh schema")
+                return False
+            
+            # Compare versions
+            versions = list(SCHEMA_VERSIONS.keys())
+            
+            if current_version not in versions:
+                self.logger.error(f"Unknown schema version: {current_version}")
+                return False
+                
+            if required_version not in versions:
+                self.logger.error(f"Unknown required version: {required_version}")
+                return False
+                
+            current_idx = versions.index(current_version)
+            required_idx = versions.index(required_version)
+            
+            # If current version is already at or above required, we're good
+            if current_idx >= required_idx:
+                self.logger.info(f"Schema version check passed: {current_version} >= {required_version}")
+                return True
+                
+            # Try to migrate to the required version
+            self.logger.warning(f"Current schema version {current_version} is below required {required_version}")
+            self.logger.info(f"Attempting to migrate schema to {required_version}")
+            
+            if self.migrate_to_version(required_version):
+                self.logger.info(f"Migration to {required_version} succeeded")
+                return True
+            else:
+                self.logger.error(f"Failed to migrate database schema to {required_version}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Schema version check failed: {e}")
+            return False
+
+    def display_config(self) -> None:
+        """Alias for print_config for backward compatibility."""
+        self.print_config()
+
 def get_db_manager(config: Dict[str, Any]) -> DatabaseManager:
     """Create and initialize a database manager instance.
     

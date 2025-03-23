@@ -1,9 +1,9 @@
 """Utility functions for publication reference handling."""
-
 import re
 import logging
 from typing import List, Optional, Dict, Any, Set, Union, cast
-from ..etl.publications import Publication
+
+from .publication_types import Publication
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +36,17 @@ def extract_pmid_from_text(text: str) -> Optional[str]:
     Returns:
         Optional[str]: First valid PMID found or None
     """
-    if not text:
+    if not text or not isinstance(text, str):
         return None
         
     # Try each pattern
     for pattern in PMID_PATTERNS:
         match = re.search(pattern, text)
-        if match:
+        if match and match.group(1):
             pmid = match.group(1)
             if is_valid_pmid(pmid):
                 return pmid
+    
     return None
 
 def extract_pmids_from_text(text: str) -> List[str]:
@@ -57,7 +58,7 @@ def extract_pmids_from_text(text: str) -> List[str]:
     Returns:
         List[str]: List of valid PMIDs found
     """
-    if not text:
+    if not text or not isinstance(text, str):
         return []
         
     pmids: Set[str] = set()
@@ -66,30 +67,29 @@ def extract_pmids_from_text(text: str) -> List[str]:
     for pattern in PMID_PATTERNS:
         matches = re.finditer(pattern, text)
         for match in matches:
-            pmid = match.group(1)
-            if is_valid_pmid(pmid):
-                pmids.add(pmid)
-                
-    return sorted(list(pmids))
+            if match and match.group(1):
+                pmid = match.group(1)
+                if is_valid_pmid(pmid):
+                    pmids.add(pmid)
+    
+    return list(pmids)
 
 def format_pmid_url(pmid: str) -> str:
-    """Format a PMID as a PubMed URL.
+    """Format a PMID as a URL to PubMed.
     
     Args:
         pmid: PubMed ID
         
     Returns:
-        URL to PubMed page for the given PMID
+        str: URL to the publication on PubMed
     """
-    if not is_valid_pmid(pmid):
-        return ""
     return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 
 def format_publication_citation(pub: Publication) -> str:
-    """Format a publication reference as a citation.
+    """Format a publication as a citation string.
     
     Args:
-        pub: Publication reference
+        pub: Publication data
         
     Returns:
         str: Formatted citation
@@ -97,30 +97,34 @@ def format_publication_citation(pub: Publication) -> str:
     if not pub:
         return ""
         
-    # Get author list, limited to first 3 with et al. if more
-    authors = pub.get("authors", [])
-    if authors and len(authors) > 3:
-        author_text = f"{authors[0]} et al."
-    elif authors:
-        author_text = ", ".join(authors)
-    else:
-        author_text = "Unknown authors"
-        
-    title = pub.get("title", "Untitled")
-    journal = pub.get("journal", "Unknown journal")
-    year = pub.get("year", "")
-    pmid = pub.get("pmid", "")
+    # Extract publication components with safe access
+    authors_str = ""
+    if pub.get('authors'):
+        # Only access 'authors' if it exists and is not None
+        authors = pub.get('authors', [])
+        if authors and len(authors) > 2:
+            authors_str = f"{authors[0]} et al."
+        elif authors:
+            authors_str = ", ".join(authors)
     
-    citation = f"{author_text}. {title}. {journal}"
-    if year:
-        citation += f", {year}"
-    if pmid:
-        citation += f". PMID: {pmid}"
-        
-    return citation
+    # Safely access year
+    year = pub.get('year')
+    year_str = f"({year})" if year is not None else ""
+    
+    # Safely access title and journal
+    title = pub.get('title', 'No title')
+    journal = pub.get('journal', '')
+    
+    # Format citation
+    if authors_str and year_str:
+        return f"{authors_str} {year_str}. {title}. {journal}"
+    elif authors_str:
+        return f"{authors_str}. {title}. {journal}"
+    else:
+        return f"{title}. {journal} {year_str}"
 
 def merge_publication_references(pub1: Publication, pub2: Publication) -> Publication:
-    """Merge two publication references, preferring non-empty values.
+    """Merge two publication references, preferring non-None values.
     
     Args:
         pub1: First publication reference
@@ -129,23 +133,25 @@ def merge_publication_references(pub1: Publication, pub2: Publication) -> Public
     Returns:
         Publication: Merged publication reference
     """
-    result: Dict[str, Any] = {}
-    
-    # Start with all fields from pub1
-    for key, value in pub1.items():
-        result[key] = value
-    
-    # Override with non-empty values from pub2
-    for key, value in pub2.items():
-        if value is not None and value != "" and value != [] and value != {}:
-            result[key] = value
-            
-    # Ensure we have the required fields
-    if "pmid" not in result:
-        result["pmid"] = ""
-    if "evidence_type" not in result:
-        result["evidence_type"] = "unknown"
-    if "source_db" not in result:
-        result["source_db"] = "unknown"
+    if not pub1:
+        return pub2
+    if not pub2:
+        return pub1
         
-    return cast(Publication, result)
+    # Ensure same PMID
+    if pub1.get('pmid') != pub2.get('pmid'):
+        return pub1  # Don't merge different publications
+    
+    # Create merged publication
+    merged: Publication = {}
+    
+    # Copy all fields from pub1
+    for key, value in pub1.items():
+        merged[key] = value
+    
+    # Merge with pub2, preferring non-None values
+    for key, value in pub2.items():
+        if value is not None and (key not in merged or merged.get(key) is None):
+            merged[key] = value
+    
+    return merged

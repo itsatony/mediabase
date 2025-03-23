@@ -29,6 +29,9 @@ DEFAULT_BACKUP_COUNT = 5
 # Global console object for rich output
 console = Console()
 
+# Global logger registry to avoid duplicate setup
+_loggers = {}
+
 class TqdmLoggingHandler(logging.Handler):
     """Logging handler that writes through tqdm to avoid breaking progress bars."""
     
@@ -45,65 +48,28 @@ class TqdmLoggingHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-
-class ETLProgressBar:
-    """Progress bar manager with tqdm integration and rich formatting."""
+def configure_tqdm() -> None:
+    """Configure tqdm for single-line updates and consistent display."""
+    # Set global default format
+    tqdm.tqdm.monitor_interval = 0  # Disable monitor thread
     
-    def __init__(
-        self, 
-        total: int, 
-        desc: str = "Processing", 
-        unit: str = "items",
-        log_interval: int = 1000
-    ) -> None:
-        """Initialize progress bar.
-        
-        Args:
-            total: Total number of items to process
-            desc: Description for the progress bar
-            unit: Unit of items being processed
-            log_interval: Log progress every N items
-        """
-        self.total = total
-        self.desc = desc
-        self.unit = unit
-        self.log_interval = log_interval
-        self.pbar = None
-        self.logger = logging.getLogger("etl.progress")
-        self.start_time = None
-        
-    def __enter__(self) -> tqdm.tqdm:
-        """Start progress tracking and return the progress bar object.
-        
-        Returns:
-            The tqdm progress bar instance
-        """
-        self.start_time = datetime.now()
-        self.pbar = tqdm.tqdm(
-            total=self.total,
-            desc=self.desc,
-            unit=self.unit,
-            dynamic_ncols=True,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-        )
-        
-        self.logger.info(f"Started {self.desc} with {self.total:,} {self.unit}")
-        return self.pbar
+    # Create custom tqdm class that always updates in-place
+    original_tqdm = tqdm.tqdm
     
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Close the progress bar and log completion time."""
-        items_processed = 0
-        if self.pbar:
-            items_processed = self.pbar.n
-            self.pbar.close()
-            
-        elapsed = datetime.now() - self.start_time if self.start_time else None
-        if elapsed:
-            self.logger.info(
-                f"Completed {self.desc}: processed {items_processed:,}/{self.total:,} "
-                f"{self.unit} in {elapsed.total_seconds():.2f}s"
-            )
-
+    # Extend tqdm to always have position=0 and leave=False by default
+    class SingleLineTqdm(original_tqdm):
+        def __init__(self, *args, **kwargs):
+            if 'position' not in kwargs:
+                kwargs['position'] = 0
+            if 'leave' not in kwargs:
+                kwargs['leave'] = False
+            if 'bar_format' not in kwargs:
+                # Use a compact format that fits better with our other output
+                kwargs['bar_format'] = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+            super().__init__(*args, **kwargs)
+    
+    # Replace the tqdm class
+    tqdm.tqdm = SingleLineTqdm
 
 def setup_logging(
     log_level: Union[int, str] = DEFAULT_LOG_LEVEL,
@@ -124,10 +90,17 @@ def setup_logging(
     Returns:
         The configured logger instance
     """
+    # Check if logger is already configured
+    if module_name in _loggers:
+        return _loggers[module_name]
+        
+    # Configure tqdm for consistent display
+    configure_tqdm()
+    
     # Convert string log level to numeric if needed
     if isinstance(log_level, str):
-        log_level = getattr(logging, log_level.upper(), DEFAULT_LOG_LEVEL)
-        
+        log_level = getattr(logging, log_level.upper(), logging.INFO)
+    
     # Create logger
     logger = logging.getLogger(module_name)
     logger.setLevel(log_level)
@@ -138,35 +111,42 @@ def setup_logging(
     
     # Add file handler if log_file is specified
     if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
+        log_dir = os.path.dirname(log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+            
         file_handler = RotatingFileHandler(
-            log_path,
+            log_file,
             maxBytes=DEFAULT_MAX_BYTES,
             backupCount=DEFAULT_BACKUP_COUNT
         )
-        file_formatter = logging.Formatter(DEFAULT_LOG_FORMAT, DEFAULT_LOG_DATE_FORMAT)
+        file_formatter = logging.Formatter(
+            DEFAULT_LOG_FORMAT,
+            datefmt=DEFAULT_LOG_DATE_FORMAT
+        )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
     
     # Add console handler if console_output is True
     if console_output:
-        if rich_output and "pytest" not in sys.modules:
-            # Use Rich formatter for console if rich_output is True and not in pytest
+        if rich_output:
+            # Use Rich for pretty console output with consistent timestamp format
             console_handler = RichHandler(
                 rich_tracebacks=True,
+                console=console,
                 show_time=True,
+                show_level=True,
                 show_path=False,
-                markup=False,
-                console=console
+                markup=True,
+                log_time_format=DEFAULT_LOG_DATE_FORMAT,
+                omit_repeated_times=False
             )
         else:
-            # Use tqdm-compatible handler for progress bar compatibility
+            # Use TqdmLoggingHandler for compatibility with progress bars
             console_handler = TqdmLoggingHandler()
             console_formatter = logging.Formatter(
-                f"%(asctime)s %(levelname)s %(name)s - %(message)s",
-                DEFAULT_LOG_DATE_FORMAT
+                DEFAULT_LOG_FORMAT,
+                datefmt=DEFAULT_LOG_DATE_FORMAT
             )
             console_handler.setFormatter(console_formatter)
             
@@ -175,8 +155,10 @@ def setup_logging(
     # Prevent propagation to root logger to avoid duplicate logs
     logger.propagate = False
     
+    # Store in registry
+    _loggers[module_name] = logger
+    
     return logger
-
 
 def get_etl_logger(
     module_name: str,
@@ -196,7 +178,7 @@ def get_etl_logger(
     # Set default log file if not provided
     if log_file is None:
         log_dir = Path(DEFAULT_LOG_DIR)
-        log_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d")
         log_file = str(log_dir / f"etl_{module_name}_{timestamp}.log")
     
@@ -210,3 +192,25 @@ def get_etl_logger(
         console_output=True,
         rich_output=True
     )
+
+# Create a singleton progress instance for ETL operations
+_progress_instance = None
+
+def get_progress() -> Progress:
+    """Get a shared progress instance for ETL operations.
+    
+    Returns:
+        Progress instance for tracking ETL operations
+    """
+    global _progress_instance
+    if _progress_instance is None:
+        _progress_instance = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("•"),
+            TimeRemainingColumn(),
+            console=console,
+            transient=True  # Ensures progress bars disappear after completion
+        )
+    return _progress_instance

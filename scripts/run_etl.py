@@ -6,14 +6,21 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn
-from rich.logging import RichHandler
 
 # Add src to Python path
 src_path = Path(__file__).resolve().parent.parent
 sys.path.append(str(src_path))
 
+# Import our centralized logging first
+from src.utils.logging import setup_logging, get_progress, console
+
+# Use centralized logging with proper module name
+logger = setup_logging(
+    module_name=__name__,
+    log_file="etl_pipeline.log"
+)
+
+# Now import other modules
 from src.db.database import get_db_manager
 from src.etl.transcript import TranscriptProcessor
 from src.etl.products import ProductProcessor
@@ -21,18 +28,6 @@ from src.etl.go_terms import GOTermProcessor
 from src.etl.pathways import PathwayProcessor
 from src.etl.drugs import DrugProcessor
 from src.etl.publications import PublicationsProcessor
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        RichHandler(rich_tracebacks=True),
-        logging.FileHandler("etl_pipeline.log")
-    ]
-)
-logger = logging.getLogger(__name__)
-console = Console()
 
 def get_config() -> Dict[str, Any]:
     """Load configuration from environment variables."""
@@ -80,35 +75,44 @@ def run_module(
         if reset_db:
             logger.info("Resetting database...")
             db = get_db_manager(config['db'])
-            db.reset_database()
-            logger.info("Database reset complete")
+            
+            # Use the improved reset_database method
+            if not db.reset_database():
+                logger.error("Database reset failed, cannot continue")
+                return False
+                
+            # Validate schema was properly applied
+            if not db.validate_schema():
+                logger.error("Schema validation failed after reset")
+                return False
+                
+            logger.info("Database reset complete with schema v0.1.5 applied")
 
+        # Construct the processor for the requested module
+        processor = None
         if module_name == 'transcripts':
             processor = TranscriptProcessor(config)
-            processor.run()
         elif module_name == 'products':
             processor = ProductProcessor(config)
-            processor.run()
         elif module_name == 'go_terms':
             processor = GOTermProcessor(config)
-            processor.run()
         elif module_name == 'pathways':
             processor = PathwayProcessor(config)
-            processor.run()
         elif module_name == 'drugs':
             processor = DrugProcessor(config)
-            processor.run()
         elif module_name == 'publications':
             processor = PublicationsProcessor(config)
-            processor.run()
         else:
             logger.error(f"Unknown module: {module_name}")
             return False
-
+            
+        # Run the processor
+        processor.run()
+        logger.info(f"Module {module_name} completed successfully")
         return True
 
     except Exception as e:
-        logger.error(f"Module {module_name} failed: {e}")
+        logger.error(f"Module {module_name} failed: {e}", exc_info=True)
         return False
 
 def run_pipeline(
@@ -142,24 +146,42 @@ def run_pipeline(
         logger.error("Failed to establish database connection")
         return
 
-    with Progress(
-        SpinnerColumn(),
-        *Progress.get_default_columns(),
-        console=console
-    ) as progress:
-        task = progress.add_task("Running ETL pipeline...", total=len(modules_to_run))
+    # Get shared progress instance
+    progress = get_progress()
+    
+    # Single progress instance for all modules
+    with progress:
+        task = progress.add_task("[bold green]Running ETL pipeline...", total=len(modules_to_run))
+        
+        # If reset_db is True, handle it once at the start
+        if reset_db:
+            logger.info("Resetting database once for all modules")
+            if not db.reset_database():
+                logger.error("Database reset failed, cannot continue pipeline")
+                return
+                
+            # Validate schema was properly applied
+            if not db.validate_schema():
+                logger.error("Schema validation failed after reset")
+                return
+                
+            logger.info("Database has been reset and schema v0.1.5 applied")
         
         for module in modules_to_run:
-            progress.update(task, description=f"Processing {module}...")
-            if not run_module(module, config, limit_transcripts, reset_db):
+            progress.update(task, description=f"[bold cyan]Processing {module}...")
+            if not run_module(module, config, limit_transcripts, reset_db=False):  # Don't reset again
                 logger.error(f"Pipeline failed at module: {module}")
                 return
             progress.advance(task)
 
-        progress.update(task, description="Pipeline completed!")
+        progress.update(task, description="[bold green]Pipeline completed!", completed=len(modules_to_run))
 
-def main() -> None:
-    """Main entry point for ETL pipeline."""
+def main() -> int:  # Change return type to int for clarity
+    """Main entry point for ETL pipeline.
+    
+    Returns:
+        int: 0 for success, 1 for error
+    """
     parser = argparse.ArgumentParser(description="Run MediaBase ETL pipeline")
     parser.add_argument(
         "--modules",
@@ -209,18 +231,46 @@ def main() -> None:
         config['rate_limit'] = args.rate_limit
 
     try:
+        # Modify the section where database reset is performed
+        if args.reset_db:
+            logger.info("Resetting database...")
+            
+            db_manager = None
+            try:
+                db_manager = get_db_manager(config['db'])
+                db_manager.display_config()
+                
+                # Reset database using new simplified method
+                if not db_manager.reset_database():
+                    logger.error("Database reset failed, cannot continue")
+                    return 1
+                    
+                # Verify schema was properly applied with validation
+                if not db_manager.validate_schema():
+                    logger.error("Schema validation failed after reset")
+                    return 1
+                    
+                logger.info("Database reset complete with schema v0.1.5 properly applied")
+            except Exception as e:
+                logger.error(f"Database reset error: {e}")
+                return 1
+            finally:
+                if db_manager and db_manager.conn:
+                    db_manager.close()
+        
         run_pipeline(
             config, 
             args.modules, 
             args.limit_transcripts,
             reset_db=args.reset_db
         )
+        return 0  # Explicit successful return
     except KeyboardInterrupt:
         logger.info("Pipeline interrupted by user")
-        sys.exit(1)
+        return 1
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
-        sys.exit(1)
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())  # Use sys.exit with the return value

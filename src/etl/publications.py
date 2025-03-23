@@ -11,7 +11,7 @@ import json
 import logging
 import time
 import re
-from typing import Dict, List, Optional, Any, Set, TypedDict, cast, Union, Tuple
+from typing import Dict, List, Optional, Any, Set, Union, Tuple
 from datetime import datetime
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -26,6 +26,7 @@ from rich.table import Table
 
 # Local imports
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
+from ..utils.publication_types import Publication
 from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 
 # Constants for PubMed API
@@ -33,20 +34,6 @@ PUBMED_API_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 PUBMED_BATCH_SIZE = 200  # Max recommended by NCBI for single request
 PUBMED_RATE_LIMIT = 0.34  # ~3 requests per second (adjust to 0.1 with API key)
 DEFAULT_CACHE_TTL = 2592000  # 30 days in seconds for publications (much longer than other data)
-
-class Publication(TypedDict, total=False):
-    """Publication reference type definition."""
-    pmid: str
-    evidence_type: str
-    source_db: str
-    title: Optional[str]
-    abstract: Optional[str]
-    year: Optional[int]
-    journal: Optional[str]
-    authors: Optional[List[str]]
-    citation_count: Optional[int]
-    doi: Optional[str]
-    url: Optional[str]
 
 class PublicationsProcessor(BaseProcessor):
     """Process and enrich publication references."""

@@ -1,1393 +1,561 @@
-"""ID enrichment module for Cancer Transcriptome Base.
+"""ID Enrichment module for Cancer Transcriptome Base.
 
-This module maps different database identifiers to each transcript/gene in the database,
-enhancing the ability to match and integrate data from various sources.
+This module handles downloading, processing, and integration of alternative
+identifier mappings from UniProt for transcript records, enhancing cross-database 
+compatibility and searchability.
 """
 
-import logging
+# Standard library imports
+import csv
 import gzip
 import json
-import os
-import sys
-import tempfile
-import shutil
-import re
 from pathlib import Path
-from typing import Dict, List, Set, Any, Optional, Tuple
-import requests
+from typing import Dict, List, Optional, Any, Set, Tuple, DefaultDict
+from collections import defaultdict
+import re
+
+# Third party imports
 from tqdm import tqdm
-import pandas as pd
-import hashlib
-from datetime import datetime, timedelta
-from psycopg2.extras import execute_batch
+from rich.console import Console
+from rich.table import Table
 
-from ..db.database import get_db_manager
-
-logger = logging.getLogger(__name__)
+# Local imports
+from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 
 # Constants
-DEFAULT_CACHE_TTL = 86400  # 24 hours
-DEFAULT_BATCH_SIZE = 1000
-# Terminal width for padding progress messages
-TERM_WIDTH = os.get_terminal_size().columns if sys.stdout.isatty() else 100
-# Human taxonomy ID for filtering
-HUMAN_TAXON_ID = "9606"
+HUMAN_TAXID = '9606'  # NCBI taxonomy ID for humans
 
-# Helper function for single-line progress updates
-def update_progress(message: str) -> None:
-    """Print progress update on a single, updating line.
-    
-    Args:
-        message: The progress message to display
-    """
-    # Pad with spaces to clear previous content and add carriage return
-    print(f"\r{message:<{TERM_WIDTH}}", end="", flush=True)
-
-class IDEnrichmentProcessor:
-    """Process and enrich transcript records with external database identifiers."""
+class IDEnrichmentProcessor(BaseProcessor):
+    """Process and integrate alternative gene and transcript IDs using UniProt mappings."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
-        """Initialize ID enrichment processor with configuration.
+        """Initialize the ID enrichment processor with configuration.
         
         Args:
-            config: Configuration dictionary containing:
-                - cache_dir: Directory to cache downloaded mapping files
-                - batch_size: Size of batches for database operations
-                - uniprot_mapping_url: URL for UniProt ID mapping service
-                - ncbi_gene_info_url: URL for NCBI gene info file
-                - vgnc_gene_set_url: URL for VGNC complete set
+            config: Configuration dictionary with settings
         """
-        self.config = config
-        self.cache_dir = Path(config.get('cache_dir', '/tmp/mediabase/cache')) / 'id_mapping'
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.batch_size = config.get('batch_size', DEFAULT_BATCH_SIZE)
-        self.cache_ttl = config.get('cache_ttl', DEFAULT_CACHE_TTL)
-        self.force_download = config.get('force_download', False)
+        super().__init__(config)
         
-        # ID mapping source URLs with defaults
-        self.ncbi_gene_info_url = config.get(
-            'ncbi_gene_info_url',
-            'https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz'
-        )
-        self.vgnc_gene_set_url = config.get(
-            'vgnc_gene_set_url',
-            'https://ftp.ebi.ac.uk/pub/databases/genenames/vgnc/json/all/all_vgnc_gene_set_All.json'
-        )
-        self.uniprot_idmapping_selected_url = config.get(
-            'uniprot_idmapping_selected_url',
-            'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/idmapping_selected.tab.gz'
+        # Define specific directory for ID mapping data
+        self.id_dir = self.cache_dir / 'id_mapping'
+        self.id_dir.mkdir(exist_ok=True)
+        
+        # Source URL for UniProt ID mapping
+        self.uniprot_mapping_url = config.get(
+            'uniprot_mapping_url',
+            'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/by_organism/HUMAN_9606_idmapping.dat.gz'
         )
         
-        # Add transcript mapping source URLs with defaults
-        self.ensembl_refseq_url = config.get(
-            'ensembl_refseq_url',
-            'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz'
-        )
-        self.ensembl_entrez_url = config.get(
-            'ensembl_entrez_url',
-            'https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.entrez.tsv.gz'
-        )
+        # Cache options
+        self.filter_metadata: Dict[str, Any] = {
+            'uniprot': {'filtered': False, 'total': 0, 'human': 0}
+        }
+    
+    def download_uniprot_mapping(self) -> Path:
+        """Download UniProt ID mapping file with caching.
         
-        self.db_manager = get_db_manager(config)
-        
-    def _get_cache_key(self, url: str, filters: Optional[Dict[str, str]] = None) -> str:
-        """Generate a cache key from URL and optional filters.
+        Returns:
+            Path to the downloaded file
+            
+        Raises:
+            DownloadError: If download fails
+        """
+        try:
+            self.logger.info("Downloading UniProt ID mapping file")
+            # Use the BaseProcessor download method
+            mapping_file = self.download_file(
+                url=self.uniprot_mapping_url,
+                file_path=self.id_dir / "uniprot_human_idmapping.dat.gz"
+            )
+            return mapping_file
+        except Exception as e:
+            raise DownloadError(f"Failed to download UniProt ID mapping: {e}")
+    
+    def _filter_uniprot_mapping(self, input_path: Path) -> Path:
+        """Filter UniProt mapping file to include only human entries.
         
         Args:
-            url: Source URL
-            filters: Optional dictionary of filters applied to the data
+            input_path: Path to the full mapping file
             
         Returns:
-            str: Hash string to use as cache key
-        """
-        # Create a combined string of URL and filters
-        key_str = url
-        if filters:
-            for k, v in sorted(filters.items()):
-                key_str += f"_{k}={v}"
-        
-        return hashlib.sha256(key_str.encode()).hexdigest()
-        
-    def _is_cache_valid(self, cache_key: str) -> bool:
-        """Check if cache is still valid for a given cache key."""
-        meta_path = self.cache_dir / "meta.json"
-        if self.force_download:
-            return False
-        if not meta_path.exists():
-            return False
-        try:
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            if cache_key not in meta:
-                return False
-            cache_time = datetime.fromisoformat(meta[cache_key]['timestamp'])
-            return (datetime.now() - cache_time) < timedelta(seconds=self.cache_ttl)
-        except (json.JSONDecodeError, KeyError, ValueError):
-            return False
+            Path to the filtered file
             
-    def _update_cache_meta(self, cache_key: str, file_path: Path, 
-                          filters: Optional[Dict[str, str]] = None) -> None:
-        """Update cache metadata with filters information.
-        
-        Args:
-            cache_key: The cache key
-            file_path: Path to the cached file
-            filters: Optional dictionary of filters applied to the data
+        Raises:
+            ProcessingError: If filtering fails
         """
-        meta_path = self.cache_dir / "meta.json"
-        meta = {}
-        if meta_path.exists():
+        output_path = self.id_dir / "uniprot_human_idmapping_filtered.dat.gz"
+        
+        # Check if already filtered
+        meta_path = self.id_dir / "uniprot_filtered_meta.json"
+        if output_path.exists() and meta_path.exists():
             try:
                 with open(meta_path, 'r') as f:
-                    meta = json.load(f)
-            except json.JSONDecodeError:
-                pass
-
-        meta[cache_key] = {
-            'timestamp': datetime.now().isoformat(),
-            'file_path': str(file_path),
-            'filters': filters or {}
-        }
-
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f)
-
-    def _filter_uniprot_idmapping(self, input_path: Path, output_path: Path) -> None:
-        """Filter UniProt idmapping file to only include human entries.
-        
-        Args:
-            input_path: Path to the original unfiltered file
-            output_path: Path where to save the filtered file
-        """
-        # We need to extract and match the human entries by their UniProt accession
-        # First, get a set of human UniProt accessions
-        human_accessions = set()
-        
-        # UniProt's idmapping file has human proteins identifiable by:
-        # 1. Looking up taxonomy IDs in another file (proteome file)
-        # 2. Using entries that map to human genes/proteins
-        
-        update_progress("Identifying human UniProt accessions...")
-        
-        # Process the file once to identify human entries
-        total_entries = 0
-        human_entries = 0
-        
-        with gzip.open(input_path, 'rt') as f, tempfile.NamedTemporaryFile(mode='w+', delete=False) as temp_file:
-            for line in tqdm(f, desc="Pre-filtering UniProt data to human entries"):
-                total_entries += 1
-                fields = line.strip().split('\t')
-                
-                # Skip lines that don't have enough fields
-                if len(fields) < 3:
-                    continue
-                
-                # Check if this entry maps to a human gene entry
-                # Fields: UniProtKB-AC UniProtKB-ID GeneID (EntrezGene)
-                uniprot_acc = fields[0]
-                
-                # Look for gene mappings with 9606 (human) taxonomy ID
-                # This is an imperfect heuristic but most UniProt entries with human gene mappings are human
-                is_human = False
-                
-                # Check for human gene ID pattern (these are typically numeric)
-                # Note: This is a simplification - ideally we would cross-reference with a human gene list
-                if len(fields) > 2 and fields[2].isdigit():
-                    # We consider it a human entry if it has a gene ID mapped
-                    is_human = True
-                    human_accessions.add(uniprot_acc)
-                    human_entries += 1
-                    temp_file.write(line)
-        
-        # Report filtering statistics
-        human_percentage = (human_entries / max(1, total_entries)) * 100
-        update_progress(f"Identified {len(human_accessions):,} human UniProt accessions "
-                       f"({human_percentage:.1f}% of total entries)")
-                
-        # Move the temporary file to the final filtered file location
-        temp_path = Path(temp_file.name)
-        
-        # Create a compressed version of the filtered file
-        with open(temp_path, 'rb') as f_in, gzip.open(output_path, 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-        
-        # Remove the temporary file
-        temp_path.unlink()
-        
-        update_progress(f"Created human-filtered UniProt idmapping file: {output_path}")
-
-    def _filter_ncbi_gene_info(self, input_path: Path, output_path: Path) -> None:
-        """Filter NCBI gene_info file to only include human entries.
-        
-        Args:
-            input_path: Path to the original unfiltered file
-            output_path: Path where to save the filtered file
-        """
-        # NCBI gene_info file has taxonomy ID in the first column, so filtering is straightforward
-        update_progress("Filtering NCBI gene info to human entries (taxon 9606)...")
-        
-        total_entries = 0
-        human_entries = 0
-        
-        # Process the file and write only human entries to a new file
-        with gzip.open(input_path, 'rt') as f_in, gzip.open(output_path, 'wt') as f_out:
-            # Copy the header line
-            header = next(f_in)
-            f_out.write(header)
-            
-            for line in tqdm(f_in, desc="Pre-filtering NCBI gene info to human entries"):
-                total_entries += 1
-                if line.startswith('#'):
-                    f_out.write(line)  # Copy comment lines
-                    continue
-                    
-                fields = line.strip().split('\t')
-                
-                # Check if this is a human entry (tax_id=9606)
-                if len(fields) > 0 and fields[0] == HUMAN_TAXON_ID:
-                    f_out.write(line)
-                    human_entries += 1
-        
-        # Report filtering statistics
-        human_percentage = (human_entries / max(1, total_entries)) * 100
-        update_progress(f"Filtered NCBI gene info: {human_entries:,} human entries "
-                       f"({human_percentage:.1f}% of total entries)")
-
-    def download_ncbi_gene_info(self) -> Path:
-        """Download NCBI Gene Info file, pre-filter to human entries if needed.
-        
-        Returns:
-            Path to the human-filtered NCBI gene info file
-        """
-        # Generate cache keys for both raw and filtered files
-        raw_cache_key = self._get_cache_key(self.ncbi_gene_info_url)
-        filtered_cache_key = self._get_cache_key(self.ncbi_gene_info_url, {'taxon': HUMAN_TAXON_ID})
-        
-        # Define file paths for both raw and filtered files
-        raw_file_path = self.cache_dir / f"ncbi_gene_info_{raw_cache_key}.gz"
-        filtered_file_path = self.cache_dir / f"ncbi_gene_info_human_{filtered_cache_key}.gz"
-        
-        # Check if we have a valid filtered cache file
-        if filtered_file_path.exists() and self._is_cache_valid(filtered_cache_key):
-            update_progress(f"Using cached human-filtered NCBI gene info file: {filtered_file_path}")
-            return filtered_file_path
-            
-        # If not, check if we need to download the raw file
-        if not raw_file_path.exists() or not self._is_cache_valid(raw_cache_key):
-            update_progress(f"Downloading NCBI gene info from {self.ncbi_gene_info_url}")
-            response = requests.get(self.ncbi_gene_info_url, stream=True)
-            total_size = int(response.headers.get('content-length', 0))
-            
-            with open(raw_file_path, 'wb') as f, tqdm(
-                desc="Downloading NCBI gene info",
-                total=total_size,
-                unit='iB',
-                unit_scale=True
-            ) as pbar:
-                for data in response.iter_content(chunk_size=8192):
-                    size = f.write(data)
-                    pbar.update(size)
-                    
-            self._update_cache_meta(raw_cache_key, raw_file_path)
-        
-        # Now filter the raw file to human entries
-        update_progress("Filtering NCBI gene info to human entries...")
-        self._filter_ncbi_gene_info(raw_file_path, filtered_file_path)
-        
-        # Update cache metadata for the filtered file
-        self._update_cache_meta(filtered_cache_key, filtered_file_path, {'taxon': HUMAN_TAXON_ID})
-        
-        return filtered_file_path
-
-    def download_uniprot_idmapping(self) -> Path:
-        """Download UniProt idmapping_selected file, pre-filter to human entries if needed.
-        
-        Returns:
-            Path to the human-filtered UniProt idmapping file
-        """
-        # Generate cache keys for both raw and filtered files
-        raw_cache_key = self._get_cache_key(self.uniprot_idmapping_selected_url)
-        filtered_cache_key = self._get_cache_key(self.uniprot_idmapping_selected_url, {'taxon': HUMAN_TAXON_ID})
-        
-        # Define file paths for both raw and filtered files
-        raw_file_path = self.cache_dir / f"uniprot_idmapping_selected_{raw_cache_key}.tab.gz"
-        filtered_file_path = self.cache_dir / f"uniprot_idmapping_selected_human_{filtered_cache_key}.tab.gz"
-        
-        # Check if we have a valid filtered cache file
-        if filtered_file_path.exists() and self._is_cache_valid(filtered_cache_key):
-            update_progress(f"Using cached human-filtered UniProt idmapping file: {filtered_file_path}")
-            return filtered_file_path
-            
-        # If not, check if we need to download the raw file
-        if not raw_file_path.exists() or not self._is_cache_valid(raw_cache_key):
-            update_progress(f"Downloading UniProt idmapping from {self.uniprot_idmapping_selected_url}")
-            response = requests.get(self.uniprot_idmapping_selected_url, stream=True)
-            total_size = int(response.headers.get('content-length', 0))
-            
-            with open(raw_file_path, 'wb') as f, tqdm(
-                desc="Downloading UniProt idmapping",
-                total=total_size,
-                unit='iB',
-                unit_scale=True
-            ) as pbar:
-                for data in response.iter_content(chunk_size=8192):
-                    size = f.write(data)
-                    pbar.update(size)
-                    
-            self._update_cache_meta(raw_cache_key, raw_file_path)
-        
-        # Now filter the raw file to human entries
-        update_progress("Filtering UniProt idmapping file to human entries...")
-        self._filter_uniprot_idmapping(raw_file_path, filtered_file_path)
-        
-        # Update cache metadata for the filtered file
-        self._update_cache_meta(filtered_cache_key, filtered_file_path, {'taxon': HUMAN_TAXON_ID})
-        
-        return filtered_file_path
-        
-    def download_vgnc_gene_set(self) -> Path:
-        """Download the VGNC gene set file.
-        
-        Returns:
-            Path: Path to the downloaded file
-        """
-        from urllib.parse import urlparse
-        import ftplib
-        from tqdm import tqdm
-        import os
-        
-        # Generate cache file path
-        cache_key = self._get_cache_key(self.vgnc_gene_set_url)
-        vgnc_file = self.cache_dir / f"vgnc_{cache_key}.json"
-        
-        # Check if we have a valid cached file
-        if vgnc_file.exists() and self._is_cache_valid(cache_key):
-            logger.info(f"Using cached VGNC file: {vgnc_file}")
-            return vgnc_file
-            
-        logger.info(f"Downloading VGNC gene set from {self.vgnc_gene_set_url}")
-        
-        # Parse URL to get FTP server and path
-        parsed_url = urlparse(self.vgnc_gene_set_url)
-        
-        if parsed_url.scheme == 'ftp':
-            try:
-                # Connect to FTP server
-                server = parsed_url.netloc
-                path = parsed_url.path
-                
-                # Create an FTP connection
-                ftp = ftplib.FTP(server)
-                ftp.login()  # Anonymous login
-                
-                # Get file size for progress bar
-                ftp.sendcmd("TYPE I")  # Switch to binary mode
-                file_size = ftp.size(path)
-                
-                # Download the file with progress bar
-                with open(vgnc_file, 'wb') as f, tqdm(
-                    desc="Downloading VGNC gene set",
-                    total=file_size,
-                    unit='B',
-                    unit_scale=True
-                ) as pbar:
-                    def callback(data):
-                        f.write(data)
-                        pbar.update(len(data))
-                    
-                    ftp.retrbinary(f"RETR {path}", callback)
-                
-                ftp.quit()
-                
-                # Update cache metadata
-                self._update_cache_meta(cache_key, vgnc_file)
-                logger.info(f"VGNC gene set downloaded to {vgnc_file}")
-                
-            except Exception as e:
-                # If FTP download fails, try HTTP/HTTPS as fallback
-                logger.warning(f"FTP download failed: {e}. Trying HTTP download as fallback.")
-                http_url = f"https://{parsed_url.netloc}{parsed_url.path}"
-                return self._download_http_file(http_url, vgnc_file, cache_key)
-        else:
-            # Use standard HTTP download for non-FTP URLs
-            return self._download_http_file(self.vgnc_gene_set_url, vgnc_file, cache_key)
-            
-        return vgnc_file
-        
-    def _download_http_file(self, url: str, file_path: Path, cache_key: str) -> Path:
-        """Download a file via HTTP/HTTPS.
-        
-        Args:
-            url: URL to download from
-            file_path: Path to save the file to
-            cache_key: Cache key for metadata
-            
-        Returns:
-            Path: Path to the downloaded file
-        """
-        import requests
-        from tqdm import tqdm
+                    self.filter_metadata['uniprot'] = json.load(f)
+                if self.filter_metadata['uniprot'].get('filtered', False):
+                    self.logger.info(
+                        f"Using pre-filtered UniProt mapping with "
+                        f"{self.filter_metadata['uniprot'].get('human', 0):,} human entries "
+                        f"from {self.filter_metadata['uniprot'].get('total', 0):,} total"
+                    )
+                    return output_path
+            except Exception:
+                pass  # Proceed with filtering if metadata is invalid
         
         try:
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
+            self.logger.info("Filtering UniProt ID mapping to ensure human entries only")
             
-            total_size = int(response.headers.get('content-length', 0))
+            total_entries = 0
+            human_entries = 0
             
-            with open(file_path, 'wb') as f, tqdm(
-                desc=f"Downloading {file_path.name}",
-                total=total_size,
-                unit='B',
-                unit_scale=True
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        pbar.update(len(chunk))
-            
-            self._update_cache_meta(cache_key, file_path)
-            logger.info(f"File downloaded to {file_path}")
-            
-        except Exception as e:
-            if file_path.exists():
-                file_path.unlink()  # Delete partial download
-            logger.error(f"Failed to download file: {e}")
-            raise
-            
-        return file_path
-    
-    def query_uniprot_mapping_service(self, gene_symbols: List[str]) -> Dict[str, Dict[str, str]]:
-        """Query UniProt ID mapping service for gene symbols."""
-        # Implementation will be added in next iteration
-        return {}  # Return empty dict to satisfy type checking
-    
-    def process_ncbi_gene_info(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
-        """Process NCBI Gene Info file to map gene IDs.
-        
-        Args:
-            file_path: Path to the gene_info.gz file (now pre-filtered to human entries)
-            
-        Returns:
-            Dictionary mapping gene symbols to various IDs
-        """
-        update_progress("Processing NCBI gene info file...")
-        
-        # Define column positions in NCBI gene_info file
-        NCBI_TAX_ID = 0
-        NCBI_GENE_ID = 1
-        NCBI_SYMBOL = 2
-        NCBI_SYNONYMS = 4
-        NCBI_DB_XREFS = 5
-        
-        gene_mappings: Dict[str, Dict[str, Any]] = {}
-        
-        with gzip.open(file_path, 'rt') as f:
-            # Skip header line
-            next(f)
-            
-            for line in tqdm(f, desc="Processing NCBI gene records"):
-                if line.startswith('#'):
-                    continue
-                    
-                fields = line.strip().split('\t')
+            with gzip.open(input_path, 'rt') as f_in, gzip.open(output_path, 'wt') as f_out:
+                # Count lines first to set up progress bar
+                line_count = sum(1 for _ in f_in)
+                f_in.seek(0)  # Reset file pointer
                 
-                # No need to check for human entries - file is pre-filtered
-                # This makes the code more efficient
-                if len(fields) <= NCBI_GENE_ID:
-                    continue
-                    
-                gene_id = fields[NCBI_GENE_ID]
-                gene_symbol = fields[NCBI_SYMBOL] if len(fields) > NCBI_SYMBOL else ""
-                
-                if not gene_symbol:
-                    continue
-                
-                # Initialize entry if needed
-                if gene_symbol not in gene_mappings:
-                    gene_mappings[gene_symbol] = {
-                        'ncbi_id': gene_id,
-                        'ensembl_gene_ids': [],
-                        'refseq_ids': []
-                    }
-                
-                # Process database cross-references for other IDs
-                if len(fields) > NCBI_DB_XREFS:
-                    db_xrefs = fields[NCBI_DB_XREFS]
-                    if db_xrefs != "-":
-                        for xref in db_xrefs.split('|'):
-                            if xref.startswith('Ensembl:'):
-                                ensembl_id = xref.replace('Ensembl:', '')
-                                if ensembl_id:
-                                    # Remove version from Ensembl IDs
-                                    base_id = ensembl_id.split('.')[0]
-                                    if base_id not in gene_mappings[gene_symbol]['ensembl_gene_ids']:
-                                        gene_mappings[gene_symbol]['ensembl_gene_ids'].append(base_id)
-                            elif xref.startswith('RefSeq:'):
-                                refseq_id = xref.replace('RefSeq:', '')
-                                if refseq_id and refseq_id not in gene_mappings[gene_symbol]['refseq_ids']:
-                                    gene_mappings[gene_symbol]['refseq_ids'].append(refseq_id)
-        
-        # Log summary statistics
-        update_progress(f"Processed NCBI gene info for {len(gene_mappings)} human genes")
-        
-        return gene_mappings
-    
-    def process_vgnc_gene_set(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
-        """Process VGNC gene set to map gene symbols to various IDs.
-        
-        Args:
-            file_path: Path to the VGNC gene set JSON file
-            
-        Returns:
-            Dictionary mapping gene symbols to various IDs
-        """
-        update_progress("Processing VGNC gene set file...")
-        
-        # Load the JSON data
-        try:
-            with open(file_path, 'r') as f:
-                vgnc_data = json.load(f)
-            
-            gene_mappings: Dict[str, Dict[str, Any]] = {}
-            
-            for record in tqdm(vgnc_data, desc="Processing VGNC records"):
-                gene_symbol = record.get('symbol')
-                if not gene_symbol:
-                    continue
-                    
-                # Initialize entry for this gene symbol if needed
-                if gene_symbol not in gene_mappings:
-                    gene_mappings[gene_symbol] = {}
-                
-                # Add VGNC ID
-                if 'vgnc_id' in record:
-                    gene_mappings[gene_symbol]['vgnc_id'] = record['vgnc_id']
-                
-                # Add Entrez/NCBI ID
-                if 'ncbi_id' in record:
-                    gene_mappings[gene_symbol]['entrez_id'] = record['ncbi_id']
-                
-                # Add Ensembl Gene ID
-                if 'ensembl_gene_id' in record:
-                    # Remove version if present
-                    ensembl_id = record['ensembl_gene_id'].split('.')[0]
-                    gene_mappings[gene_symbol]['ensembl_gene_id'] = ensembl_id
-                
-                # Add UniProt IDs if available
-                if 'uniprot_ids' in record and isinstance(record['uniprot_ids'], list):
-                    gene_mappings[gene_symbol]['uniprot_ids'] = record['uniprot_ids']
-                
-                # Add HGNC orthologs if available
-                if 'hgnc_orthologs' in record and isinstance(record['hgnc_orthologs'], list):
-                    # Extract just the IDs from orthologs (format is "HGNC:123")
-                    hgnc_ids = [h.replace('HGNC:', '') for h in record['hgnc_orthologs'] if h.startswith('HGNC:')]
-                    if hgnc_ids:
-                        gene_mappings[gene_symbol]['hgnc_id'] = hgnc_ids[0]  # Use first ortholog
-                
-            # Log summary statistics
-            update_progress(f"Processed VGNC gene set with {len(gene_mappings)} gene symbols")
-            return gene_mappings
-            
-        except Exception as e:
-            logger.error(f"Error processing VGNC gene set: {e}")
-            return {}
-    
-    def process_uniprot_idmapping(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
-        """Process UniProt idmapping file to map gene symbols to UniProt IDs.
-        
-        Args:
-            file_path: Path to the idmapping_selected.tab.gz file (now pre-filtered to human entries)
-            
-        Returns:
-            Dictionary mapping gene symbols to UniProt IDs
-        """
-        update_progress("Processing UniProt idmapping file...")
-        
-        # Define column indices for idmapping_selected.tab file
-        # Column definitions in UniProt idmapping_selected.tab
-        UNIPROT_ACC = 0    # UniProtKB-AC
-        UNIPROT_ID = 1     # UniProtKB-ID
-        GENE_NAME = 2      # GeneID (EntrezGene)
-        ENTREZ_GENE = 2    # Same as GENE_NAME (EntrezGene)
-        REFSEQ = 3         # RefSeq
-        PDB = 5            # PDB
-        GO = 6             # GO
-        MIM = 13           # OMIM disease associations
-        PUBMED = 15        # PubMed
-        ENSEMBL = 18       # Ensembl
-        ENSEMBL_TRS = 19   # Ensembl_TRS (fixed from 129)
-        ADD_PUBMED = 21    # Additional PubMed
-        
-        gene_mappings: Dict[str, Dict[str, Any]] = {}
-        lines = []
-        n = 0
-        
-        try:
-            # Process the file line by line to avoid loading everything into memory
-            # Since the file is pre-filtered, processing should be much faster
-            with gzip.open(file_path, 'rt') as f:
-                for line in tqdm(f, desc="Processing UniProt idmapping"):
-                    if n < 2:
-                        lines.append(line)
-                    n += 1
-                    
-                    # Split the line by tabs
-                    fields = line.strip().split('\t')
-                    
-                    # Check for minimum required fields
-                    if len(fields) <= GENE_NAME:
-                        continue
+                # Process with progress tracking
+                with tqdm(total=line_count, desc="Filtering UniProt mapping") as pbar:
+                    for line in f_in:
+                        total_entries += 1
+                        pbar.update(1)
                         
-                    uniprot_acc = fields[UNIPROT_ACC]
-                    uniprot_id = fields[UNIPROT_ID]
-                    gene_name = fields[GENE_NAME]
-                    
-                    if not gene_name or gene_name == "-" or gene_name == "":
-                        continue
-                        
-                    # Gene name may contain multiple symbols separated by spaces
-                    gene_symbols = gene_name.split()
-                    
-                    for gene_symbol in gene_symbols:
-                        # Initialize entry if needed
-                        if gene_symbol not in gene_mappings:
-                            gene_mappings[gene_symbol] = {
-                                'uniprot_acc': [],
-                                'uniprot_id': [],
-                                'entrez_ids': [],
-                                'refseq_ids': [],
-                                'pdb_ids': [],
-                                'go_terms': [],
-                                'mim_ids': [],
-                                'pubmed_ids': []
-                            }
+                        # Parse line and check if it's human
+                        parts = line.strip().split('\t')
+                        if len(parts) >= 3 and parts[1] == "NCBI_TaxID" and parts[2] == HUMAN_TAXID:
+                            human_entries += 1
+                            continue  # Skip taxonomy entries
                             
-                        # Add UniProt accession and ID
-                        if uniprot_acc and uniprot_acc not in gene_mappings[gene_symbol]['uniprot_acc']:
-                            gene_mappings[gene_symbol]['uniprot_acc'].append(uniprot_acc)
-                            
-                        if uniprot_id and uniprot_id not in gene_mappings[gene_symbol]['uniprot_id']:
-                            gene_mappings[gene_symbol]['uniprot_id'].append(uniprot_id)
-                        
-                        # Extract additional IDs when available
-                        # Add EntrezGene/NCBI IDs
-                        if len(fields) > ENTREZ_GENE and fields[ENTREZ_GENE] and fields[ENTREZ_GENE] != "-":
-                            entrez_id = fields[ENTREZ_GENE]
-                            if entrez_id not in gene_mappings[gene_symbol]['entrez_ids']:
-                                gene_mappings[gene_symbol]['entrez_ids'].append(entrez_id)
-                        
-                        # Add RefSeq IDs
-                        if len(fields) > REFSEQ and fields[REFSEQ] and fields[REFSEQ] != "-":
-                            for refseq_id in fields[REFSEQ].split('; '):
-                                if refseq_id and refseq_id not in gene_mappings[gene_symbol]['refseq_ids']:
-                                    gene_mappings[gene_symbol]['refseq_ids'].append(refseq_id)
-                        
-                        # Add PDB IDs
-                        if len(fields) > PDB and fields[PDB] and fields[PDB] != "-":
-                            for pdb_id in fields[PDB].split('; '):
-                                if pdb_id and pdb_id not in gene_mappings[gene_symbol]['pdb_ids']:
-                                    gene_mappings[gene_symbol]['pdb_ids'].append(pdb_id)
-                        
-                        # Add GO terms
-                        if len(fields) > GO and fields[GO] and fields[GO] != "-":
-                            for go_term in fields[GO].split('; '):
-                                if go_term and go_term not in gene_mappings[gene_symbol]['go_terms']:
-                                    gene_mappings[gene_symbol]['go_terms'].append(go_term)
-                        
-                        # Add MIM/OMIM disease IDs
-                        if len(fields) > MIM and fields[MIM] and fields[MIM] != "-":
-                            for mim_id in fields[MIM].split('; '):
-                                if mim_id and mim_id not in gene_mappings[gene_symbol]['mim_ids']:
-                                    gene_mappings[gene_symbol]['mim_ids'].append(mim_id)
-                        
-                        # Add PubMed IDs
-                        if len(fields) > PUBMED and fields[PUBMED] and fields[PUBMED] != "-":
-                            for pubmed_id in fields[PUBMED].split('; '):
-                                if pubmed_id and pubmed_id not in gene_mappings[gene_symbol]['pubmed_ids']:
-                                    gene_mappings[gene_symbol]['pubmed_ids'].append(pubmed_id)
-                        
-                        # Add additional PubMed IDs
-                        if len(fields) > ADD_PUBMED and fields[ADD_PUBMED] and fields[ADD_PUBMED] != "-":
-                            for pubmed_id in fields[ADD_PUBMED].split('; '):
-                                if pubmed_id and pubmed_id not in gene_mappings[gene_symbol]['pubmed_ids']:
-                                    gene_mappings[gene_symbol]['pubmed_ids'].append(pubmed_id)
+                        # Include all entries as we're using human-specific file
+                        human_entries += 1
+                        f_out.write(line)
             
-            # Log summary statistics
-            update_progress(f"Processed UniProt idmapping for {len(gene_mappings)} gene symbols")
-            
-            # Log additional data statistics
-            id_counts = {
-                'entrez_ids': sum(1 for data in gene_mappings.values() if data['entrez_ids']),
-                'refseq_ids': sum(1 for data in gene_mappings.values() if data['refseq_ids']),
-                'pdb_ids': sum(1 for data in gene_mappings.values() if data['pdb_ids']),
-                'go_terms': sum(1 for data in gene_mappings.values() if data['go_terms']),
-                'mim_ids': sum(1 for data in gene_mappings.values() if data['mim_ids']),
-                'pubmed_ids': sum(1 for data in gene_mappings.values() if data['pubmed_ids']),
+            # Update and save metadata
+            self.filter_metadata['uniprot'] = {
+                'filtered': True,
+                'total': total_entries,
+                'human': human_entries
             }
             
-            logger.info(f"Extracted ID counts from UniProt mapping:")
-            for id_type, count in id_counts.items():
-                logger.info(f"  - {id_type}: {count} genes")
+            with open(meta_path, 'w') as f:
+                json.dump(self.filter_metadata['uniprot'], f)
                 
-            return gene_mappings
+            self.logger.info(
+                f"UniProt mapping filtered: kept {human_entries:,} human entries "
+                f"from {total_entries:,} total ({human_entries/max(1, total_entries)*100:.1f}%)"
+            )
+            
+            return output_path
             
         except Exception as e:
-            logger.error(f"Error processing UniProt idmapping: {e}")
-            return {}
+            raise ProcessingError(f"Failed to filter UniProt mapping: {e}")
     
-    def download_ensembl_refseq(self) -> Path:
-        """Download Ensembl-RefSeq mapping file if not in cache."""
-        cache_key = self._get_cache_key(self.ensembl_refseq_url)
-        file_path = self.cache_dir / f"ensembl_refseq_{cache_key}.tsv.gz"
-        
-        if file_path.exists() and self._is_cache_valid(cache_key):
-            update_progress(f"Using cached Ensembl-RefSeq mapping file: {file_path}")
-            return file_path
-            
-        update_progress(f"Downloading Ensembl-RefSeq mapping from {self.ensembl_refseq_url}")
-        response = requests.get(self.ensembl_refseq_url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(file_path, 'wb') as f, tqdm(
-            desc="Downloading Ensembl-RefSeq mapping",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=8192):
-                size = f.write(data)
-                pbar.update(size)
-                
-        self._update_cache_meta(cache_key, file_path)
-        return file_path
-    
-    def download_ensembl_entrez(self) -> Path:
-        """Download Ensembl-Entrez mapping file if not in cache."""
-        cache_key = self._get_cache_key(self.ensembl_entrez_url)
-        file_path = self.cache_dir / f"ensembl_entrez_{cache_key}.tsv.gz"
-        
-        if file_path.exists() and self._is_cache_valid(cache_key):
-            update_progress(f"Using cached Ensembl-Entrez mapping file: {file_path}")
-            return file_path
-            
-        update_progress(f"Downloading Ensembl-Entrez mapping from {self.ensembl_entrez_url}")
-        response = requests.get(self.ensembl_entrez_url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(file_path, 'wb') as f, tqdm(
-            desc="Downloading Ensembl-Entrez mapping",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=8192):
-                size = f.write(data)
-                pbar.update(size)
-                
-        self._update_cache_meta(cache_key, file_path)
-        return file_path
-        
-    def process_ensembl_refseq(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
-        """Process Ensembl-RefSeq mapping file to map transcript IDs.
+    def process_uniprot_mapping(self, mapping_file: Path) -> Dict[str, Dict[str, List[str]]]:
+        """Process UniProt ID mapping to extract comprehensive ID mappings.
         
         Args:
-            file_path: Path to the Ensembl-RefSeq mapping file
+            mapping_file: Path to the UniProt ID mapping file
             
         Returns:
-            Dictionary mapping Ensembl transcript IDs to RefSeq IDs
-        """
-        update_progress("Processing Ensembl-RefSeq mapping file...")
-        
-        transcript_mappings: Dict[str, Dict[str, Any]] = {}
-        
-        try:
-            with gzip.open(file_path, 'rt') as f:
-                # Skip header line if it exists
-                first_line = f.readline().strip()
-                if first_line.startswith('#') or 'gene_id' in first_line:
-                    pass  # Skip header
-                else:
-                    # Reset file pointer if no header
-                    f.seek(0)
-                
-                # Process file
-                for line in tqdm(f, desc="Processing Ensembl-RefSeq mappings"):
-                    fields = line.strip().split('\t')
-                    
-                    # Ensure the line has enough fields
-                    if len(fields) < 2:
-                        continue
-                    
-                    # Extract transcript IDs
-                    # Format is typically: ensembl_transcript_id, refseq_transcript_id
-                    ensembl_id = fields[0].split('.')[0]  # Remove version if present
-                    refseq_id = fields[1]
-                    
-                    # Skip if either ID is missing
-                    if not ensembl_id or not refseq_id:
-                        continue
-                    
-                    # Initialize entry if needed
-                    if ensembl_id not in transcript_mappings:
-                        transcript_mappings[ensembl_id] = {
-                            'refseq_transcript_ids': []
-                        }
-                    
-                    # Add RefSeq ID if not already present
-                    if refseq_id not in transcript_mappings[ensembl_id]['refseq_transcript_ids']:
-                        transcript_mappings[ensembl_id]['refseq_transcript_ids'].append(refseq_id)
+            Dictionary mapping gene symbols to various ID systems
             
-            # Log summary statistics
-            update_progress(f"Processed Ensembl-RefSeq mappings for {len(transcript_mappings)} Ensembl transcript IDs")
-            return transcript_mappings
+        Raises:
+            ProcessingError: If processing fails
+        """
+        try:
+            self.logger.info("Processing UniProt ID mapping")
+            
+            # Make sure we're using the human-filtered version
+            mapping_file = self._filter_uniprot_mapping(mapping_file)
+            
+            # Initialize mapping dictionaries
+            # First by UniProt ID to collect all IDs per protein
+            uniprot_mapping: DefaultDict[str, Dict[str, List[str]]] = defaultdict(
+                lambda: defaultdict(list)
+            )
+            
+            # Then by gene symbol for final output
+            gene_mapping: DefaultDict[str, Dict[str, List[str]]] = defaultdict(
+                lambda: defaultdict(list)
+            )
+            
+            # Track statistics
+            id_stats = {
+                'uniprot_ids': 0,
+                'gene_symbols': 0,
+                'ncbi_ids': 0,
+                'ensembl_ids': 0,
+                'refseq_ids': 0,
+                'hgnc_ids': 0,
+                'mim_ids': 0, 
+                'kegg_ids': 0,
+                'pdb_ids': 0
+            }
+            
+            # Process the mapping file
+            with gzip.open(mapping_file, 'rt') as f:
+                # Count lines for progress bar
+                line_count = sum(1 for _ in f)
+                f.seek(0)  # Reset file pointer
+                
+                with tqdm(total=line_count, desc="Processing UniProt mapping") as pbar:
+                    for line in f:
+                        pbar.update(1)
+                        
+                        parts = line.strip().split('\t')
+                        if len(parts) < 3:
+                            continue
+                            
+                        uniprot_id = parts[0]
+                        id_type = parts[1]
+                        id_value = parts[2]
+                        
+                        # Skip empty values
+                        if not id_value or id_value == '-':
+                            continue
+                            
+                        # Map ID types to our standardized types and collect in uniprot_mapping
+                        if id_type == "Gene_Name":
+                            uniprot_mapping[uniprot_id]["gene_symbol"].append(id_value)
+                            id_stats['gene_symbols'] += 1
+                        elif id_type == "GeneID":
+                            uniprot_mapping[uniprot_id]["ncbi_id"].append(id_value)
+                            id_stats['ncbi_ids'] += 1
+                        elif id_type == "Ensembl":
+                            if id_value.startswith('ENSG'):  # Ensembl gene ID
+                                uniprot_mapping[uniprot_id]["ensembl_gene_id"].append(id_value)
+                                id_stats['ensembl_ids'] += 1
+                            elif id_value.startswith('ENST'):  # Ensembl transcript ID
+                                uniprot_mapping[uniprot_id]["ensembl_transcript_id"].append(id_value)
+                                id_stats['ensembl_ids'] += 1
+                        elif id_type == "RefSeq":
+                            if id_value.startswith('NP_') or id_value.startswith('XP_'):
+                                uniprot_mapping[uniprot_id]["refseq_protein_id"].append(id_value)
+                                id_stats['refseq_ids'] += 1
+                            elif id_value.startswith('NM_') or id_value.startswith('XM_'):
+                                uniprot_mapping[uniprot_id]["refseq_mrna_id"].append(id_value)
+                                id_stats['refseq_ids'] += 1
+                        elif id_type == "HGNC":
+                            uniprot_mapping[uniprot_id]["hgnc_id"].append(id_value)
+                            id_stats['hgnc_ids'] += 1
+                        elif id_type == "MIM":
+                            uniprot_mapping[uniprot_id]["omim_id"].append(id_value)
+                            id_stats['mim_ids'] += 1
+                        elif id_type == "KEGG":
+                            uniprot_mapping[uniprot_id]["kegg_id"].append(id_value)
+                            id_stats['kegg_ids'] += 1
+                        elif id_type == "PDB":
+                            uniprot_mapping[uniprot_id]["pdb_id"].append(id_value)
+                            id_stats['pdb_ids'] += 1
+            
+            # Now reorganize by gene symbol for easier database updates
+            for uniprot_id, id_dict in uniprot_mapping.items():
+                gene_symbols = id_dict.get("gene_symbol", [])
+                
+                # Skip entries without gene symbols
+                if not gene_symbols:
+                    continue
+                
+                # Add this UniProt ID to each gene symbol's entry
+                for gene_symbol in gene_symbols:
+                    # Add UniProt ID to list
+                    if uniprot_id not in gene_mapping[gene_symbol]["uniprot_ids"]:
+                        gene_mapping[gene_symbol]["uniprot_ids"].append(uniprot_id)
+                    
+                    # Copy all other IDs to gene mapping
+                    for id_type, id_list in id_dict.items():
+                        if id_type != "gene_symbol":  # Skip to avoid duplication
+                            for id_value in id_list:
+                                if id_value not in gene_mapping[gene_symbol][id_type]:
+                                    gene_mapping[gene_symbol][id_type].append(id_value)
+            
+            # Log ID type statistics
+            id_stats['uniprot_ids'] = len(uniprot_mapping)
+            self.logger.info(f"ID mapping statistics:")
+            for id_type, count in id_stats.items():
+                self.logger.info(f"  - {id_type}: {count:,}")
+            
+            # Convert defaultdict to regular dict for return
+            return {k: dict(v) for k, v in gene_mapping.items()}
             
         except Exception as e:
-            logger.error(f"Error processing Ensembl-RefSeq mapping: {e}")
-            return {}
+            raise ProcessingError(f"Failed to process UniProt mapping: {e}")
     
-    def process_ensembl_entrez(self, file_path: Path) -> Dict[str, Dict[str, Any]]:
-        """Process Ensembl-Entrez mapping file to map transcript IDs.
+    def update_transcript_ids(self, gene_mapping: Dict[str, Dict[str, List[str]]]) -> None:
+        """Update transcript records with alternative IDs from UniProt.
         
         Args:
-            file_path: Path to the Ensembl-Entrez mapping file
+            gene_mapping: Consolidated ID mapping by gene symbol
             
-        Returns:
-            Dictionary mapping Ensembl transcript IDs to Entrez IDs
+        Raises:
+            DatabaseError: If database operations fail
         """
-        update_progress("Processing Ensembl-Entrez mapping file...")
-        
-        transcript_mappings: Dict[str, Dict[str, Any]] = {}
-        
-        try:
-            with gzip.open(file_path, 'rt') as f:
-                # Skip header line if it exists
-                first_line = f.readline().strip()
-                if first_line.startswith('#') or 'gene_id' in first_line:
-                    pass  # Skip header
-                else:
-                    # Reset file pointer if no header
-                    f.seek(0)
-                
-                # Process file
-                for line in tqdm(f, desc="Processing Ensembl-Entrez mappings"):
-                    fields = line.strip().split('\t')
-                    
-                    # Ensure the line has enough fields
-                    if len(fields) < 2:
-                        continue
-                    
-                    # Extract transcript IDs
-                    # Format is typically: ensembl_transcript_id, entrez_id
-                    ensembl_id = fields[0].split('.')[0]  # Remove version if present
-                    entrez_id = fields[1]
-                    
-                    # Skip if either ID is missing
-                    if not ensembl_id or not entrez_id:
-                        continue
-                    
-                    # Initialize entry if needed
-                    if ensembl_id not in transcript_mappings:
-                        transcript_mappings[ensembl_id] = {
-                            'entrez_transcript_ids': []
-                        }
-                    
-                    # Add Entrez ID if not already present
-                    if entrez_id not in transcript_mappings[ensembl_id]['entrez_transcript_ids']:
-                        transcript_mappings[ensembl_id]['entrez_transcript_ids'].append(entrez_id)
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
             
-            # Log summary statistics
-            update_progress(f"Processed Ensembl-Entrez mappings for {len(transcript_mappings)} Ensembl transcript IDs")
-            return transcript_mappings
-            
-        except Exception as e:
-            logger.error(f"Error processing Ensembl-Entrez mapping: {e}")
-            return {}
-    
-    def update_gene_ids(self, gene_id_mappings: Dict[str, Dict[str, Any]]) -> None:
-        """Update gene IDs in the database.
-        
-        Args:
-            gene_id_mappings: Dictionary mapping gene symbols to other IDs
-        """
-        update_progress("Updating gene IDs in the database...")
-        
-        if not gene_id_mappings:
-            update_progress("No gene ID mappings to update")
-            print()  # Move to next line
-            return
-            
-        if not self.db_manager.cursor:
-            logger.error("No database connection")
+        if not gene_mapping:
+            self.logger.warning("No ID mappings to update transcripts with")
             return
             
         try:
-            # Process in batches
+            self.logger.info("Updating transcript records with alternative IDs")
+            
+            # Get existing gene symbols from database
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol 
+                FROM cancer_transcript_base 
+                WHERE gene_symbol IS NOT NULL
+            """)
+            
+            db_gene_symbols = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
+            self.logger.info(f"Found {len(db_gene_symbols):,} unique gene symbols in database")
+            
+            # Find overlapping gene symbols
+            mapping_symbols = set(gene_mapping.keys())
+            overlap_symbols = db_gene_symbols.intersection(mapping_symbols)
+            
+            self.logger.info(
+                f"ID mapping analysis:\n"
+                f"- Symbols in database: {len(db_gene_symbols):,}\n"
+                f"- Symbols in UniProt mappings: {len(mapping_symbols):,}\n"
+                f"- Overlap symbols: {len(overlap_symbols):,} "
+                f"({len(overlap_symbols)/max(1, len(db_gene_symbols))*100:.1f}% coverage)"
+            )
+            
+            # Prepare updates
             updates = []
-            processed = 0
             
-            pbar = tqdm(total=len(gene_id_mappings), desc="Updating gene records", unit="records")
-            
-            for gene_symbol, mappings in gene_id_mappings.items():
-                # Prepare alt_gene_ids JSON
-                alt_ids = {}
+            for gene_symbol in tqdm(overlap_symbols, desc="Preparing ID updates"):
+                mapping = gene_mapping.get(gene_symbol, {})
                 
-                # Add directly mappable IDs
-                for direct_id in ['hgnc_id', 'entrez_id', 'ensembl_gene_id', 'vgnc_id']:
-                    if direct_id in mappings and mappings[direct_id]:
-                        alt_ids[direct_id] = mappings[direct_id]
-                
-                # Handle array IDs
-                if 'refseq_ids' in mappings and mappings['refseq_ids']:
-                    refseq_ids = mappings['refseq_ids']
-                    if isinstance(refseq_ids, list) and refseq_ids:
-                        alt_ids['refseq_id'] = refseq_ids[0]  # Use first as primary
-                        if len(refseq_ids) > 1:
-                            alt_ids['refseq_ids'] = refseq_ids
-                
-                # Prepare UniProt IDs
-                uniprot_ids = []
-                if 'uniprot_ids' in mappings and mappings['uniprot_ids']:
-                    if isinstance(mappings['uniprot_ids'], list):
-                        uniprot_ids = mappings['uniprot_ids']
-                    else:
-                        uniprot_ids = [mappings['uniprot_ids']]
-                elif 'uniprot_acc' in mappings and mappings['uniprot_acc']:
-                    if isinstance(mappings['uniprot_acc'], list):
-                        uniprot_ids = mappings['uniprot_acc']
-                    else:
-                        uniprot_ids = [mappings['uniprot_acc']]
-                
-                # Handle NCBI IDs
-                ncbi_ids = []
-                if 'ncbi_id' in mappings and mappings['ncbi_id']:
-                    ncbi_ids = [mappings['ncbi_id']]
-                elif 'entrez_id' in mappings and mappings['entrez_id']:
-                    ncbi_ids = [mappings['entrez_id']]
-                
-                # Prepare RefSeq IDs - Ensure we're capturing all possible sources
-                refseq_ids = []
-                if 'refseq_ids' in mappings and mappings['refseq_ids']:
-                    if isinstance(mappings['refseq_ids'], list):
-                        refseq_ids = mappings['refseq_ids']
-                    else:
-                        refseq_ids = [mappings['refseq_ids']]
-                # Also check refseq_id (singular) format that might come from some sources
-                elif 'refseq_id' in mappings and mappings['refseq_id']:
-                    if isinstance(mappings['refseq_id'], list):
-                        refseq_ids = mappings['refseq_id']
-                    else:
-                        refseq_ids = [mappings['refseq_id']]
-                
-                # Prepare GO terms
-                go_terms = []
-                if 'go_terms' in mappings and mappings['go_terms']:
-                    if isinstance(mappings['go_terms'], list):
-                        go_terms = mappings['go_terms']
-                    else:
-                        go_terms = [mappings['go_terms']]
-                    # Store GO terms in alt_ids for better accessibility
-                    alt_ids['go_terms'] = go_terms
-                
-                # Prepare source references from PubMed IDs
-                source_references = {}
-                if 'pubmed_ids' in mappings and mappings['pubmed_ids']:
-                    pubmed_refs = []
-                    for pmid in mappings['pubmed_ids']:
-                        if pmid:
-                            pubmed_refs.append({
-                                "pmid": pmid,
-                                "evidence_type": "curated",
-                                "source_db": "uniprot"
-                            })
+                # Skip empty mappings
+                if not mapping:
+                    continue
                     
-                    if pubmed_refs:
-                        source_references['uniprot'] = pubmed_refs
+                # Extract ID arrays for direct array columns
+                uniprot_ids = mapping.get("uniprot_ids", [])
+                ncbi_ids = mapping.get("ncbi_id", [])
                 
-                # Add to updates batch - Now including the refseq_ids array directly
+                # Consolidate RefSeq IDs from different subtypes (mRNA and protein)
+                refseq_ids = []
+                if "refseq_protein_id" in mapping:
+                    refseq_ids.extend(mapping["refseq_protein_id"])
+                if "refseq_mrna_id" in mapping:
+                    refseq_ids.extend(mapping["refseq_mrna_id"])
+                
+                # Extract alternative gene IDs for JSONB field
+                alt_gene_ids = {}
+                
+                # Add HGNC IDs
+                if "hgnc_id" in mapping and mapping["hgnc_id"]:
+                    alt_gene_ids["HGNC"] = mapping["hgnc_id"][0]  # Use first HGNC ID
+                
+                # Add Ensembl gene IDs
+                if "ensembl_gene_id" in mapping and mapping["ensembl_gene_id"]:
+                    alt_gene_ids["Ensembl"] = mapping["ensembl_gene_id"][0]
+                
+                # Add OMIM IDs
+                if "omim_id" in mapping and mapping["omim_id"]:
+                    alt_gene_ids["OMIM"] = mapping["omim_id"][0]
+                
+                # Add KEGG IDs
+                if "kegg_id" in mapping and mapping["kegg_id"]:
+                    alt_gene_ids["KEGG"] = mapping["kegg_id"][0]
+                
+                # Extract alternative transcript IDs
+                alt_transcript_ids = {}
+                
+                # Add Ensembl transcript IDs
+                if "ensembl_transcript_id" in mapping and mapping["ensembl_transcript_id"]:
+                    alt_transcript_ids["Ensembl"] = mapping["ensembl_transcript_id"][0]
+                
+                # Add RefSeq IDs (using first mRNA ID if available)
+                if "refseq_mrna_id" in mapping and mapping["refseq_mrna_id"]:
+                    alt_transcript_ids["RefSeq"] = mapping["refseq_mrna_id"][0]
+                
+                # Add update to batch
                 updates.append((
-                    json.dumps(alt_ids),
-                    uniprot_ids if uniprot_ids else None,
-                    ncbi_ids if ncbi_ids else None,
-                    refseq_ids if refseq_ids else None,  # This will now be passed correctly to the SQL
-                    json.dumps(source_references) if source_references else None,
+                    uniprot_ids,
+                    ncbi_ids,
+                    refseq_ids,
+                    json.dumps(alt_gene_ids),
+                    json.dumps(alt_transcript_ids),
                     gene_symbol
                 ))
                 
+                # Process in batches
                 if len(updates) >= self.batch_size:
-                    execute_batch(
-                        self.db_manager.cursor,
-                        """
-                        UPDATE cancer_transcript_base
-                        SET 
-                            alt_gene_ids = %s::jsonb,
-                            uniprot_ids = %s,
-                            ncbi_ids = %s,
-                            refseq_ids = %s::text[],  -- Explicit cast to text array
-                            source_references = COALESCE(source_references, '{}'::jsonb) || %s::jsonb
-                        WHERE gene_symbol = %s
-                        """,
-                        updates,
-                        page_size=self.batch_size
-                    )
-                    if self.db_manager.conn:
-                        self.db_manager.conn.commit()
-                    processed += len(updates)
-                    pbar.update(len(updates))
-                    if processed % (self.batch_size * 5) == 0:  # Log periodically
-                        update_progress(f"Updated {processed}/{len(gene_id_mappings)} gene records so far...")
+                    self._update_id_batch(updates)
                     updates = []
             
             # Process remaining updates
             if updates:
-                execute_batch(
-                    self.db_manager.cursor,
-                    """
-                    UPDATE cancer_transcript_base
-                    SET 
-                        alt_gene_ids = %s::jsonb,
-                        uniprot_ids = %s,
-                        ncbi_ids = %s,
-                        refseq_ids = %s::text[],  -- Explicit cast to text array
-                        source_references = COALESCE(source_references, '{}'::jsonb) || %s::jsonb
-                    WHERE gene_symbol = %s
-                    """,
-                    updates,
-                    page_size=self.batch_size
-                )
-                if self.db_manager.conn:
-                    self.db_manager.conn.commit()
-                processed += len(updates)
-                pbar.update(len(updates))
-            pbar.close()
-            update_progress(f"Updated {processed} gene records with alternative IDs")
-            print()  # Move to next line after completion
+                self._update_id_batch(updates)
+                
+            # Verify the updates
+            self._verify_id_updates()
             
         except Exception as e:
-            if self.db_manager.conn:
-                self.db_manager.conn.rollback()
-            logger.error(f"Error updating gene IDs: {e}")
+            self.logger.error(f"Failed to update transcript IDs: {e}")
+            raise DatabaseError(f"Transcript ID update failed: {e}")
     
-    def enrich_gene_ids(self) -> None:
-        """Enrich gene IDs using various mapping sources."""
-        update_progress("Starting gene ID enrichment...")
-        
-        # Download and process UniProt idmapping (prioritize this source as it's the richest)
-        uniprot_file = self.download_uniprot_idmapping()
-        uniprot_mappings = self.process_uniprot_idmapping(uniprot_file)
-        
-        # Download and process VGNC gene set (for vertebrate gene nomenclature)
-        vgnc_file = self.download_vgnc_gene_set()
-        vgnc_mappings = self.process_vgnc_gene_set(vgnc_file)
-        
-        # Download and process NCBI gene info (for additional coverage)
-        ncbi_file = self.download_ncbi_gene_info()
-        ncbi_mappings = self.process_ncbi_gene_info(ncbi_file)
-        
-        # Merge gene ID mappings, prioritizing the most specific and reliable sources
-        gene_id_mappings = {}
-        
-        # Start with UniProt mappings as they have the richest cross-references
-        for gene_symbol, mappings in uniprot_mappings.items():
-            if gene_symbol not in gene_id_mappings:
-                gene_id_mappings[gene_symbol] = {}
-            gene_id_mappings[gene_symbol].update(mappings)
-        
-        # Add VGNC mappings (authoritative for vertebrate gene nomenclature)
-        for gene_symbol, mappings in vgnc_mappings.items():
-            if gene_symbol not in gene_id_mappings:
-                gene_id_mappings[gene_symbol] = {}
-            # For fields that exist in both, prioritize VGNC for official nomenclature
-            for key, value in mappings.items():
-                if key in ['vgnc_id', 'hgnc_id']:  # Always use VGNC for these official IDs
-                    gene_id_mappings[gene_symbol][key] = value
-                elif key not in gene_id_mappings[gene_symbol] or not gene_id_mappings[gene_symbol][key]:
-                    gene_id_mappings[gene_symbol][key] = value
-                # Special handling for array fields
-                elif isinstance(value, list) and key in gene_id_mappings[gene_symbol]:
-                    # Combine lists and remove duplicates
-                    if isinstance(gene_id_mappings[gene_symbol][key], list):
-                        gene_id_mappings[gene_symbol][key] = list(set(gene_id_mappings[gene_symbol][key] + value))
-        
-        # Add NCBI mappings (for additional coverage)
-        for gene_symbol, mappings in ncbi_mappings.items():
-            if gene_symbol not in gene_id_mappings:
-                gene_id_mappings[gene_symbol] = {}
-            # Merge mappings, giving lower priority to NCBI
-            for key, value in mappings.items():
-                if key not in gene_id_mappings[gene_symbol] or not gene_id_mappings[gene_symbol][key]:
-                    gene_id_mappings[gene_symbol][key] = value
-                # Special handling for array fields
-                elif isinstance(value, list) and key in gene_id_mappings[gene_symbol]:
-                    # Combine lists and remove duplicates
-                    if isinstance(gene_id_mappings[gene_symbol][key], list):
-                        existing = gene_id_mappings[gene_symbol][key]
-                        gene_id_mappings[gene_symbol][key] = list(set(existing + value))
-        
-        # Update the database with merged mappings
-        self.update_gene_ids(gene_id_mappings)
-        
-        # Log mapping source statistics
-        total_genes = len(gene_id_mappings)
-        uniprot_coverage = sum(1 for gene in gene_id_mappings.values() if 'uniprot_acc' in gene and gene['uniprot_acc'])
-        vgnc_coverage = sum(1 for gene in gene_id_mappings.values() if 'vgnc_id' in gene and gene['vgnc_id'])
-        ncbi_coverage = sum(1 for gene in gene_id_mappings.values() if 'ncbi_id' in gene and gene['ncbi_id'])
-        
-        logger.info(f"ID source coverage statistics:")
-        logger.info(f"  - Total genes: {total_genes}")
-        logger.info(f"  - UniProt coverage: {uniprot_coverage} genes ({uniprot_coverage/total_genes*100:.1f}%)")
-        logger.info(f"  - VGNC coverage: {vgnc_coverage} genes ({vgnc_coverage/total_genes*100:.1f}%)")
-        logger.info(f"  - NCBI coverage: {ncbi_coverage} genes ({ncbi_coverage/total_genes*100:.1f}%)")
-        
-        update_progress("Gene ID enrichment completed")
-        print()  # Move to next line
-
-    def update_transcript_ids(self, transcript_id_mappings: Dict[str, Dict[str, Any]]) -> None:
-        """Update transcript IDs in the database.
+    def _update_id_batch(self, updates: List[Tuple]) -> None:
+        """Update a batch of transcript records with alternative IDs.
         
         Args:
-            transcript_id_mappings: Dictionary mapping transcript IDs to other IDs
+            updates: List of update tuples (uniprot_ids, ncbi_ids, refseq_ids, 
+                    alt_gene_ids_json, alt_transcript_ids_json, gene_symbol)
+            
+        Raises:
+            DatabaseError: If batch update fails
         """
-        update_progress("Updating transcript IDs in the database...")
-        
-        if not transcript_id_mappings:
-            update_progress("No transcript ID mappings to update")
-            print()  # Move to next line
-            return
-        
         if not self.db_manager.cursor:
-            logger.error("No database connection")
-            return
+            raise DatabaseError("No database cursor available")
             
         try:
-            # Process in batches
-            updates = []
-            processed = 0
-            
-            # Initialize progress bar
-            pbar = tqdm(
-                total=len(transcript_id_mappings),
-                desc="Updating transcript records",
-                unit="records"
-            )
-            
-            # For periodic progress updates outside of tqdm
-            progress_line = ""
-            
-            for transcript_id, mappings in transcript_id_mappings.items():
-                # Prepare alt_transcript_ids JSON
-                alt_ids = {}
-                
-                # Store RefSeq IDs separately to also update the refseq_ids array field
-                refseq_ids = None
-                
-                # Add RefSeq transcript IDs if available
-                if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
-                    alt_ids['RefSeq'] = mappings['refseq_transcript_ids']
-                    # Also store them for the refseq_ids array field
-                    refseq_ids = mappings['refseq_transcript_ids']
-                
-                # Add Entrez transcript IDs if available
-                if 'entrez_transcript_ids' in mappings and mappings['entrez_transcript_ids']:
-                    alt_ids['Entrez'] = mappings['entrez_transcript_ids']
-                
-                # Skip if no alternative IDs found
-                if not alt_ids:
-                    continue
-                    
-                # Add to updates batch - now including refseq_ids
-                updates.append((
-                    json.dumps(alt_ids),
-                    refseq_ids,  # This is new - pass RefSeq IDs to update the array column
-                    transcript_id
-                ))
-                
-                if len(updates) >= self.batch_size:
-                    execute_batch(
-                        self.db_manager.cursor,
-                        """
-                        UPDATE cancer_transcript_base
-                        SET 
-                            alt_transcript_ids = alt_transcript_ids || %s::jsonb,
-                            refseq_ids = CASE WHEN %s IS NOT NULL THEN %s ELSE refseq_ids END
-                        WHERE transcript_id = %s
-                        """,
-                        [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
-                        page_size=self.batch_size
-                    )
-                    processed += len(updates)
-                    pbar.update(len(updates))
-                    updates = []
-            
-            # Process remaining updates
-            if updates:
-                execute_batch(
-                    self.db_manager.cursor,
+            # Use with context to ensure transaction is managed properly
+            with self.get_db_transaction():
+                self.execute_batch(
                     """
                     UPDATE cancer_transcript_base
                     SET 
-                        alt_transcript_ids = alt_transcript_ids || %s::jsonb,
-                        refseq_ids = CASE WHEN %s IS NOT NULL THEN %s ELSE refseq_ids END
-                    WHERE transcript_id = %s
+                        uniprot_ids = %s::text[],
+                        ncbi_ids = %s::text[],
+                        refseq_ids = %s::text[],
+                        alt_gene_ids = COALESCE(alt_gene_ids, '{}'::jsonb) || %s::jsonb,
+                        alt_transcript_ids = COALESCE(alt_transcript_ids, '{}'::jsonb) || %s::jsonb
+                    WHERE gene_symbol = %s
                     """,
-                    [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
-                    page_size=self.batch_size
+                    updates
                 )
-                processed += len(updates)
-                pbar.update(len(updates))
-                
-            pbar.close()
-            update_progress(f"Updated {processed} transcript records with alternative IDs")
-            print()  # Move to next line
-            
-            if self.db_manager.conn:
-                self.db_manager.conn.commit()
                 
         except Exception as e:
-            if self.db_manager.conn:
-                self.db_manager.conn.rollback()
-            logger.error(f"Error updating transcript IDs: {e}")
-
-    def enrich_transcript_ids(self) -> None:
-        """Enrich transcript IDs using various mapping sources."""
-        update_progress("Starting transcript ID enrichment...")
-        
-        # Download and process Ensembl-RefSeq mapping
-        ensembl_refseq_file = self.download_ensembl_refseq()
-        ensembl_refseq_mappings = self.process_ensembl_refseq(ensembl_refseq_file)
-        
-        # Download and process Ensembl-Entrez mapping
-        ensembl_entrez_file = self.download_ensembl_entrez()
-        ensembl_entrez_mappings = self.process_ensembl_entrez(ensembl_entrez_file)
-        
-        # Merge transcript ID mappings
-        transcript_id_mappings = {}
-        
-        # Start with RefSeq mappings
-        for transcript_id, mappings in ensembl_refseq_mappings.items():
-            if transcript_id not in transcript_id_mappings:
-                transcript_id_mappings[transcript_id] = {}
-            transcript_id_mappings[transcript_id].update(mappings)
-        
-        # Add Entrez mappings
-        for transcript_id, mappings in ensembl_entrez_mappings.items():
-            if transcript_id not in transcript_id_mappings:
-                transcript_id_mappings[transcript_id] = {}
-            transcript_id_mappings[transcript_id].update(mappings)
-        
-        # Update the database with merged mappings
-        self.update_transcript_ids(transcript_id_mappings)
-        
-        update_progress("Transcript ID enrichment completed")
-        print()  # Move to next line
-
-    def run(self) -> None:
-        """Run the complete ID enrichment pipeline."""
-        update_progress("Starting ID enrichment pipeline...")
-        print()  # Move to next line since this is a major step
-        
-        try:
-            # Ensure proper database schema
-            self._ensure_db_schema()
-            
-            # Enrich transcript IDs
-            self.enrich_transcript_ids()
-            
-            # Enrich gene IDs
-            self.enrich_gene_ids()
-            
-            # Verify results
-            self.verify_id_enrichment()
-            
-            update_progress("ID enrichment pipeline completed successfully")
-            print()  # Move to next line after completion
-            
-        except Exception as e:
-            logger.error(f"ID enrichment failed: {e}")
-            raise
-
-    def verify_id_enrichment(self) -> None:
-        """Verify results of ID enrichment process."""
-        
-        if not self.db_manager.cursor:
-            logger.error("No database connection")
+            self.logger.error(f"Batch ID update failed: {e}")
+            raise DatabaseError(f"Failed to update ID batch: {e}")
+    
+    def _verify_id_updates(self) -> None:
+        """Verify ID updates with database statistics."""
+        if not self.ensure_connection():
+            self.logger.warning("Cannot verify results - database connection unavailable")
             return
-        
+            
         try:
-            # Count records with different ID types
+            if not self.db_manager.cursor:
+                self.logger.warning("Cannot verify results - no database cursor available")
+                return
+                
             self.db_manager.cursor.execute("""
                 SELECT 
-                    COUNT(*) as total_genes,
-                    COUNT(CASE WHEN alt_gene_ids IS NOT NULL 
-                               AND alt_gene_ids != '{}'::jsonb THEN 1 END) as with_alt_gene_ids,
-                    COUNT(CASE WHEN array_length(uniprot_ids, 1) > 0 THEN 1 END) as with_uniprot,
-                    COUNT(CASE WHEN array_length(ncbi_ids, 1) > 0 THEN 1 END) as with_ncbi,
-                    COUNT(CASE WHEN array_length(refseq_ids, 1) > 0 THEN 1 END) as with_refseq,
-                    COUNT(CASE WHEN alt_transcript_ids IS NOT NULL 
-                               AND alt_transcript_ids != '{}'::jsonb THEN 1 END) as with_alt_transcript_ids,
-                    COUNT(CASE WHEN alt_gene_ids ? 'pdb_ids' THEN 1 END) as with_pdb,
-                    COUNT(CASE WHEN alt_gene_ids ? 'mim_ids' THEN 1 END) as with_omim,
-                    COUNT(CASE WHEN alt_gene_ids ? 'go_terms' THEN 1 END) as with_go_terms,
-                    COUNT(CASE WHEN source_references ? 'uniprot' THEN 1 END) as with_uniprot_refs
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN uniprot_ids IS NOT NULL 
+                              AND array_length(uniprot_ids, 1) > 0 
+                         THEN 1 END) as with_uniprot,
+                    COUNT(CASE WHEN ncbi_ids IS NOT NULL 
+                              AND array_length(ncbi_ids, 1) > 0 
+                         THEN 1 END) as with_ncbi,
+                    COUNT(CASE WHEN refseq_ids IS NOT NULL 
+                              AND array_length(refseq_ids, 1) > 0 
+                         THEN 1 END) as with_refseq,
+                    COUNT(CASE WHEN alt_gene_ids != '{}'::jsonb 
+                         THEN 1 END) as with_alt_gene,
+                    COUNT(CASE WHEN alt_transcript_ids != '{}'::jsonb 
+                         THEN 1 END) as with_alt_transcript
                 FROM cancer_transcript_base
             """)
             
-            result = self.db_manager.cursor.fetchone()
-            
-            if result:
-                # For statistics that take multiple lines, use print instead of update_progress
-                print("\nID Enrichment Statistics:")
-                print(f"- Total genes in database: {result[0]:,}")
-                print(f"- Genes with alternative gene IDs: {result[1]:,} ({result[1]/result[0]*100:.1f}%)")
-                print(f"- Genes with UniProt IDs: {result[2]:,} ({result[2]/result[0]*100:.1f}%)")
-                print(f"- Genes with NCBI IDs: {result[3]:,} ({result[3]/result[0]*100:.1f}%)")
-                print(f"- Genes with RefSeq IDs: {result[4]:,} ({result[4]/result[0]*100:.1f}%)")
-                print(f"- Transcripts with alternative transcript IDs: {result[5]:,} ({result[5]/result[0]*100:.1f}%)")
-                print(f"- Genes with PDB structure IDs: {result[6]:,} ({result[6]/result[0]*100:.1f}%)")
-                print(f"- Genes with OMIM disease IDs: {result[7]:,} ({result[7]/result[0]*100:.1f}%)")
-                print(f"- Genes with GO terms: {result[8]:,} ({result[8]/result[0]*100:.1f}%)")
-                print(f"- Genes with UniProt literature references: {result[9]:,} ({result[9]/result[0]*100:.1f}%)")
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                # Create table for better visualization
+                table = Table(title="ID Enrichment Results")
+                table.add_column("Metric", style="cyan")
+                table.add_column("Count", style="green")
+                table.add_column("Coverage", style="yellow")
                 
-                # Check coverage redundancy between sources
-                self.db_manager.cursor.execute("""
-                    SELECT 
-                        COUNT(CASE WHEN alt_gene_ids ? 'ensembl_gene_id' AND 
-                                    alt_gene_ids ->> 'ensembl_gene_id' IS NOT NULL THEN 1 END) as ensembl_from_alt,
-                        COUNT(CASE WHEN alt_gene_ids ? 'refseq_id' AND 
-                                    alt_gene_ids ->> 'refseq_id' IS NOT NULL THEN 1 END) as refseq_from_alt
-                    FROM cancer_transcript_base
-                """)
+                total = stats[0]
+                with_uniprot = stats[1]
+                with_ncbi = stats[2]
+                with_refseq = stats[3]
+                with_alt_gene = stats[4]
+                with_alt_transcript = stats[5]
                 
-                redundancy = self.db_manager.cursor.fetchone()
-                if redundancy:
-                    print("\nSource Redundancy Analysis:")
-                    print(f"- Genes with Ensembl IDs from alternative sources: {redundancy[0]:,}")
-                    print(f"- Genes with RefSeq IDs from alternative sources: {redundancy[1]:,}")
+                table.add_row(
+                    "Total Records", 
+                    f"{total:,}", 
+                    "100.0%"
+                )
+                table.add_row(
+                    "With UniProt IDs", 
+                    f"{with_uniprot:,}", 
+                    f"{with_uniprot/max(1, total)*100:.1f}%"
+                )
+                table.add_row(
+                    "With NCBI IDs", 
+                    f"{with_ncbi:,}", 
+                    f"{with_ncbi/max(1, total)*100:.1f}%"
+                )
+                table.add_row(
+                    "With RefSeq IDs", 
+                    f"{with_refseq:,}", 
+                    f"{with_refseq/max(1, total)*100:.1f}%"
+                )
+                table.add_row(
+                    "With Alt Gene IDs", 
+                    f"{with_alt_gene:,}", 
+                    f"{with_alt_gene/max(1, total)*100:.1f}%"
+                )
+                table.add_row(
+                    "With Alt Transcript IDs", 
+                    f"{with_alt_transcript:,}", 
+                    f"{with_alt_transcript/max(1, total)*100:.1f}%"
+                )
+                
+                console = Console()
+                console.print(table)
+                
+                self.logger.info(
+                    f"ID enrichment statistics:\n"
+                    f"- Total records: {total:,}\n"
+                    f"- Records with UniProt IDs: {with_uniprot:,} ({with_uniprot/max(1, total)*100:.1f}%)\n"
+                    f"- Records with NCBI IDs: {with_ncbi:,} ({with_ncbi/max(1, total)*100:.1f}%)\n"
+                    f"- Records with RefSeq IDs: {with_refseq:,} ({with_refseq/max(1, total)*100:.1f}%)\n"
+                    f"- Records with Alt Gene IDs: {with_alt_gene:,} ({with_alt_gene/max(1, total)*100:.1f}%)\n"
+                    f"- Records with Alt Transcript IDs: {with_alt_transcript:,} ({with_alt_transcript/max(1, total)*100:.1f}%)"
+                )
                 
         except Exception as e:
-            logger.error(f"Error verifying ID enrichment: {e}")
+            self.logger.warning(f"Failed to verify ID updates: {e}")
     
-    def _ensure_db_schema(self) -> None:
-        """Ensure database schema has the required columns for ID enrichment."""
+    def run(self) -> None:
+        """Run the complete ID enrichment pipeline using only UniProt mapping data.
         
-        if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
+        Steps:
+        1. Download UniProt mapping file
+        2. Filter to ensure human-only entries
+        3. Process mapping to get comprehensive ID mappings
+        4. Update transcript records with all available IDs
         
+        Raises:
+            Various ETLError subclasses based on failure point
+        """
         try:
-            # Check if required columns exist
-            required_columns = [
-                'alt_gene_ids',
-                'uniprot_ids',
-                'ncbi_ids',
-                'refseq_ids',
-                'alt_transcript_ids',
-            ]
+            self.logger.info("Starting ID enrichment pipeline using UniProt mapping")
             
-            for column in required_columns:
-                if not self.db_manager.check_column_exists('cancer_transcript_base', column):
-                    raise RuntimeError(f"Required column '{column}' missing in schema v0.1.4")
+            # Check schema version
+            if not self.ensure_schema_version('v0.1.4'):
+                raise DatabaseError("Incompatible database schema version")
             
-            update_progress("Database schema validated for ID enrichment")
+            # Download UniProt mapping file
+            uniprot_file = self.download_uniprot_mapping()
+            
+            # Process UniProt mapping to get comprehensive ID mappings
+            gene_mapping = self.process_uniprot_mapping(uniprot_file)
+            
+            # Update transcript records with all available IDs
+            self.update_transcript_ids(gene_mapping)
+            
+            self.logger.info("ID enrichment with UniProt mapping data completed successfully")
             
         except Exception as e:
-            logger.error(f"Database schema validation failed: {e}")
+            self.logger.error(f"ID enrichment failed: {e}")
             raise

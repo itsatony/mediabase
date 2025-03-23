@@ -1,412 +1,189 @@
-"""Transcript ETL module for processing gene transcript data."""
+"""Transcript processing module for Cancer Transcriptome Base.
 
-# Standard library imports
-from pathlib import Path
-from typing import Dict, List, DefaultDict, Any, Tuple
-from datetime import datetime, timedelta
-import random
+This module handles downloading, parsing, and loading gene transcript data from
+Gencode GTF files into the database. It provides the foundation for all other
+data enrichment in the pipeline.
+"""
+
 import logging
+import json
+import re
 import hashlib
-from gtfparse import read_gtf
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple, Set
+
+import gtfparse
 import pandas as pd
 import requests
-import json
-import os
 from tqdm import tqdm
-
-# Third party imports
 from psycopg2.extras import execute_batch
 
-# Local imports
-from ..utils.validation import validate_transcript_data
+from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 from ..db.database import get_db_manager
 
-logger = logging.getLogger(__name__)
-
-class TranscriptProcessor:
-    """Process and load transcript data into the database."""
-
+class TranscriptProcessor(BaseProcessor):
+    """Process gene transcript data from GTF files.
+    
+    Handles downloading, parsing and loading of transcript data into the
+    cancer_transcript_base table in the database.
+    """
+    
     def __init__(self, config: Dict[str, Any]) -> None:
-        """Initialize the transcript processor.
+        """Initialize transcript processor with configuration.
         
         Args:
-            config: Configuration dictionary containing:
-                - gtf_url: URL to download Gencode GTF file
-                - cache_dir: Directory to store downloaded files
-                - batch_size: Size of batches for database operations
-                - limit_transcripts: Optional limit on number of transcripts to process
+            config: Configuration dictionary containing all settings
+                   including nested db configuration
         """
-        self.config = config
-        self.cache_dir = Path(config['cache_dir'])
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.batch_size = config.get('batch_size', 1000)
+        super().__init__(config)
         
-        # Add transcript limit configuration
+        self.gtf_url = config.get('gtf_url')
+        if not self.gtf_url:
+            raise ValueError("GTF URL not configured")
+            
+        # File paths derived from cache directory
+        self.transcript_dir = self.cache_dir / 'transcripts'
+        self.transcript_dir.mkdir(exist_ok=True)
+        
+        # Processing configuration
         self.limit_transcripts = config.get('limit_transcripts')
         if self.limit_transcripts is not None:
-            if not isinstance(self.limit_transcripts, int) or self.limit_transcripts <= 0:
-                raise ValueError("limit_transcripts must be a positive integer")
-            logger.info(f"Limiting transcript processing to {self.limit_transcripts} transcripts")
-        
-        # Add database configuration
-        self.db_config = {
-            'host': config['host'],
-            'port': config['port'],
-            'dbname': config['dbname'],
-            'user': config['user'],
-            'password': config['password']
-        }
-        
-        # Add cache control settings
-        self.cache_ttl = int(config.get('cache_ttl', 86400*7))  # 24 hours * 7 default cache
-        self.cache_meta_file = self.cache_dir / "gtf_meta.json"
-        self.db_manager = get_db_manager(self.db_config)
-
-    def _get_cache_key(self, url: str) -> str:
-        """Generate a cache key from URL."""
-        return hashlib.sha256(url.encode()).hexdigest()
-
-    def _is_cache_valid(self, cache_key: str) -> bool:
-        """Check if cache is still valid."""
-        if not self.cache_meta_file.exists():
-            return False
-            
-        try:
-            with open(self.cache_meta_file, 'r') as f:
-                meta = json.load(f)
-                
-            if cache_key not in meta:
-                return False
-                
-            cache_time = datetime.fromisoformat(meta[cache_key]['timestamp'])
-            return (datetime.now() - cache_time) < timedelta(seconds=self.cache_ttl)
-        except (json.JSONDecodeError, KeyError, ValueError):
-            return False
-
-    def _update_cache_meta(self, cache_key: str, file_path: Path) -> None:
-        """Update cache metadata."""
-        meta = {}
-        if self.cache_meta_file.exists():
             try:
-                with open(self.cache_meta_file, 'r') as f:
-                    meta = json.load(f)
-            except json.JSONDecodeError:
-                meta = {}
-        
-        meta[cache_key] = {
-            'timestamp': datetime.now().isoformat(),
-            'file_path': str(file_path)
-        }
-        
-        with open(self.cache_meta_file, 'w') as f:
-            json.dump(meta, f)
-
+                self.limit_transcripts = int(self.limit_transcripts)
+                self.logger.info(f"Processing limited to {self.limit_transcripts} transcripts")
+            except (ValueError, TypeError):
+                self.logger.warning(f"Invalid limit_transcripts value: {self.limit_transcripts}, using all transcripts")
+                self.limit_transcripts = None
+    
     def download_gtf(self) -> Path:
-        """Download GTF file if not in cache or cache is invalid."""
-        cache_key = self._get_cache_key(self.config['gtf_url'])
-        gtf_path = self.cache_dir / f"gencode_{cache_key}.gtf.gz"
+        """Download GTF file with caching.
         
-        # Check if we have a valid cached file
-        if gtf_path.exists() and self._is_cache_valid(cache_key):
-            logger.info(f"Using cached GTF file: {gtf_path}")
-            return gtf_path
-
-        # Download new file
-        logger.info(f"Downloading GTF from {self.config['gtf_url']}")
-        response = requests.get(self.config['gtf_url'], stream=True)
-        total_size = int(response.headers.get('content-length', 0))
+        Returns:
+            Path to the GTF file
+            
+        Raises:
+            DownloadError: If download fails
+        """
+        if not self.gtf_url:
+            raise DownloadError("GTF URL not configured")
         
-        with open(gtf_path, 'wb') as f, tqdm(
-            desc="Downloading GTF",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    pbar.update(len(chunk))
-        
-        self._update_cache_meta(cache_key, gtf_path)
-        logger.info(f"GTF file downloaded to {gtf_path}")
-        return gtf_path
-
-    def _inspect_gtf_structure(self, df: pd.DataFrame) -> None:
-        """Log information about the GTF file structure."""
-        logger.info(f"GTF columns: {', '.join(df.columns)}")
-        logger.info(f"Feature types: {', '.join(df['feature'].unique())}")
-        logger.info(f"Total entries: {len(df)}")
-        logger.info(f"Transcript entries: {len(df[df['feature'] == 'transcript'])}")
-
-    def _get_attributes_column(self, df: pd.DataFrame) -> str:
-        """Find the attributes column in GTF dataframe."""
-        for col_name in ['attribute', 'attributes', 'Additional attributes']:
-            if col_name in df.columns:
-                return col_name
-        raise ValueError("Could not find attributes column in GTF file")
-
-    def extract_alt_ids(self, row: pd.Series) -> Dict[str, Dict[str, str]]:
-        """Extract alternative IDs from transcript attributes."""
-        alt_transcript_ids = {}
-        alt_gene_ids = {}
-        
-        # Extract HAVANA IDs if available
-        if 'havana_transcript' in row:
-            alt_transcript_ids['HAVANA'] = row.get('havana_transcript')
-        
-        if 'havana_gene' in row:
-            alt_gene_ids['HAVANA'] = row.get('havana_gene')
-        
-        # Extract CCDS ID if available
-        if 'ccdsid' in row:
-            alt_transcript_ids['CCDS'] = row.get('ccdsid')
-        
-        # Extract HGNC ID if available
-        if 'gene_id' in row and 'gene_name' in row:
-            gene_name = row.get('gene_name')
-            if gene_name:
-                alt_gene_ids['HGNC'] = f"HGNC:{row.get('hgnc_id', '')}"
-        
-        return {
-            'alt_transcript_ids': alt_transcript_ids,
-            'alt_gene_ids': alt_gene_ids
-        }
-
-    def process_gtf(self, gtf_path: Path) -> pd.DataFrame:
-        """Process GTF file and extract transcript data."""
-        logger.info(f"Processing GTF file: {gtf_path}")
-        
-        # Read GTF file using gtfparse
         try:
-            df = read_gtf(str(gtf_path))
-            self._inspect_gtf_structure(df)
+            # Use the BaseProcessor download method
+            return self.download_file(
+                url=self.gtf_url,  # Now we've verified it's not None
+                file_path=self.transcript_dir / f"gencode.gtf.gz"
+            )
+        except Exception as e:
+            raise DownloadError(f"Failed to download GTF file: {e}")
+    
+    def parse_gtf(self, gtf_path: Path) -> pd.DataFrame:
+        """Parse GTF file and extract transcript data.
+        
+        Args:
+            gtf_path: Path to the GTF file
             
-            # Filter to transcript level
+        Returns:
+            DataFrame containing transcript data
+            
+        Raises:
+            ProcessingError: If GTF parsing fails
+        """
+        try:
+            self.logger.info(f"Parsing GTF file: {gtf_path}")
+            df = gtfparse.read_gtf(gtf_path)
+            
+            # Filter to transcript entries only
             transcripts = df[df['feature'] == 'transcript'].copy()
-            total_transcripts = len(transcripts)
             
-            # Record the total count but DON'T limit yet
-            logger.info(f"Processing all {total_transcripts} transcripts")
-            
-            # Extract coordinates
+            # Parse coordinates into structured format
             transcripts['coordinates'] = transcripts.apply(
                 lambda row: {
-                    'start': row['start'],
-                    'end': row['end'],
+                    'start': int(row['start']),
+                    'end': int(row['end']),
                     'strand': 1 if row['strand'] == '+' else -1
                 },
                 axis=1
             )
             
-            # Extract alternative IDs
-            alt_ids = transcripts.apply(self.extract_alt_ids, axis=1)
-            transcripts['alt_transcript_ids'] = [row['alt_transcript_ids'] for row in alt_ids]
-            transcripts['alt_gene_ids'] = [row['alt_gene_ids'] for row in alt_ids]
+            # Normalize gene_id by stripping version number if present
+            transcripts['gene_id'] = transcripts['gene_id'].str.split('.').str[0]
             
-            # Log summary of processed data
-            logger.info(
-                f"Processed GTF data:\n"
-                f"- Total transcripts: {len(transcripts)}\n"
-                f"- Unique genes: {transcripts['gene_id'].nunique()}"
-            )
+            # Apply limit if specified
+            if self.limit_transcripts:
+                self.logger.info(f"Limiting to {self.limit_transcripts} transcripts")
+                transcripts = transcripts.head(self.limit_transcripts)
             
+            self.logger.info(f"Parsed {len(transcripts)} transcripts")
             return transcripts
             
         except Exception as e:
-            logger.error(f"Error processing GTF file: {e}")
-            raise
-
-    def prepare_transcript_records(
-        self,
-        df: pd.DataFrame
-    ) -> List[Tuple[str, str, str, str, str, Dict[str, Any], Dict[str, str], Dict[str, str]]]:
-        """Prepare transcript records for database insertion.
-        
-        Intelligently selects transcripts while ensuring gene type diversity,
-        with a preference for protein-coding genes.
+            raise ProcessingError(f"Failed to parse GTF file: {e}")
+    
+    def load_transcripts(self, transcripts: pd.DataFrame) -> None:
+        """Load transcript data into database.
         
         Args:
-            df: DataFrame containing transcript data
+            transcripts: DataFrame containing transcript data
             
-        Returns:
-            List of tuples formatted for database insertion
+        Raises:
+            DatabaseError: If database operations fail
         """
-        MAX_PERCENT_NON_CODING = 0.04  # 4% limit for each non-coding gene type
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
         
-        # FIX: Use self.limit_transcripts directly instead of trying to access it from self.config
-        TARGET_COUNT = self.limit_transcripts if self.limit_transcripts is not None else len(df)
-        PROTEIN_CODING_TARGET = int(TARGET_COUNT * 0.70)  # 70% protein coding genes target
-        
-        # Initialize tracking variables
-        records = []
-        gene_type_counts = DefaultDict(int)
-        processed_indices = set()
-        
-        # Progress tracking counters
-        picked_count = 0
-        failed_rules_count = 0
-        failed_assembly_count = 0
-        
-        # First, separate protein coding and non-protein coding transcripts
-        protein_coding_indices = []
-        other_type_indices = []
-        
-        # Categorize all indices by gene_type
-        gene_types_by_index = {}
-        for idx in df.index:
-            gene_type = df.loc[idx].get('gene_type', '')
-            gene_types_by_index[idx] = gene_type
-            if gene_type == 'protein_coding':
-                protein_coding_indices.append(idx)
-            else:
-                other_type_indices.append(idx)
-        
-        # Shuffle both lists to randomize selection
-        random.shuffle(protein_coding_indices)
-        random.shuffle(other_type_indices)
-        
-        # Create progress bar
-        pbar = tqdm(total=TARGET_COUNT, desc="Preparing transcripts")
-        
-        # First, take protein coding genes up to PROTEIN_CODING_TARGET or available amount
-        available_protein_coding = min(len(protein_coding_indices), PROTEIN_CODING_TARGET)
-        pc_to_process = protein_coding_indices[:available_protein_coding]
-        
-        # Then distribute remaining slots across non-coding gene types
-        remaining_slots = TARGET_COUNT - available_protein_coding
-        non_coding_types = set(gene_types_by_index[idx] for idx in other_type_indices)
-        
-        # Initialize record creation process
-        indices_to_process = pc_to_process + other_type_indices
-        current_index = 0
-        
-        # Process records until we reach target count or run out of candidates
-        while len(records) < TARGET_COUNT and current_index < len(indices_to_process):
-            idx = indices_to_process[current_index]
-            current_index += 1
-            picked_count += 1
-            
-            if idx in processed_indices:
-                continue
-                
-            processed_indices.add(idx)
-            
-            # Get the record and its gene type
-            row = df.loc[idx]
-            gene_type = row.get('gene_type', '')
-            
-            # Dynamic gene type percentage calculation
-            current_type_count = gene_type_counts[gene_type]
-            current_total = len(records)
-            
-            # Different rules for protein coding vs non-protein coding
-            if str(gene_type).strip() == 'protein_coding':
-                # Accept if we haven't reached the protein coding target
-                if gene_type_counts[gene_type] < PROTEIN_CODING_TARGET:
-                    add_record = True
-                else:
-                    add_record = False
-                    failed_rules_count += 1
-            else:
-                # For non-coding genes, ensure no type exceeds MAX_PERCENT_NON_CODING of total
-                if current_total > 0:
-                    type_percent = current_type_count / current_total
-                    add_record = type_percent < MAX_PERCENT_NON_CODING
-                else:
-                    # For first records, always accept to bootstrap the process
-                    add_record = True
-                    
-                if not add_record:
-                    failed_rules_count += 1
-                    
-            # Create and add the record if rules passed
-            if add_record:
-                try:
-                    # Clean transcript_id and gene_id by removing version if present
-                    transcript_id = row.get('transcript_id')
-                    if transcript_id is None or transcript_id == '':
-                        failed_assembly_count += 1
-                        continue
-                        
-                    gene_id = row.get('gene_id', '')
-                    if gene_id:
-                        gene_id = gene_id.split('.')[0] if '.' in gene_id else gene_id
-                    
-                    record = (
-                        transcript_id,                          # transcript_id
-                        row.get('gene_name', ''),               # gene_symbol
-                        gene_id,                                # gene_id
-                        gene_type,                              # gene_type
-                        row.get('seqname', '').replace('chr', ''),  # chromosome
-                        json.dumps(row.get('coordinates', {})),  # coordinates
-                        json.dumps(row.get('alt_transcript_ids', {})),  # alt_transcript_ids
-                        json.dumps(row.get('alt_gene_ids', {}))  # alt_gene_ids
-                    )
-                    # Successfully created record, add it and update counter
-                    records.append(record)
-                    gene_type_counts[gene_type] += 1
-                    
-                    # Update progress bar
-                    pbar.update(1)
-                    
-                except Exception as e:
-                    failed_assembly_count += 1
-                    logger.debug(f"Failed to assemble record: {e}")
-                    continue
-            
-            # Update progress description
-            pbar.set_description(
-                f"Picked: {picked_count}/{len(df.index)} | "
-                f"Added: {len(records)}/{TARGET_COUNT} | "
-                f"Failed rules: {failed_rules_count} | "
-                f"Failed assembly: {failed_assembly_count}"
-            )
-            
-        # Close progress bar
-        pbar.close()
-        
-        # Log final statistics
-        logger.info(
-            f"Transcript record preparation complete:\n"
-            f"- Total picked: {picked_count}/{len(df.index)}\n"
-            f"- Successfully added: {len(records)}/{TARGET_COUNT}\n"
-            f"- Failed rule checks: {failed_rules_count}\n"
-            f"- Failed record assembly: {failed_assembly_count}"
-        )
-        
-        # Log gene type distribution for diagnosis
-        gene_type_distribution = dict(gene_type_counts)
-        logger.info(f"Gene type distribution in selected records: {gene_type_distribution}")
-        
-        if len(records) < TARGET_COUNT:
-            logger.warning(
-                f"Only {len(records)} records were prepared, which is less than the target of {TARGET_COUNT}. "
-                f"This could be due to restrictive filtering or issues with the source data."
-            )
-            
-        return records
-
-    def load_transcripts(self, records: List[Tuple]) -> None:
-        """Load transcript records into the database."""
-        if not records:
-            logger.warning("No transcript records to load")
-            return
-            
-        if not self.db_manager or not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
-            
         try:
-            logger.info(f"Loading {len(records)} transcript records into database")
+            # Prepare batches for insertion
+            self.logger.info("Preparing transcript data for database insertion")
             
-            # Execute in batches
-            execute_batch(
-                self.db_manager.cursor,
+            transcript_data = []
+            for _, row in transcripts.iterrows():
+                transcript_id = row.get('transcript_id', '')
+                gene_id = row.get('gene_id', '')
+                gene_name = row.get('gene_name', '')
+                gene_type = row.get('gene_type', '')
+                chromosome = row.get('seqname', '')
+                coordinates = row.get('coordinates', {})
+                
+                # Build default JSONB fields
+                expression_freq = json.dumps({'high': [], 'low': []})
+                
+                # Extract alt_transcript_ids
+                alt_transcript_ids = {}
+                for attr in ['ccdsid', 'havana_transcript']:
+                    if attr in row and row[attr]:
+                        key = 'CCDS' if attr == 'ccdsid' else 'HAVANA'
+                        alt_transcript_ids[key] = row[attr]
+                
+                # Extract alt_gene_ids
+                alt_gene_ids = {}
+                for attr in ['havana_gene', 'hgnc_id']:
+                    if attr in row and row[attr]:
+                        key = 'HAVANA' if attr == 'havana_gene' else 'HGNC'
+                        alt_gene_ids[key] = row[attr]
+                
+                # Add to batch
+                transcript_data.append((
+                    transcript_id,
+                    gene_name,
+                    gene_id,
+                    gene_type,
+                    chromosome,
+                    json.dumps(coordinates),
+                    expression_freq,
+                    json.dumps(alt_transcript_ids),
+                    json.dumps(alt_gene_ids)
+                ))
+            
+            # Use BaseProcessor execute_batch method
+            self.logger.info(f"Loading {len(transcript_data)} transcripts into database")
+            self.execute_batch(
                 """
                 INSERT INTO cancer_transcript_base (
                     transcript_id, gene_symbol, gene_id, gene_type, 
-                    chromosome, coordinates, alt_transcript_ids, alt_gene_ids
-                ) 
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+                    chromosome, coordinates, expression_freq,
+                    alt_transcript_ids, alt_gene_ids
+                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
                 ON CONFLICT (transcript_id) DO UPDATE SET
                     gene_symbol = EXCLUDED.gene_symbol,
                     gene_id = EXCLUDED.gene_id,
@@ -415,170 +192,40 @@ class TranscriptProcessor:
                     coordinates = EXCLUDED.coordinates,
                     alt_transcript_ids = EXCLUDED.alt_transcript_ids,
                     alt_gene_ids = EXCLUDED.alt_gene_ids
-                """,
-                records,
-                page_size=self.batch_size
+                """, 
+                transcript_data
             )
             
-            # Commit the transaction - safely check for connection
-            if self.db_manager.conn:
-                self.db_manager.conn.commit()
-                logger.info("Transcript loading completed successfully")
-            else:
-                logger.warning("Could not commit transaction - no active connection")
+            self.logger.info("Transcript data loaded successfully")
             
         except Exception as e:
-            logger.error(f"Error loading transcripts: {e}")
-            # Safely roll back if we have a connection
-            if self.db_manager.conn:
-                self.db_manager.conn.rollback()
-            raise
-
-    def validate_data(self, df: pd.DataFrame) -> bool:
-        """Validate the transcript dataframe."""
-        # Validate required columns
-        required_columns = ['transcript_id', 'gene_id', 'gene_type', 'seqname', 'start', 'end', 'strand']
-        for col in required_columns:
-            if col not in df.columns:
-                logger.error(f"Missing required column: {col}")
-                return False
-        
-        # Validate transcript IDs (non-empty)
-        if df['transcript_id'].isnull().any() or (df['transcript_id'] == '').any():
-            logger.error("Found null or empty transcript IDs")
-            return False
-        
-        # Count how many transcripts have alternative IDs
-        with_alt_transcript_ids = sum(1 for ids in df['alt_transcript_ids'] if ids)
-        with_alt_gene_ids = sum(1 for ids in df['alt_gene_ids'] if ids)
-        
-        logger.info(f"Transcripts with alternative transcript IDs: {with_alt_transcript_ids}/{len(df)}")
-        logger.info(f"Transcripts with alternative gene IDs: {with_alt_gene_ids}/{len(df)}")
-        
-        return True
-
+            raise DatabaseError(f"Failed to load transcripts: {e}")
+    
     def run(self) -> None:
-        """Run the complete transcript processing pipeline."""
+        """Run the full transcript processing pipeline.
+        
+        Steps:
+        1. Download GTF file
+        2. Parse transcripts
+        3. Load into database
+        
+        Raises:
+            various ETLError subclasses based on failure point
+        """
         try:
-            # Download GTF file
+            self.logger.info("Starting transcript processing pipeline")
+            
+            # Download GTF
             gtf_path = self.download_gtf()
             
-            # Process GTF data
-            df = self.process_gtf(gtf_path)
+            # Parse transcripts
+            transcripts = self.parse_gtf(gtf_path)
             
-            # Validate processed data
-            if not self.validate_data(df):
-                logger.error("Data validation failed")
-                return
+            # Load into database
+            self.load_transcripts(transcripts)
             
-            # Prepare records for database insertion
-            records = self.prepare_transcript_records(df)
-            
-            # Load records into database
-            self.load_transcripts(records)
-            
-            # Log completion statistics
-            if self.db_manager.cursor:
-                self.db_manager.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
-                result = self.db_manager.cursor.fetchone()
-                total_count = result[0] if result else 0
-                logger.info(f"Total transcripts in database: {total_count}")
-                
-                # Log if a limit was applied
-                if self.limit_transcripts is not None:
-                    logger.info(
-                        f"Transcript limit was set to {self.limit_transcripts}. "
-                        f"Final count in database: {total_count}"
-                    )
-            
-            logger.info("Transcript processing pipeline completed successfully")
+            self.logger.info("Transcript processing completed successfully")
             
         except Exception as e:
-            logger.error(f"Transcript processing pipeline failed: {e}")
-            raise
-
-    def update_transcript_ids(self, transcript_id_mappings: Dict[str, Dict[str, Any]]) -> None:
-        """Update transcript IDs in the database."""
-        
-        try:
-            # Process in batches
-            updates = []
-            processed = 0
-            
-            for transcript_id, mappings in transcript_id_mappings.items():
-                # Prepare alt_ids dictionary
-                alt_ids = {}
-                
-                # Add RefSeq transcript IDs if available
-                if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
-                    alt_ids['RefSeq'] = mappings['refseq_transcript_ids']
-                
-                # Add any other alternative IDs from mappings
-                if 'entrez_transcript_ids' in mappings:
-                    alt_ids['Entrez'] = mappings['entrez_transcript_ids']
-                
-                # Store RefSeq IDs separately to update the refseq_ids array field
-                refseq_ids = None
-                if 'refseq_transcript_ids' in mappings and mappings['refseq_transcript_ids']:
-                    # Ensure we have a clean list of strings
-                    refseq_ids = [str(r).strip() for r in mappings['refseq_transcript_ids'] if r]
-                    refseq_ids = list(set(filter(None, refseq_ids)))  # Remove duplicates and empty strings
-                
-                # Add to updates batch - now with proper array handling
-                updates.append((
-                    json.dumps(alt_ids),
-                    refseq_ids,  # This will be cast to text[] by Postgres
-                    transcript_id
-                ))
-                
-                if len(updates) >= self.batch_size:
-                    execute_batch(
-                        self.db_manager.cursor,
-                        """
-                        UPDATE cancer_transcript_base
-                        SET 
-                            alt_transcript_ids = alt_transcript_ids || %s::jsonb,
-                            refseq_ids = CASE 
-                                WHEN %s IS NOT NULL THEN %s::text[]  -- Explicit cast to text array
-                                ELSE refseq_ids 
-                            END
-                        WHERE transcript_id = %s
-                        """,
-                        [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
-                        page_size=self.batch_size
-                    )
-                    updates = []
-                    processed += self.batch_size
-            
-            # Process remaining updates
-            if updates:
-                execute_batch(
-                    self.db_manager.cursor,
-                    """
-                    UPDATE cancer_transcript_base
-                    SET 
-                        alt_transcript_ids = alt_transcript_ids || %s::jsonb,
-                        refseq_ids = CASE 
-                            WHEN %s IS NOT NULL THEN %s::text[]  -- Explicit cast to text array
-                            ELSE refseq_ids 
-                        END
-                    WHERE transcript_id = %s
-                    """,
-                    [(json_data, ids, ids, t_id) for json_data, ids, t_id in updates],
-                    page_size=self.batch_size
-                )
-                processed += len(updates)
-            
-            # Commit the transaction - safely check for connection
-            if self.db_manager.conn:
-                self.db_manager.conn.commit()
-                logger.info(f"Transcript ID update completed successfully, processed {processed} records")
-            else:
-                logger.warning("Could not commit transaction - no active connection")
-            
-        except Exception as e:
-            logger.error(f"Error updating transcript IDs: {e}")
-            # Safely roll back if we have a connection
-            if self.db_manager.conn:
-                self.db_manager.conn.rollback()
+            self.logger.error(f"Transcript processing failed: {e}")
             raise

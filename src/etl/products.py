@@ -1,540 +1,470 @@
-"""Gene product classification module for cancer transcriptome base."""
+"""Gene product classification module for cancer transcriptome base.
+
+This module provides functionality for classifying gene products based on
+UniProt features, GO terms, and other annotations. It enriches transcript
+records with product_type classifications.
+"""
 
 # Standard library imports
-import logging
-import gzip
 import json
+import gzip
 import os
-import subprocess
-import sys
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Tuple, Iterator
+from datetime import datetime, timedelta
 
 # Third party imports
 import pandas as pd
+import requests
+from tqdm import tqdm
 from psycopg2.extras import execute_batch
+from rich.console import Console
 
 # Local imports
-from ..utils import validate_gene_symbol
-from ..db.database import get_db_manager
-from ..etl.publications import Publication, PublicationsProcessor
-from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text, format_pmid_url, merge_publication_references
-
-logger = logging.getLogger(__name__)
+from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
+from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
+from .publications import Publication, PublicationsProcessor
 
 # Constants
-DEFAULT_BATCH_SIZE = 100
-DEFAULT_CACHE_DIR = '/tmp/mediabase/cache'
+DEFAULT_PRODUCT_TYPES = [
+    "enzyme", "kinase", "phosphatase", "protease", "transcription_factor",
+    "ion_channel", "receptor", "transporter", "structural_protein", "signaling_molecule",
+    "dna_binding", "rna_binding", "lipid_binding", "metal_binding", "membrane_associated",
+    "secreted", "nuclear", "mitochondrial", "cytoplasmic", "chaperone", "regulatory_protein"
+]
 
-class ProductClassifier:
-    """Classifies gene products based on UniProt data."""
-
-    PRIMARY_TYPES = {
-        'transcription_factor': ['GO:0003700', 'transcription factor', 'DNA-binding'],
-        'kinase': ['GO:0016301', 'kinase activity'],
-        'phosphatase': ['GO:0016791', 'phosphatase activity'],
-        'protease': ['GO:0008233', 'peptidase activity'],
-        'ion_channel': ['GO:0005216', 'ion channel activity'],
-        'receptor': ['GO:0004872', 'receptor activity'],
-        'transporter': ['GO:0005215', 'transporter activity'],
-        'enzyme': ['GO:0003824', 'catalytic activity'],
-        'chaperone': ['GO:0003754', 'chaperone activity'],
-        'structural_protein': ['GO:0005198', 'structural molecule activity'],
-        'signaling_molecule': ['GO:0005102', 'signaling receptor binding'],
-        'hormone': ['hormone', 'GO:0005179'],
-        'growth_factor': ['growth factor', 'GO:0008083'],
-        'cytokine': ['cytokine', 'GO:0005125'],
-        # ... add more primary types
-    }
-
-    FUNCTIONAL_MODIFIERS = {
-        'membrane_associated': ['GO:0016020', 'membrane'],
-        'secreted': ['GO:0005576', 'extracellular region'],
-        'nuclear': ['GO:0005634', 'nucleus'],
-        'mitochondrial': ['GO:0005739', 'mitochondrion'],
-        'cytoplasmic': ['GO:0005737', 'cytoplasm'],
-        # ... add more modifiers
-    }
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
-        """Initialize the classifier.
+class ProductClassifier(BaseProcessor):
+    """Classifies gene products based on features, GO terms, and annotations."""
+    
+    def __init__(self, config: Dict[str, Any]) -> None:
+        """Initialize the product classifier with configuration.
         
         Args:
-            config: Optional configuration dictionary with settings
-                   Can include 'db' key with database configuration
+            config: Configuration dictionary containing cache settings, etc.
         """
-        self.config = config or {}
+        super().__init__(config)
         
-        # Cache directory setup
-        self.cache_dir = Path(os.getenv('MB_CACHE_DIR', DEFAULT_CACHE_DIR))
-        self.uniprot_dir = self.cache_dir / 'uniprot'
-        self.json_path = self.uniprot_dir / "uniprot_processed.json.gz"
+        # Set up processor-specific paths
+        self.products_dir = self.cache_dir / "products"
+        self.products_dir.mkdir(exist_ok=True)
         
-        # Database configuration - either from config or environment
-        if self.config.get('db'):
-            self.db_config = self.config.get('db', {})
-        else:
-            self.db_config = {
-                'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-                'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),
-                'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase'),
-                'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
-                'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
-            }
+        # UniProt data URL
+        self.uniprot_url = config.get(
+            'uniprot_url', 
+            'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/by_organism/HUMAN_9606_idmapping.dat.gz'
+        )
         
-        # Load processed data - with auto-download if missing
-        if not self.json_path.exists():
-            logger.info(f"UniProt data not found at {self.json_path}. Attempting to download...")
-            try:
-                self._download_uniprot_data()
-            except Exception as e:
-                logger.error(f"Failed to download UniProt data: {str(e)}")
-                raise FileNotFoundError(
-                    f"UniProt data not found at {self.json_path} and automatic download failed. "
-                    f"Error: {str(e)}"
-                ) from e
-                
-        try:
-            with gzip.open(self.json_path, 'rt') as f:
-                self._data = json.load(f)
-                logger.info(f"Loaded {len(self._data)} UniProt entries")
-        except Exception as e:
-            logger.error(f"Failed to load UniProt data: {str(e)}")
-            raise RuntimeError(f"Failed to load UniProt data: {str(e)}") from e
-
-    def _download_uniprot_data(self) -> None:
-        """Download and process UniProt data using the existing download script.
+        # Features mapping
+        self.feature_to_type = {
+            "kinase": ["kinase"],
+            "phosphatase": ["phosphatase"],
+            "protease": ["protease", "peptidase"],
+            "transcription factor": ["transcription_factor", "dna_binding"],
+            "ion channel": ["ion_channel", "channel"],
+            "receptor": ["receptor"],
+            "transport": ["transporter"],
+            "DNA binding": ["dna_binding", "transcription_factor"],
+            "RNA binding": ["rna_binding"],
+            "lipid binding": ["lipid_binding"],
+            "metal binding": ["metal_binding"],
+            "transmembrane": ["membrane_associated"],
+            "signal peptide": ["secreted"],
+            "nucleotide binding": ["enzyme"],
+            "cofactor": ["enzyme"],
+            "active site": ["enzyme"],
+            "regulatory": ["regulatory_protein"],
+            "chaperone": ["chaperone"],
+            "enzyme": ["enzyme"],
+            "structural": ["structural_protein"],
+            "zinc finger": ["dna_binding"],
+            "nuclear": ["nuclear"],
+            "mitochondrial": ["mitochondrial"],
+            "cytoplasm": ["cytoplasmic"],
+        }
         
-        Uses the original download_uniprot_data.py script to maintain compatibility.
+        # GO term mapping
+        self.go_to_type = {
+            "GO:0003700": ["transcription_factor", "dna_binding"],  # TF activity
+            "GO:0004672": ["kinase"],  # protein kinase activity
+            "GO:0004721": ["phosphatase"],  # phosphatase activity
+            "GO:0008233": ["protease"],  # peptidase activity
+            "GO:0005216": ["ion_channel"],  # ion channel activity
+            "GO:0004888": ["receptor"],  # transmembrane receptor activity
+            "GO:0005215": ["transporter"],  # transporter activity
+            "GO:0003677": ["dna_binding"],  # DNA binding
+            "GO:0003723": ["rna_binding"],  # RNA binding
+            "GO:0008289": ["lipid_binding"],  # lipid binding
+            "GO:0046872": ["metal_binding"],  # metal ion binding
+            "GO:0016020": ["membrane_associated"],  # membrane
+            "GO:0005576": ["secreted"],  # extracellular region
+            "GO:0005634": ["nuclear"],  # nucleus
+            "GO:0005739": ["mitochondrial"],  # mitochondrion
+            "GO:0005737": ["cytoplasmic"],  # cytoplasm
+            "GO:0006457": ["chaperone"],  # protein folding
+            "GO:0003824": ["enzyme"],  # catalytic activity
+            "GO:0005198": ["structural_protein"],  # structural molecule activity
+        }
+    
+    def download_uniprot_data(self) -> Path:
+        """Download UniProt data file with caching.
         
-        Raises:
-            FileNotFoundError: If download script cannot be found
-            RuntimeError: If download process fails
-        """
-        # Ensure the uniprot directory exists
-        self.uniprot_dir.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            # Find the download script path
-            script_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
-            script_path = script_dir / "download_uniprot_data.py"
+        Returns:
+            Path to the downloaded file
             
-            if not script_path.exists():
-                raise FileNotFoundError(f"Download script not found at {script_path}")
-                
-            logger.info(f"Running UniProt download script: {script_path}")
-            result = subprocess.run(
-                [sys.executable, str(script_path)], 
-                check=True,
-                capture_output=True,
-                text=True
+        Raises:
+            DownloadError: If download fails
+        """
+        try:
+            # Use the BaseProcessor download method
+            uniprot_file = self.download_file(
+                url=self.uniprot_url,
+                file_path=self.products_dir / "human_uniprot.dat.gz"
             )
             
-            logger.info(f"Download script completed successfully")
-            if result.stdout:
-                logger.debug(f"Download script output: {result.stdout}")
-            if result.stderr:
-                logger.warning(f"Download script warnings: {result.stderr}")
-                
-            if not self.json_path.exists():
-                raise FileNotFoundError(
-                    f"Download script completed but data file still not found at {self.json_path}"
-                )
-                
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Download script failed with exit code {e.returncode}: {e.stderr}")
-            raise RuntimeError(f"Failed to download UniProt data: {e.stderr}") from e
+            return uniprot_file
         except Exception as e:
-            logger.error(f"Error during UniProt data download: {str(e)}")
-            raise
-            
-        logger.info(f"Successfully downloaded and processed UniProt data to {self.json_path}")
-
-    def classify_product(self, gene_symbol: str) -> List[str]:
-        """Determine product types for a gene with comprehensive classification."""
-        if not validate_gene_symbol(gene_symbol):
-            logger.warning(f"Invalid gene symbol: {gene_symbol}")
-            return []
-            
-        data = self._data.get(gene_symbol)
-        if not data:
-            return []
-
-        classifications = set()
-        features = data.get('features', [])
-        go_terms = [term.get('id') for term in data.get('go_terms', [])]
-        keywords = data.get('keywords', [])
-        functions = data.get('functions', [])
-
-        # Classify primary types
-        for type_name, patterns in self.PRIMARY_TYPES.items():
-            if self._matches_patterns(patterns, go_terms, keywords, functions):
-                classifications.add(type_name)
-
-        # Add functional modifiers
-        for modifier, patterns in self.FUNCTIONAL_MODIFIERS.items():
-            if self._matches_patterns(patterns, go_terms, keywords, functions):
-                classifications.add(modifier)
-
-        return list(classifications)
-
-    def extract_publication_references(self, gene_symbol: str) -> List[Publication]:
-        """Extract publication references from UniProt data for a gene.
+            raise DownloadError(f"Failed to download UniProt data: {e}")
+    
+    def classify_gene(self, gene_data: Dict[str, Any]) -> List[str]:
+        """Classify a gene based on its features, GO terms, and keywords.
         
         Args:
-            gene_symbol: Gene symbol to extract references for
+            gene_data: Dictionary containing gene data with features, GO terms, etc.
             
         Returns:
-            List[Publication]: List of publication references
+            List of product type classifications
+        """
+        product_types: Set[str] = set()
+        
+        # Classify based on features
+        features = gene_data.get('features', {})
+        for feature_key, feature_value in features.items():
+            for key_pattern, types in self.feature_to_type.items():
+                if key_pattern.lower() in feature_key.lower():
+                    product_types.update(types)
+        
+        # Classify based on GO terms
+        go_terms = gene_data.get('go_terms', {})
+        for go_id in go_terms:
+            if go_id in self.go_to_type:
+                product_types.update(self.go_to_type[go_id])
+        
+        # Classify based on keywords
+        keywords = gene_data.get('keywords', [])
+        for keyword in keywords:
+            keyword_lower = keyword.lower()
+            for key_pattern, types in self.feature_to_type.items():
+                if key_pattern.lower() in keyword_lower:
+                    product_types.update(types)
+        
+        # Add additional info from function field
+        function_text = gene_data.get('function', '')
+        if function_text and isinstance(function_text, str):
+            # Look for common patterns in function descriptions
+            function_text = function_text.lower()
+            
+            if any(term in function_text for term in ["transcription factor", "dna-binding", "transcriptional regulator"]):
+                product_types.update(["transcription_factor", "dna_binding"])
+                
+            if any(term in function_text for term in ["kinase", "phosphorylation"]):
+                product_types.add("kinase")
+                
+            if any(term in function_text for term in ["phosphatase", "dephosphorylation"]):
+                product_types.add("phosphatase")
+                
+            if any(term in function_text for term in ["protease", "peptidase", "proteolytic"]):
+                product_types.add("protease")
+                
+            if any(term in function_text for term in ["ion channel", "ion transport"]):
+                product_types.add("ion_channel")
+                
+            if any(term in function_text for term in ["receptor", "ligand binding"]):
+                product_types.add("receptor")
+                
+            if any(term in function_text for term in ["transporter", "transport"]):
+                product_types.add("transporter")
+                
+            if "enzyme" in function_text or "catalytic" in function_text:
+                product_types.add("enzyme")
+        
+        return sorted(list(product_types))
+    
+    def extract_publication_references(self, gene_data: Dict[str, Any]) -> List[Publication]:
+        """Extract publication references from gene data.
+        
+        Args:
+            gene_data: Dictionary containing gene data
+            
+        Returns:
+            List of Publication references
         """
         publications: List[Publication] = []
         
-        if not validate_gene_symbol(gene_symbol) or gene_symbol not in self._data:
-            return publications
-            
-        data = self._data.get(gene_symbol, {})
-        
-        # Check references in the different sections of UniProt data
-        
-        # 1. Look in features sections
-        for feature in data.get('features', []):
-            # Features are sometimes stored as strings with embedded references
-            pmids = extract_pmids_from_text(feature)
-            
+        # Extract from function field
+        function_text = gene_data.get('function', '')
+        if function_text and isinstance(function_text, str):
+            pmids = extract_pmids_from_text(function_text)
             for pmid in pmids:
                 publication = PublicationsProcessor.create_publication_reference(
                     pmid=pmid,
-                    evidence_type="UniProt feature",
+                    evidence_type="function_description",
                     source_db="UniProt"
                 )
                 publications.append(publication)
         
-        # 2. Look in citations section if present
-        for citation in data.get('citations', []):
-            if isinstance(citation, str):
-                pmids = extract_pmids_from_text(citation)
+        # Extract from features
+        features = gene_data.get('features', {})
+        for feature_key, feature_value in features.items():
+            if isinstance(feature_value, str):
+                pmids = extract_pmids_from_text(feature_value)
                 for pmid in pmids:
                     publication = PublicationsProcessor.create_publication_reference(
                         pmid=pmid,
-                        evidence_type="UniProt citation",
+                        evidence_type=f"feature:{feature_key}",
                         source_db="UniProt"
                     )
                     publications.append(publication)
-            elif isinstance(citation, dict) and 'pmid' in citation:
-                publication = PublicationsProcessor.create_publication_reference(
-                    pmid=citation['pmid'],
-                    evidence_type="UniProt citation",
-                    source_db="UniProt"
-                )
-                if 'title' in citation:
-                    publication['title'] = citation['title']
-                if 'year' in citation:
-                    publication['year'] = citation['year']
-                if 'journal' in citation:
-                    publication['journal'] = citation['journal']
-                publications.append(publication)
-        
-        # 3. Look in functions section
-        for function_text in data.get('functions', []):
-            # Function descriptions may contain PMID references
-            pmids = extract_pmids_from_text(function_text)
-            
-            for pmid in pmids:
-                publication = PublicationsProcessor.create_publication_reference(
-                    pmid=pmid,
-                    evidence_type="UniProt function",
-                    source_db="UniProt"
-                )
-                publications.append(publication)
         
         return publications
-
-    def extract_uniprot_references(self, feature_data: Dict[str, Any]) -> List[Publication]:
-        """Extract publication references from UniProt feature data."""
-        publications: List[Publication] = []
-        
-        # Extract PMIDs from feature references
-        reference_text = feature_data.get('references', '')
-        pmids = extract_pmids_from_text(reference_text)
-        
-        for pmid in pmids:
-            publication = PublicationsProcessor.create_publication_reference(
-                pmid=pmid,
-                evidence_type=feature_data.get('feature_type', 'unknown'),
-                source_db="UniProt",
-                url=format_pmid_url(pmid)
-            )
-            publications.append(publication)
-        
-        return publications
-
-    def _matches_patterns(self, patterns: List[str], go_terms: List[str], 
-                         keywords: List[str], functions: List[str]) -> bool:
-        """Check if any pattern matches in GO terms, keywords, or functions."""
-        for pattern in patterns:
-            if pattern.startswith('GO:'):
-                if pattern in go_terms:
-                    return True
-            else:
-                pattern_lower = pattern.lower()
-                if any(pattern_lower in kw.lower() for kw in keywords):
-                    return True
-                if any(pattern_lower in func.lower() for func in functions):
-                    return True
-        return False
-
-    def update_database_classifications(self) -> None:
-        """Update product classifications and features in the database."""
-        db_manager = get_db_manager(self.db_config)
-        try:
-            if not db_manager.cursor:
-                raise RuntimeError("No database connection")
-            
-            # Get valid gene symbols first
-            db_manager.cursor.execute(r"""
-                SELECT DISTINCT gene_symbol 
-                FROM cancer_transcript_base 
-                WHERE gene_symbol ~ '^[A-Z][A-Z0-9\-]{0,254}$'
-            """)
-            genes = [row[0] for row in db_manager.cursor.fetchall()]
-            logger.info(f"Processing {len(genes)} genes for classification")
-            
-            # Process in batches
-            batch_size = self.config.get('batch_size', 100)
-            total_batches = (len(genes) + batch_size - 1) // batch_size
-            
-            # Create the temp table outside the batch loop
-            if db_manager.conn:
-                db_manager.conn.rollback()  # Clean slate
-                
-            db_manager.cursor.execute("""
-                DROP TABLE IF EXISTS temp_gene_data;
-                CREATE TEMP TABLE temp_gene_data (
-                    gene_symbol TEXT PRIMARY KEY,
-                    product_type TEXT[],
-                    features JSONB,
-                    molecular_functions TEXT[],
-                    publication_refs JSONB
-                );
-            """)
-            
-            for batch_idx in range(total_batches):
-                start_idx = batch_idx * batch_size
-                end_idx = min((batch_idx + 1) * batch_size, len(genes))
-                batch_genes = genes[start_idx:end_idx]
-                
-                try:
-                    # Clear temp table for this batch
-                    db_manager.cursor.execute("TRUNCATE TABLE temp_gene_data")
-                    
-                    # Process genes in current batch
-                    batch_data = []
-                    for gene in batch_genes:
-                        try:
-                            data = self._data.get(gene, {})
-                            classifications = self.classify_product(gene)
-                            
-                            # Process features
-                            features = {}
-                            for idx, feature in enumerate(data.get('features', [])):
-                                parts = feature.split(None, 2)
-                                if len(parts) >= 2:
-                                    feature_type = parts[0]
-                                    feature_id = f"{feature_type}_{idx}"
-                                    features[feature_id] = {
-                                        "type": feature_type,
-                                        "description": parts[1],
-                                        "evidence": "UniProt",
-                                    }
-                                    if len(parts) > 2:
-                                        features[feature_id]["additional_info"] = parts[2]
-                            
-                            # Process molecular functions
-                            molecular_functions = []
-                            for go_term in data.get('go_terms', []):
-                                if 'molecular_function' in go_term.get('aspect', '').lower():
-                                    molecular_functions.append(go_term['term'])
-                                    
-                            # Extract publication references
-                            publications = self.extract_publication_references(gene)
-                            publication_refs = [dict(pub) for pub in publications]
-                            
-                            if classifications or features or molecular_functions or publication_refs:
-                                batch_data.append((
-                                    gene,
-                                    classifications,
-                                    json.dumps(features) if features else '{}',
-                                    molecular_functions,
-                                    json.dumps(publication_refs) if publication_refs else '[]'
-                                ))
-                                
-                        except Exception as e:
-                            logger.error(f"Error processing gene {gene}: {e}")
-                            continue
-                    
-                    # Insert batch data into temp table
-                    if batch_data:
-                        execute_batch(
-                            db_manager.cursor,
-                            "INSERT INTO temp_gene_data VALUES (%s, %s, %s::jsonb, %s, %s::jsonb)",
-                            batch_data,
-                            page_size=1000
-                        )
-                        
-                        # Update main table from temp table
-                        db_manager.cursor.execute("""
-                            UPDATE cancer_transcript_base cb
-                            SET 
-                                product_type = tgd.product_type,
-                                features = tgd.features,
-                                molecular_functions = tgd.molecular_functions,
-                                source_references = jsonb_set(
-                                    COALESCE(cb.source_references, '{}'::jsonb),
-                                    '{uniprot}',
-                                    COALESCE(tgd.publication_refs, '[]'::jsonb)
-                                )
-                            FROM temp_gene_data tgd
-                            WHERE cb.gene_symbol = tgd.gene_symbol
-                        """)
-                        
-                        # Commit the batch
-                        if db_manager.conn:
-                            db_manager.conn.commit()
-                            
-                    logger.info(f"Processed batch {batch_idx + 1}/{total_batches} ({len(batch_data)} genes)")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing batch {batch_idx + 1}: {e}")
-                    if db_manager.conn:
-                        db_manager.conn.rollback()
-                    continue
-                    
-            logger.info("Database update completed successfully")
-            
-            # Display statistics
-            db_manager.cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_genes,
-                    COUNT(CASE WHEN source_references->'uniprot' IS NOT NULL 
-                              AND source_references->'uniprot' != '[]'::jsonb 
-                         THEN 1 END) as with_refs,
-                    SUM(jsonb_array_length(
-                        CASE WHEN source_references->'uniprot' IS NOT NULL 
-                             AND source_references->'uniprot' != '[]'::jsonb 
-                        THEN source_references->'uniprot' 
-                        ELSE '[]'::jsonb END
-                    )) as total_refs
-                FROM cancer_transcript_base
-                WHERE gene_type = 'protein_coding'
-            """)
-            stats = db_manager.cursor.fetchone()
-            if stats:
-                logger.info(
-                    f"Publication references extraction:\n"
-                    f"- Total genes: {stats[0]:,}\n"
-                    f"- Genes with UniProt references: {stats[1]:,}\n"
-                    f"- Total references extracted: {stats[2] or 0:,}"
-                )
-            
-        except Exception as e:
-            logger.error(f"Database update failed: {e}")
-            if db_manager.conn:
-                db_manager.conn.rollback()
-            raise
-        finally:
-            # Clean up
-            if db_manager.cursor:
-                db_manager.cursor.execute("DROP TABLE IF EXISTS temp_gene_data")
-            db_manager.close()
-
-class ProductProcessor:
-    """Process and load product classifications into the database."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        """Initialize product processor with configuration."""
-        self.config = config
-        self.db_manager = get_db_manager(config)
-        self.batch_size = config.get('batch_size', 1000)
-        self.classifier = ProductClassifier(config)
 
     def run(self) -> None:
-        """Run the complete product classification pipeline.
-        
-        This method orchestrates:
-        1. Product classification
-        2. Database updates
-        3. Feature extraction
-        4. Publication reference extraction
-        """
+        """Run the product classification process."""
         try:
-            logger.info("Starting product classification pipeline...")
+            self.logger.info("Starting gene product classification")
             
-            # Run classification
-            self.classifier.update_database_classifications()
+            # Download UniProt data
+            uniprot_file = self.download_uniprot_data()
             
-            # Verify results
-            if not self.db_manager.cursor:
-                raise RuntimeError("No database connection")
-                
-            self.db_manager.cursor.execute("""
-                SELECT 
-                    COUNT(*) as total,
-                    COUNT(CASE WHEN product_type IS NOT NULL 
-                              AND array_length(product_type, 1) > 0 
-                         THEN 1 END) as classified,
-                    COUNT(CASE WHEN features IS NOT NULL 
-                              AND features != '{}'::jsonb 
-                         THEN 1 END) as with_features,
-                    COUNT(CASE WHEN source_references->'uniprot' IS NOT NULL 
-                              AND source_references->'uniprot' != '[]'::jsonb 
-                         THEN 1 END) as with_refs
-                FROM cancer_transcript_base
-                WHERE gene_type = 'protein_coding'
-            """)
-            
-            stats = self.db_manager.cursor.fetchone()
-            if stats:
-                logger.info(
-                    f"Classification completed:\n"
-                    f"- Total genes processed: {stats[0]:,}\n"
-                    f"- Genes classified: {stats[1]:,}\n"
-                    f"- Genes with features: {stats[2]:,}\n"
-                    f"- Genes with UniProt references: {stats[3]:,}"
-                )
-            
-            logger.info("Product classification pipeline completed successfully")
+            # Process data (would be implemented in a subclass or extended here)
+            self.logger.info("UniProt data downloaded successfully")
             
         except Exception as e:
-            logger.error(f"Product classification pipeline failed: {e}")
-            if self.db_manager.conn is not None:
-                self.db_manager.conn.rollback()
+            self.logger.error(f"Product classification failed: {e}")
             raise
-        finally:
-            if self.db_manager.conn is not None:
-                self.db_manager.conn.close()
 
-    def load_classifications(self, records: List[tuple]) -> None:
-        """Load product classification records into database."""
-        try:
-            if not self.db_manager.cursor:
-                raise RuntimeError("No database connection")
-                
-            execute_batch(
-                self.db_manager.cursor,
-                """
-                UPDATE cancer_transcript_base
-                SET product_type = %s
-                WHERE gene_symbol = %s
-                """,
-                records,
-                page_size=self.batch_size
-            )
+
+class ProductProcessor(BaseProcessor):
+    """Process gene product data and classify transcripts."""
+    
+    def __init__(self, config: Dict[str, Any]) -> None:
+        """Initialize product processor with configuration.
+        
+        Args:
+            config: Configuration dictionary with all needed settings
+        """
+        super().__init__(config)
+        
+        # Create classifier for product classification
+        self.classifier = ProductClassifier(config)
+        
+        # Other processor-specific settings
+        self.batch_size = config.get('batch_size', 100)
+        self.process_limit = config.get('process_limit')
+        if self.process_limit:
+            try:
+                self.process_limit = int(self.process_limit)
+                self.logger.info(f"Processing limited to {self.process_limit} genes")
+            except (ValueError, TypeError):
+                self.logger.warning(f"Invalid process_limit value: {self.process_limit}, processing all genes")
+                self.process_limit = None
+    
+    def get_genes_with_features(self) -> List[Dict[str, Any]]:
+        """Get genes with features from the database.
+        
+        Returns:
+            List of genes with features data
             
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
+        
+        try:
+            self.logger.info("Retrieving genes with features from database")
+            
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+            
+            # Get genes with features
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    gene_symbol, 
+                    features,
+                    go_terms,
+                    source_references
+                FROM 
+                    cancer_transcript_base
+                WHERE 
+                    gene_type = 'protein_coding'
+                AND 
+                    features IS NOT NULL
+                AND 
+                    features != '{}'::jsonb
+                GROUP BY
+                    gene_symbol, features, go_terms, source_references
+            """)
+            
+            genes = []
+            for row in self.db_manager.cursor.fetchall():
+                gene_symbol, features, go_terms, source_refs = row
+                genes.append({
+                    'gene_symbol': gene_symbol,
+                    'features': features,
+                    'go_terms': go_terms or {},
+                    'source_references': source_refs or {},
+                })
+            
+            if self.process_limit and len(genes) > self.process_limit:
+                genes = genes[:self.process_limit]
+                self.logger.info(f"Limited to {self.process_limit} genes")
+                
+            self.logger.info(f"Retrieved {len(genes)} genes with features")
+            return genes
+            
+        except Exception as e:
+            raise DatabaseError(f"Failed to retrieve genes with features: {e}")
+    
+    def classify_genes(self, genes: List[Dict[str, Any]]) -> List[Tuple[str, List[str], List[Publication]]]:
+        """Classify genes based on their features and GO terms.
+        
+        Args:
+            genes: List of genes with features and GO terms
+            
+        Returns:
+            List of tuples with (gene_symbol, product_types, publications)
+            
+        Raises:
+            ProcessingError: If classification fails
+        """
+        try:
+            self.logger.info("Classifying genes based on features and GO terms")
+            
+            classified_genes = []
+            for gene in tqdm(genes, desc="Classifying genes"):
+                gene_symbol = gene['gene_symbol']
+                product_types = self.classifier.classify_gene(gene)
+                publications = self.classifier.extract_publication_references(gene)
+                
+                if product_types:
+                    classified_genes.append((gene_symbol, product_types, publications))
+            
+            self.logger.info(f"Classified {len(classified_genes)} genes")
+            return classified_genes
+            
+        except Exception as e:
+            raise ProcessingError(f"Gene classification failed: {e}")
+    
+    def update_gene_types(self, classified_genes: List[Tuple[str, List[str], List[Publication]]]) -> None:
+        """Update gene product types in the database.
+        
+        Args:
+            classified_genes: List of tuples with (gene_symbol, product_types, publications)
+            
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
+        
+        try:
+            self.logger.info("Updating gene product types in database")
+            
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+            
+            # Create temporary table for batch updates
+            self.db_manager.cursor.execute("""
+                CREATE TEMP TABLE temp_gene_types (
+                    gene_symbol TEXT PRIMARY KEY,
+                    product_types TEXT[],
+                    publications JSONB
+                )
+            """)
+            
+            # Process in batches for better performance
+            total_genes = len(classified_genes)
+            total_inserted = 0
+            
+            with tqdm(total=total_genes, desc="Updating gene types") as pbar:
+                for i in range(0, total_genes, self.batch_size):
+                    batch = classified_genes[i:i+self.batch_size]
+                    
+                    # Insert batch into temp table
+                    self.execute_batch(
+                        """
+                        INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
+                        VALUES (%s, %s, %s::jsonb)
+                        """,
+                        [(gene, types, json.dumps(pubs)) for gene, types, pubs in batch]
+                    )
+                    
+                    # Update from temp table to main table
+                    self.db_manager.cursor.execute("""
+                        UPDATE cancer_transcript_base AS c
+                        SET 
+                            product_type = t.product_types,
+                            source_references = jsonb_set(
+                                COALESCE(c.source_references, '{}'::jsonb),
+                                '{uniprot}',
+                                t.publications,
+                                true
+                            )
+                        FROM temp_gene_types AS t
+                        WHERE c.gene_symbol = t.gene_symbol
+                    """)
+                    
+                    # Clear temp table for next batch
+                    self.db_manager.cursor.execute("TRUNCATE temp_gene_types")
+                    
+                    # Update progress
+                    total_inserted += len(batch)
+                    pbar.update(len(batch))
+            
+            # Drop the temporary table
+            self.db_manager.cursor.execute("DROP TABLE temp_gene_types")
+            
+            # Commit changes
             if self.db_manager.conn:
                 self.db_manager.conn.commit()
                 
+            self.logger.info(f"Updated {total_inserted} genes with product types")
+            
         except Exception as e:
+            # Rollback on error
             if self.db_manager.conn:
                 self.db_manager.conn.rollback()
-            logger.error(f"Error loading classifications: {e}")
+            raise DatabaseError(f"Failed to update gene product types: {e}")
+    
+    def run(self) -> None:
+        """Run the complete product processing pipeline."""
+        try:
+            self.logger.info("Starting gene product processing")
+            
+            # Check schema version using enhanced base class method
+            if not self.ensure_schema_version('v0.1.2'):
+                raise DatabaseError("Incompatible database schema version")
+            
+            # Get genes with features
+            genes = self.get_genes_with_features()
+            
+            if not genes:
+                self.logger.warning("No genes with features found, nothing to process")
+                return
+            
+            # Classify genes
+            classified_genes = self.classify_genes(genes)
+            
+            if not classified_genes:
+                self.logger.warning("No genes classified, nothing to update")
+                return
+            
+            # Update gene types in database
+            self.update_gene_types(classified_genes)
+            
+            self.logger.info("Gene product processing completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Gene product processing failed: {e}")
             raise

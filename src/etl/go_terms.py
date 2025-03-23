@@ -1,30 +1,26 @@
-"""GO terms enrichment module for Cancer Transcriptome Base."""
+"""GO terms enrichment module for Cancer Transcriptome Base.
+
+This module handles downloading, processing, and enrichment of Gene Ontology (GO) terms
+for transcript records, providing structured access to functional classifications.
+"""
 
 import logging
 import gzip
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set, Tuple, Iterator, TypedDict
-import requests
+import networkx as nx
 from tqdm import tqdm
 import obonet
-import networkx as nx
-from datetime import datetime, timedelta
-import hashlib
-from ..db.database import get_db_manager
-from psycopg2.extras import execute_batch
-from io import TextIOWrapper
 from rich.console import Console
 from rich.table import Table
-from ..utils.publication_utils import extract_pmid_from_text, extract_pmids_from_text, format_pmid_url
-from .publications import Publication, PublicationsProcessor
 
-logger = logging.getLogger(__name__)
-console = Console()
+from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
+from .publications import Publication, PublicationsProcessor
+from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 
 # Constants
-DEFAULT_CACHE_TTL = 86400  # 24 hours in seconds
-DEFAULT_BATCH_SIZE = 1000
+HUMAN_SPECIES = 'Homo sapiens'
 
 class GOTerm(TypedDict):
     """Type definition for GO term data."""
@@ -32,23 +28,37 @@ class GOTerm(TypedDict):
     evidence: str
     aspect: str
 
-class GOTermProcessor:
+class GOTermProcessor(BaseProcessor):
     """Process GO terms and enrich transcript data."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
-        """Initialize the GO term processor."""
-        self.config = config
-        self.cache_dir = Path(config['cache_dir'])
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        """Initialize the GO term processor with configuration.
+        
+        Args:
+            config: Configuration dictionary with settings
+        """
+        super().__init__(config)
+        
+        # Define specific directory for GO data
         self.go_dir = self.cache_dir / 'go_terms'
         self.go_dir.mkdir(exist_ok=True)
-        self.batch_size = config.get('batch_size', 1000)
-        self.cache_ttl = config.get('cache_ttl', 86400)  # 24 hours default
-        self.goa_url = config.get('goa_url', 'http://ftp.ebi.ac.uk/pub/databases/GO/goa/HUMAN/goa_human.gaf.gz')
-        self.db_manager = get_db_manager(config)
+        
+        # GO OBO data URL
+        self.go_obo_url = config.get(
+            'go_obo_url',
+            'http://purl.obolibrary.org/obo/go.obo'
+        )
+        
+        # GOA annotation URL
+        self.goa_url = config.get(
+            'goa_url', 
+            'http://ftp.ebi.ac.uk/pub/databases/GO/goa/HUMAN/goa_human.gaf.gz'
+        )
         
         # Initialize graph storage
         self.go_graph: Optional[nx.MultiDiGraph] = None
+        
+        # Define aspect roots
         self.aspect_roots = {
             'molecular_function': 'GO:0003674',
             'biological_process': 'GO:0008150',
@@ -63,138 +73,76 @@ class GOTermProcessor:
         self.cellular_location_roots = {
             'GO:0005575',  # cellular_component
         }
-
-    def _ensure_connection(self) -> None:
-        """Ensure database connection is active."""
-        if not self.db_manager.conn or self.db_manager.conn.closed:
-            logger.info("Reconnecting to database...")
-            self.db_manager.connect()
-        if not self.db_manager.cursor or self.db_manager.cursor.closed:
-            if self.db_manager.conn:
-                self.db_manager.cursor = self.db_manager.conn.cursor()
-
-    def _get_cache_key(self, url: str) -> str:
-        """Generate a cache key from URL."""
-        return hashlib.sha256(url.encode()).hexdigest()
-
+    
     def download_obo(self) -> Path:
-        """Download GO OBO file if not in cache or cache is invalid."""
-        cache_key = self._get_cache_key(self.config['go_obo_url'])
-        obo_path = self.go_dir / f"go_{cache_key}.obo"
-        meta_path = self.go_dir / "meta.json"
+        """Download GO OBO file with caching.
         
-        # Check cache validity
-        if obo_path.exists() and meta_path.exists():
-            try:
-                with open(meta_path, 'r') as f:
-                    meta = json.load(f)
-                if cache_key in meta:
-                    cache_time = datetime.fromisoformat(meta[cache_key]['timestamp'])
-                    if datetime.now() - cache_time < timedelta(seconds=self.cache_ttl):
-                        return obo_path
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        # Download new file
-        logger.info("Downloading GO OBO file...")
-        response = requests.get(self.config['go_obo_url'], stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-
-        with open(obo_path, 'wb') as f, tqdm(
-            desc="Downloading",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=1024):
-                size = f.write(data)
-                pbar.update(size)
-
-        # Update metadata
-        meta = {}
-        if meta_path.exists():
-            with open(meta_path, 'r') as f:
-                try:
-                    meta = json.load(f)
-                except json.JSONDecodeError:
-                    pass
-
-        meta[cache_key] = {
-            'timestamp': datetime.now().isoformat(),
-            'file_path': str(obo_path)
-        }
-
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f)
-
-        return obo_path
-
+        Returns:
+            Path to the downloaded OBO file
+            
+        Raises:
+            DownloadError: If download fails
+        """
+        try:
+            # Use the BaseProcessor download method
+            obo_file = self.download_file(
+                url=self.go_obo_url,
+                file_path=self.go_dir / "go.obo"
+            )
+            return obo_file
+        except Exception as e:
+            raise DownloadError(f"Failed to download GO OBO file: {e}")
+    
     def download_goa(self) -> Path:
-        """Download GOA file if not in cache or cache is invalid."""
-        cache_key = self._get_cache_key(self.goa_url)
-        goa_path = self.go_dir / f"goa_{cache_key}.gaf.gz"
-        meta_path = self.go_dir / "meta.json"
+        """Download GOA file with caching.
         
-        # Check cache validity
-        if goa_path.exists() and meta_path.exists():
-            try:
-                with open(meta_path, 'r') as f:
-                    meta = json.load(f)
-                if cache_key in meta:
-                    cache_time = datetime.fromisoformat(meta[cache_key]['timestamp'])
-                    if datetime.now() - cache_time < timedelta(seconds=self.cache_ttl):
-                        return goa_path
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        # Download new file
-        logger.info("Downloading GOA file...")
-        response = requests.get(self.goa_url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-
-        with open(goa_path, 'wb') as f, tqdm(
-            desc="Downloading",
-            total=total_size,
-            unit='iB',
-            unit_scale=True
-        ) as pbar:
-            for data in response.iter_content(chunk_size=1024):
-                size = f.write(data)
-                pbar.update(size)
-
-        # Update metadata
-        self._update_cache_meta(cache_key, goa_path)
-        return goa_path
-
-    def _update_cache_meta(self, cache_key: str, file_path: Path) -> None:
-        """Update cache metadata."""
-        meta_path = self.go_dir / "meta.json"
-        meta = {}
-        if meta_path.exists():
-            with open(meta_path, 'r') as f:
-                try:
-                    meta = json.load(f)
-                except json.JSONDecodeError:
-                    pass
-
-        meta[cache_key] = {
-            'timestamp': datetime.now().isoformat(),
-            'file_path': str(file_path)
-        }
-
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f)
-
+        Returns:
+            Path to the downloaded GOA file
+            
+        Raises:
+            DownloadError: If download fails
+        """
+        try:
+            # Use the BaseProcessor download method
+            goa_file = self.download_file(
+                url=self.goa_url,
+                file_path=self.go_dir / "goa_human.gaf.gz"
+            )
+            return goa_file
+        except Exception as e:
+            raise DownloadError(f"Failed to download GOA file: {e}")
+    
     def load_go_graph(self, obo_path: Path) -> None:
-        """Load GO terms into a networkx graph."""
-        logger.info("Loading GO graph...")
-        self.go_graph = obonet.read_obo(obo_path)
-        logger.info(f"Loaded {len(self.go_graph)} GO terms")
-
+        """Load GO terms into a networkx graph.
+        
+        Args:
+            obo_path: Path to the OBO file
+            
+        Raises:
+            ProcessingError: If graph loading fails
+        """
+        try:
+            self.logger.info("Loading GO graph...")
+            self.go_graph = obonet.read_obo(obo_path)
+            self.logger.info(f"Loaded {len(self.go_graph)} GO terms")
+        except Exception as e:
+            raise ProcessingError(f"Failed to load GO graph: {e}")
+    
     def get_ancestors(self, term_id: str, aspect: Optional[str] = None) -> Set[str]:
-        """Get all ancestors of a GO term up to the root."""
+        """Get all ancestors of a GO term up to the root.
+        
+        Args:
+            term_id: GO term ID
+            aspect: Optional aspect to filter ancestors
+            
+        Returns:
+            Set of ancestor term IDs
+            
+        Raises:
+            ProcessingError: If graph is not loaded
+        """
         if not self.go_graph:
-            raise ValueError("GO graph not loaded")
+            raise ProcessingError("GO graph not loaded")
             
         ancestors = set()
         to_visit = {term_id}
@@ -220,9 +168,16 @@ class GOTermProcessor:
             return set()
             
         return ancestors - {term_id}  # Exclude the term itself
-
+    
     def get_aspect(self, term_id: str) -> Optional[str]:
-        """Get the aspect (namespace) of a GO term."""
+        """Get the aspect (namespace) of a GO term.
+        
+        Args:
+            term_id: GO term ID
+            
+        Returns:
+            Aspect string or None if not found
+        """
         if not self.go_graph or term_id not in self.go_graph:
             return None
         
@@ -236,326 +191,128 @@ class GOTermProcessor:
         elif namespace == 'cellular_component':
             return 'cellular_component'
         return None
-
-    def enrich_transcripts(self) -> None:
-        """Enrich transcript data with GO term hierarchies."""
-        self._ensure_connection()
-        if not self.go_graph:
-            raise ValueError("GO graph not loaded")
-
-        if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
-
-        try:
-            cur = self.db_manager.cursor
-            
-            # Get transcripts with existing GO terms
-            cur.execute("""
-                SELECT transcript_id, go_terms 
-                FROM cancer_transcript_base 
-                WHERE go_terms IS NOT NULL 
-                AND gene_type = 'protein_coding'
-            """)
-            
-            total_processed = 0
-            total_enriched = 0
-            
-            updates = []
-            for transcript_id, go_terms in tqdm(cur.fetchall(), desc="Processing GO terms"):
-                if not go_terms:
-                    continue
-                        
-                initial_term_count = len(go_terms)
-                enriched_terms = {}
-                
-                # Process existing terms
-                for go_id, term_data in go_terms.items():
-                    # Get original term data
-                    term_info = {
-                        'term': term_data.get('term', ''),
-                        'evidence': term_data.get('evidence', ''),
-                        'aspect': term_data.get('aspect', '')
-                    }
-                    enriched_terms[go_id] = term_info
-                    
-                    # Add ancestors with inherited evidence
-                    ancestors = self.get_ancestors(go_id, term_data.get('aspect', ''))
-                    for ancestor in ancestors:
-                        if ancestor in self.go_graph.nodes:
-                            ancestor_data = self.go_graph.nodes.get(ancestor, {})
-                            if ancestor not in enriched_terms:
-                                enriched_terms[ancestor] = {
-                                    'term': ancestor_data.get('name', ''),
-                                    'evidence': f"Inherited from {go_id}",
-                                    'aspect': ancestor_data.get('namespace', '')
-                                }
-                
-                final_term_count = len(enriched_terms)
-                if final_term_count > initial_term_count:
-                    total_enriched += 1
-                    
-                total_processed += 1
-                
-                updates.append((
-                    json.dumps(enriched_terms),
-                    transcript_id
-                ))
-                
-                if len(updates) >= self.batch_size:
-                    self._update_batch(cur, updates)
-                    if self.db_manager.conn is not None:
-                        self.db_manager.conn.commit()
-                    updates = []
-            
-            # Process remaining updates
-            if updates:
-                self._update_batch(cur, updates)
-                if self.db_manager.conn is not None:
-                    self.db_manager.conn.commit()
-            
-            logger.info(
-                f"GO term enrichment completed:\n"
-                f"- Total transcripts processed: {total_processed}\n"
-                f"- Transcripts enriched with ancestors: {total_enriched}"
-            )
-            
-        except Exception as e:
-            logger.error(f"GO term enrichment failed: {e}")
-            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
-                self.db_manager.conn.rollback()
-            raise
-
-    def _extract_special_terms(self, go_terms: Dict[str, GOTerm]) -> Tuple[List[str], List[str]]:
-        """Extract molecular functions and cellular locations from GO terms.
+    
+    def _convert_aspect(self, aspect_code: str) -> str:
+        """Convert single-letter aspect code to full name.
         
         Args:
-            go_terms: Dictionary of GO terms
+            aspect_code: Single letter aspect code (P, F, C)
             
         Returns:
-            Tuple of (molecular_functions, cellular_locations)
+            Full aspect name
         """
-        molecular_functions: Set[str] = set()
-        cellular_locations: Set[str] = set()
+        aspects = {
+            'P': 'biological_process',
+            'F': 'molecular_function',
+            'C': 'cellular_component'
+        }
+        return aspects.get(aspect_code, '')
+    
+    def _get_valid_genes(self) -> Set[str]:
+        """Get set of valid gene symbols from database.
         
-        for go_id, term_data in go_terms.items():
-            # Skip terms without proper data
-            if not isinstance(term_data, dict) or 'aspect' not in term_data or 'term' not in term_data:
-                continue
-                
-            term_name = term_data.get('term', '')
-            aspect = term_data.get('aspect', '')
+        Returns:
+            Set of valid gene symbols
             
-            # Classify terms based on aspect
-            if aspect == 'molecular_function':
-                molecular_functions.add(term_name)
-            elif aspect == 'cellular_component':
-                cellular_locations.add(term_name)
+        Raises:
+            DatabaseError: If database query fails
+        """
+        valid_genes: Set[str] = set()
         
-        return list(molecular_functions), list(cellular_locations)
-
-    def extract_publication_references(self, go_terms: Dict[str, GOTerm]) -> List[Publication]:
-        """Extract publication references from GO terms."""
-        publications: List[Publication] = []
-        
-        for go_id, term_data in go_terms.items():
-            # Extract PMID from evidence code or reference text
-            evidence_text = f"{term_data.get('evidence', '')} {term_data.get('reference', '')}"
-            pmids = extract_pmids_from_text(evidence_text)
+        if not self.ensure_connection() or not self.db_manager.cursor:
+            raise DatabaseError("Cannot get valid genes: no database connection")
             
-            for pmid in pmids:
-                publication = PublicationsProcessor.create_publication_reference(
-                    pmid=pmid,
-                    evidence_type=term_data.get('evidence', 'unknown'),
-                    source_db="GO",
-                    url=format_pmid_url(pmid)
-                )
-                publications.append(publication)
-        
-        return publications
-
-    def _update_batch(self, cur, updates: List[Tuple[str, str]]) -> None:
-        """Update a batch of enriched GO terms."""
         try:
-            # First ensure schema is at correct version
-            if not self.db_manager.check_column_exists('cancer_transcript_base', 'source_references'):
-                # Add required columns for v0.1.4
-                cur.execute("""
-                    ALTER TABLE cancer_transcript_base 
-                    ADD COLUMN IF NOT EXISTS molecular_functions TEXT[] DEFAULT '{}',
-                    ADD COLUMN IF NOT EXISTS cellular_location TEXT[] DEFAULT '{}',
-                    ADD COLUMN IF NOT EXISTS alt_transcript_ids JSONB DEFAULT '{}'::jsonb,
-                    ADD COLUMN IF NOT EXISTS alt_gene_ids JSONB DEFAULT '{}'::jsonb,
-                    ADD COLUMN IF NOT EXISTS uniprot_ids TEXT[] DEFAULT '{}',
-                    ADD COLUMN IF NOT EXISTS ncbi_ids TEXT[] DEFAULT '{}',
-                    ADD COLUMN IF NOT EXISTS refseq_ids TEXT[] DEFAULT '{}',
-                    ADD COLUMN IF NOT EXISTS source_references JSONB DEFAULT '{
-                        "go_terms": [],
-                        "uniprot": [],
-                        "drugs": [],
-                        "pathways": []
-                    }'::jsonb;
-
-                    -- Add indices for new columns
-                    CREATE INDEX IF NOT EXISTS idx_molecular_functions 
-                    ON cancer_transcript_base USING GIN(molecular_functions);
-                    
-                    CREATE INDEX IF NOT EXISTS idx_cellular_location 
-                    ON cancer_transcript_base USING GIN(cellular_location);
-                    
-                    CREATE INDEX IF NOT EXISTS idx_source_references 
-                    ON cancer_transcript_base USING GIN(source_references);
-                    
-                    CREATE INDEX IF NOT EXISTS idx_alt_ids 
-                    ON cancer_transcript_base USING GIN(alt_transcript_ids, alt_gene_ids);
-                """)
-                if self.db_manager.conn:
-                    self.db_manager.conn.commit()
-                    logger.info("Schema updated to include required columns")
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol 
+                FROM cancer_transcript_base 
+                WHERE gene_type = 'protein_coding'
+                AND gene_symbol IS NOT NULL
+            """)
+            valid_genes = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
+            self.logger.info(f"Found {len(valid_genes)} valid gene symbols in database")
+        except Exception as e:
+            raise DatabaseError(f"Failed to get valid genes: {e}")
             
-            # Process each update to extract publications
-            for go_terms_json, gene_symbol in updates:
-                try:
-                    # Parse GO terms from JSON string
-                    go_terms = json.loads(go_terms_json)
+        return valid_genes
+    
+    def process_goa_file(self, goa_path: Path) -> Dict[str, Dict[str, GOTerm]]:
+        """Process GOA file and extract gene-GO term mappings.
+        
+        Args:
+            goa_path: Path to the GOA file
+            
+        Returns:
+            Dictionary mapping gene symbols to GO term dictionaries
+            
+        Raises:
+            ProcessingError: If GO data processing fails
+        """
+        try:
+            gene_go_terms: Dict[str, Dict[str, GOTerm]] = {}
+            
+            # First, get and show sample of valid gene symbols
+            valid_genes = self._get_valid_genes()
+            sample_entries: List[List[str]] = []
+            
+            with gzip.open(goa_path, 'rt') as f:
+                for line in tqdm(f, desc='Processing GOA entries'):
+                    if line.startswith('!'):
+                        continue
                     
-                    # Extract publications from GO terms
-                    publications = self.extract_publication_references(go_terms)
+                    fields = line.strip().split('\t')
+                    if len(fields) < 15:
+                        continue
                     
-                    # Add publications to source_references
-                    if publications:
-                        pub_json = json.dumps(publications)
+                    if not self.go_graph:
+                        raise ProcessingError("GO graph not loaded")
                         
-                        # Update source_references for this gene
-                        cur.execute("""
-                            UPDATE cancer_transcript_base
-                            SET source_references = jsonb_set(
-                                COALESCE(source_references, '{}'::jsonb),
-                                '{go_terms}',
-                                COALESCE(
-                                    source_references->'go_terms',
-                                    '[]'::jsonb
-                                ) || %s::jsonb
-                            )
-                            WHERE gene_symbol = %s
-                        """, (pub_json, gene_symbol))
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON for gene {gene_symbol}: {go_terms_json}")
-                except Exception as e:
-                    logger.warning(f"Error processing GO terms for {gene_symbol}: {e}")
+                    # Store sample entries before any filtering
+                    if len(sample_entries) < 5 and not line.startswith('!'):
+                        sample_entries.append(fields)
+                    
+                    # Extract required fields with safe access
+                    gene_symbol = fields[2].upper() if len(fields) > 2 else ''
+                    go_id = fields[4] if len(fields) > 4 else ''
+                    evidence = fields[6] if len(fields) > 6 else ''
+                    aspect = fields[8] if len(fields) > 8 else ''
+                    
+                    if not (gene_symbol and go_id and evidence and aspect):
+                        continue
+                    
+                    if gene_symbol not in valid_genes or go_id not in self.go_graph:
+                        continue
+                    
+                    # Get GO term data with safe access
+                    node_data = self.go_graph.nodes.get(go_id, {})
+                    term_name = node_data.get('name', '')
+                    if not term_name:  # Skip if no term name found
+                        continue
+                    
+                    # Initialize gene entry if needed
+                    if gene_symbol not in gene_go_terms:
+                        gene_go_terms[gene_symbol] = {}
+                    
+                    # Store GO term with safe type construction
+                    gene_go_terms[gene_symbol][go_id] = {
+                        'term': term_name,
+                        'evidence': evidence,
+                        'aspect': self._convert_aspect(aspect)
+                    }
             
-            # Original batch update for go_terms, molecular_functions, etc.
-            # ... rest of the existing _update_batch implementation ...
-            execute_batch(
-                cur,
-                """
-                WITH term_extraction AS (
-                    SELECT 
-                        gene_symbol,
-                        go_terms,
-                        (
-                            SELECT array_agg(DISTINCT value->>'term')
-                            FROM jsonb_each(go_terms::jsonb) AS t(key, value)
-                            WHERE (value->>'aspect')::text = 'molecular_function'
-                        ) AS molecular_functions,
-                        (
-                            SELECT array_agg(DISTINCT value->>'term')
-                            FROM jsonb_each(go_terms::jsonb) AS t(key, value)
-                            WHERE (value->>'aspect')::text = 'cellular_component'
-                        ) AS cellular_location
-                    FROM (
-                        SELECT 
-                            unnest(%s::text[]) AS gene_symbol,
-                            unnest(%s::jsonb[]) AS go_terms
-                    ) AS updates
-                )
-                UPDATE cancer_transcript_base AS ctb
-                SET 
-                    go_terms = te.go_terms,
-                    molecular_functions = COALESCE(te.molecular_functions, '{}'),
-                    cellular_location = COALESCE(te.cellular_location, '{}')
-                FROM term_extraction te
-                WHERE ctb.gene_symbol = te.gene_symbol
-                AND ctb.gene_type = 'protein_coding'
-                RETURNING ctb.gene_symbol, ctb.go_terms IS NOT NULL as updated;
-                """,
-                [(
-                    [u[1] for u in batch],  # gene_symbols
-                    [u[0] for u in batch]   # go_terms
-                ) for batch in [updates]],
-                page_size=self.batch_size
+            # Display statistics and samples
+            self._display_goa_stats(
+                processed=len(sample_entries),
+                matched=len(gene_go_terms),
+                gene_go_terms=gene_go_terms,
+                sample_entries=sample_entries
             )
             
-            if self.db_manager.conn:
-                self.db_manager.conn.commit()
-                
+            return gene_go_terms
+            
         except Exception as e:
-            logger.error(f"Batch update failed: {e}")
-            raise
-
-    def process_goa_file(self, goa_path: Path) -> Dict[str, Dict[str, GOTerm]]:
-        """Process GOA file and extract gene-GO term mappings."""
-        gene_go_terms: Dict[str, Dict[str, GOTerm]] = {}
-        
-        # First, get and show sample of valid gene symbols
-        valid_genes = self._get_valid_genes()
-        sample_entries: List[List[str]] = []
-        
-        with gzip.open(goa_path, 'rt') as f:
-            for line in tqdm(f, 'Processing GOA entries'):
-                if line.startswith('!'):
-                    continue
-                
-                fields = line.strip().split('\t')
-                if len(fields) < 15:
-                    continue
-                
-                if not self.go_graph:
-                    logger.error("GO graph not loaded")
-                    continue
-                    
-                # Store sample entries before any filtering
-                if len(sample_entries) < 5 and not line.startswith('!'):
-                    sample_entries.append(fields)
-                
-                # Extract required fields with safe access
-                gene_symbol = fields[2].upper() if len(fields) > 2 else ''
-                go_id = fields[4] if len(fields) > 4 else ''
-                evidence = fields[6] if len(fields) > 6 else ''
-                aspect = fields[8] if len(fields) > 8 else ''
-                
-                if not (gene_symbol and go_id and evidence and aspect):
-                    continue
-                
-                if gene_symbol not in valid_genes or go_id not in self.go_graph:
-                    continue
-                
-                # Get GO term data with safe access
-                node_data = self.go_graph.nodes.get(go_id, {})
-                term_name = node_data.get('name', '')
-                if not term_name:  # Skip if no term name found
-                    continue
-                
-                # Initialize gene entry if needed
-                if gene_symbol not in gene_go_terms:
-                    gene_go_terms[gene_symbol] = {}
-                
-                # Store GO term with safe type construction
-                gene_go_terms[gene_symbol][go_id] = {
-                    'term': term_name,
-                    'evidence': evidence,
-                    'aspect': self._convert_aspect(aspect)
-                }
-        
-        # Display statistics and samples
-        self._display_goa_stats(
-            processed=len(sample_entries),
-            matched=len(gene_go_terms),
-            gene_go_terms=gene_go_terms,
-            sample_entries=sample_entries
-        )
-        
-        return gene_go_terms
-
+            raise ProcessingError(f"Failed to process GOA file: {e}")
+    
     def _display_goa_stats(
         self, 
         processed: int, 
@@ -563,7 +320,16 @@ class GOTermProcessor:
         gene_go_terms: Dict[str, Dict[str, GOTerm]], 
         sample_entries: List[List[str]]
     ) -> None:
-        """Display GOA processing statistics and samples."""
+        """Display GOA processing statistics and samples.
+        
+        Args:
+            processed: Number of entries processed
+            matched: Number of entries matched to genes
+            gene_go_terms: Dictionary of gene-to-GO-term mappings
+            sample_entries: Sample of GOA entries
+        """
+        console = Console()
+        
         # Display sample entries
         table = Table(title="Sample GOA Entries")
         table.add_column("DB")
@@ -605,169 +371,371 @@ class GOTermProcessor:
                     )
                 console.print(table)
         
-        logger.info(
+        self.logger.info(
             f"GOA Processing Stats:\n"
             f"- Total entries processed: {processed:,}\n"
             f"- Matched to database genes: {matched:,}\n"
             f"- Genes with GO terms: {len(gene_go_terms):,}"
         )
-
-    def _get_valid_genes(self) -> Set[str]:
-        """Get set of valid gene symbols from database."""
-        valid_genes: Set[str] = set()
-        if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
-            
-        try:
-            self.db_manager.cursor.execute("""
-                SELECT DISTINCT gene_symbol 
-                FROM cancer_transcript_base 
-                WHERE gene_type = 'protein_coding'
-                AND gene_symbol IS NOT NULL
-            """)
-            valid_genes = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
-            logger.info(f"Found {len(valid_genes)} valid gene symbols in database")
-        except Exception as e:
-            logger.error(f"Error getting valid genes: {e}")
-            raise
-        return valid_genes
-
-    def _convert_aspect(self, aspect_code: str) -> str:
-        """Convert single-letter aspect code to full name."""
-        aspects = {
-            'P': 'biological_process',
-            'F': 'molecular_function',
-            'C': 'cellular_component'
-        }
-        return aspects.get(aspect_code, '')
-
-    def populate_initial_terms(self) -> None:
-        """Populate initial GO terms from GOA data."""
-        self._ensure_connection()
-        # Download and process GOA file
-        goa_path = self.download_goa()
-        gene_go_terms = self.process_goa_file(goa_path)
+    
+    def _extract_special_terms(self, go_terms: Dict[str, GOTerm]) -> Tuple[List[str], List[str]]:
+        """Extract molecular functions and cellular locations from GO terms.
         
-        if not gene_go_terms:
-            logger.warning("No GO terms found to populate")
-            return
-
-        if not self.db_manager.cursor:
-            raise RuntimeError("No database connection")
-
-        try:
-            cur = self.db_manager.cursor
+        Args:
+            go_terms: Dictionary of GO terms
             
+        Returns:
+            Tuple of (molecular_functions, cellular_locations)
+        """
+        molecular_functions: Set[str] = set()
+        cellular_locations: Set[str] = set()
+        
+        for go_id, term_data in go_terms.items():
+            # Skip terms without proper data
+            if not isinstance(term_data, dict) or 'aspect' not in term_data or 'term' not in term_data:
+                continue
+                
+            term_name = term_data.get('term', '')
+            aspect = term_data.get('aspect', '')
+            
+            # Classify terms based on aspect
+            if aspect == 'molecular_function':
+                molecular_functions.add(term_name)
+            elif aspect == 'cellular_component':
+                cellular_locations.add(term_name)
+        
+        return list(molecular_functions), list(cellular_locations)
+    
+    def extract_publication_references(self, go_terms: Dict[str, GOTerm]) -> List[Publication]:
+        """Extract publication references from GO terms.
+        
+        Args:
+            go_terms: Dictionary of GO terms with evidence codes
+            
+        Returns:
+            List of publication references
+        """
+        publications: List[Publication] = []
+        
+        for go_id, term_data in go_terms.items():
+            # Extract PMID from evidence code or reference text
+            evidence_text = f"{term_data.get('evidence', '')} {term_data.get('reference', '')}"
+            pmids = extract_pmids_from_text(evidence_text)
+            
+            for pmid in pmids:
+                publication = PublicationsProcessor.create_publication_reference(
+                    pmid=pmid,
+                    evidence_type=term_data.get('evidence', 'unknown'),
+                    source_db="GO",
+                    url=f"http://amigo.geneontology.org/amigo/term/{go_id}"
+                )
+                publications.append(publication)
+        
+        return publications
+    
+    def populate_initial_terms(self) -> None:
+        """Populate initial GO terms from GOA data.
+        
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
+            
+        try:
+            # Download and process GOA file
+            goa_path = self.download_goa()
+            gene_go_terms = self.process_goa_file(goa_path)
+            
+            if not gene_go_terms:
+                self.logger.warning("No GO terms found to populate")
+                return
+                
             # First, get a count of existing terms
-            cur.execute("""
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            self.db_manager.cursor.execute("""
                 SELECT COUNT(*) FROM cancer_transcript_base 
                 WHERE go_terms IS NOT NULL
             """)
-            result = cur.fetchone()
+            result = self.db_manager.cursor.fetchone()
             initial_count = result[0] if result else 0
-            logger.info(f"Initial GO terms count: {initial_count}")
-
-            # Clear existing GO terms
-            cur.execute("""
-                UPDATE cancer_transcript_base 
-                SET go_terms = NULL, molecular_functions = NULL
-                WHERE gene_type = 'protein_coding'
-            """)
+            self.logger.info(f"Initial GO terms count: {initial_count}")
             
-            # Process in smaller batches with regular commits
-            updates = []
-            processed = 0
-            batch_size = min(1000, self.batch_size)
+            # Use a transaction for the updates
+            with self.get_db_transaction():
+                # Clear existing GO terms
+                self.db_manager.cursor.execute("""
+                    UPDATE cancer_transcript_base 
+                    SET go_terms = NULL, molecular_functions = NULL, cellular_location = NULL
+                    WHERE gene_type = 'protein_coding'
+                """)
+                
+                # Process in smaller batches with regular commits
+                updates = []
+                processed = 0
+                batch_size = min(1000, self.batch_size)
+                
+                with tqdm(total=len(gene_go_terms), desc="Updating GO terms") as pbar:
+                    for gene_symbol, go_terms in gene_go_terms.items():
+                        if go_terms:
+                            # Extract special term arrays
+                            molecular_functions, cellular_locations = self._extract_special_terms(go_terms)
+                            
+                            # Extract publications
+                            publications = self.extract_publication_references(go_terms)
+                            
+                            updates.append((
+                                json.dumps(go_terms),
+                                molecular_functions,
+                                cellular_locations,
+                                json.dumps(publications) if publications else None,
+                                gene_symbol
+                            ))
+                            
+                            if len(updates) >= batch_size:
+                                self._update_go_terms_batch(updates)
+                                processed += len(updates)
+                                pbar.update(len(updates))
+                                updates = []
+                
+                # Process remaining updates
+                if updates:
+                    self._update_go_terms_batch(updates)
+                    processed += len(updates)
+                    pbar.update(len(updates))
             
-            with tqdm(total=len(gene_go_terms), desc="Updating GO terms") as pbar:
-                for gene_symbol, go_terms in gene_go_terms.items():
-                    if go_terms:
-                        updates.append((
-                            json.dumps(go_terms),
-                            gene_symbol
-                        ))
-                        
-                        if len(updates) >= batch_size:
-                            self._update_batch(cur, updates)
-                            if self.db_manager.conn is not None:
-                                self.db_manager.conn.commit()
-                            processed += len(updates)
-                            pbar.update(len(updates))
-                            updates = []
-            
-            # Process remaining updates
-            if updates:
-                self._update_batch(cur, updates)
-                if self.db_manager.conn is not None:
-                    self.db_manager.conn.commit()
-                processed += len(updates)
-                pbar.update(len(updates))
-
             # Verify the updates
-            cur.execute("""
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            self.db_manager.cursor.execute("""
                 SELECT 
                     COUNT(*) as total_genes,
                     COUNT(CASE WHEN go_terms IS NOT NULL THEN 1 END) as with_terms,
-                    COUNT(CASE WHEN molecular_functions IS NOT NULL THEN 1 END) as with_mf
+                    COUNT(CASE WHEN molecular_functions IS NOT NULL THEN 1 END) as with_mf,
+                    COUNT(CASE WHEN cellular_location IS NOT NULL THEN 1 END) as with_cl
                 FROM cancer_transcript_base
                 WHERE gene_type = 'protein_coding'
             """)
-            stats = cur.fetchone()
+            stats = self.db_manager.cursor.fetchone()
             
             if stats:
-                logger.info(
+                self.logger.info(
                     "Database Update Results:\n"
                     f"- Total genes processed: {processed:,}\n"
                     f"- Genes in database: {stats[0]:,}\n"
                     f"- Genes with GO terms: {stats[1]:,}\n"
-                    f"- Genes with molecular functions: {stats[2]:,}"
+                    f"- Genes with molecular functions: {stats[2]:,}\n"
+                    f"- Genes with cellular locations: {stats[3]:,}"
                 )
-            else:
-                logger.warning("No statistics available from the database query.")
-                
-            if self.db_manager.conn is not None:
-                self.db_manager.conn.commit()
-            logger.info("Initial GO terms population completed successfully")
+            
+            self.logger.info("Initial GO terms population completed successfully")
             
         except Exception as e:
-            logger.error(f"Initial GO terms population failed: {e}")
-            if self.db_manager.conn is not None and not self.db_manager.conn.closed:
-                self.db_manager.conn.rollback()
+            self.logger.error(f"Initial GO terms population failed: {e}")
             raise
-
-    def run(self) -> None:
-        """Run the complete GO term enrichment pipeline."""
+    
+    def _update_go_terms_batch(self, updates: List[Tuple]) -> None:
+        """Update a batch of GO terms in the database.
+        
+        Args:
+            updates: List of update tuples (go_terms, molecular_functions, cellular_locations, publications, gene_symbol)
+            
+        Raises:
+            DatabaseError: If batch update fails
+        """
+        if not self.db_manager.cursor:
+            raise DatabaseError("No database cursor available")
+            
         try:
-            self._ensure_connection()
+            self.execute_batch(
+                """
+                UPDATE cancer_transcript_base
+                SET 
+                    go_terms = %s::jsonb,
+                    molecular_functions = %s::text[],
+                    cellular_location = %s::text[],
+                    source_references = jsonb_set(
+                        COALESCE(source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": []
+                        }'::jsonb),
+                        '{go_terms}',
+                        COALESCE(%s::jsonb, '[]'::jsonb),
+                        true
+                    )
+                WHERE gene_symbol = %s
+                """,
+                updates
+            )
+        except Exception as e:
+            raise DatabaseError(f"Failed to update GO terms batch: {e}")
+    
+    def enrich_transcripts(self) -> None:
+        """Enrich transcript records with GO term hierarchies.
+        
+        Raises:
+            DatabaseError: If database operations fail
+            ProcessingError: If GO graph is not loaded
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
             
-            # First check schema version
-            current_version = self.db_manager.get_current_version()
-            if current_version != 'v0.1.4':
-                logger.info(f"Current schema version {current_version} needs update to v0.1.4")
-                if not self.db_manager.migrate_to_version('v0.1.4'):
-                    raise RuntimeError("Failed to migrate database schema to v0.1.4")
-                logger.info("Schema successfully updated to v0.1.4")
+        if not self.go_graph:
+            raise ProcessingError("GO graph not loaded")
             
-            # Then proceed with normal pipeline
+        if not self.db_manager.cursor:
+            raise DatabaseError("No database cursor available")
+            
+        try:
+            # Get transcripts with existing GO terms
+            self.db_manager.cursor.execute("""
+                SELECT transcript_id, gene_symbol, go_terms 
+                FROM cancer_transcript_base 
+                WHERE go_terms IS NOT NULL 
+                AND gene_type = 'protein_coding'
+            """)
+            
+            transcripts = self.db_manager.cursor.fetchall()
+            total_processed = 0
+            total_enriched = 0
+            
+            updates = []
+            with tqdm(total=len(transcripts), desc="Enriching GO terms") as pbar:
+                for transcript_id, gene_symbol, go_terms in transcripts:
+                    if not go_terms:
+                        pbar.update(1)
+                        continue
+                            
+                    initial_term_count = len(go_terms)
+                    enriched_terms = {}
+                    
+                    # Process existing terms
+                    for go_id, term_data in go_terms.items():
+                        # Get original term data
+                        term_info = {
+                            'term': term_data.get('term', ''),
+                            'evidence': term_data.get('evidence', ''),
+                            'aspect': term_data.get('aspect', '')
+                        }
+                        enriched_terms[go_id] = term_info
+                        
+                        # Add ancestors with inherited evidence
+                        ancestors = self.get_ancestors(go_id, term_data.get('aspect', ''))
+                        for ancestor in ancestors:
+                            if ancestor in self.go_graph.nodes:
+                                ancestor_data = self.go_graph.nodes.get(ancestor, {})
+                                if ancestor not in enriched_terms:
+                                    enriched_terms[ancestor] = {
+                                        'term': ancestor_data.get('name', ''),
+                                        'evidence': f"Inherited from {go_id}",
+                                        'aspect': ancestor_data.get('namespace', '')
+                                    }
+                    
+                    final_term_count = len(enriched_terms)
+                    if final_term_count > initial_term_count:
+                        total_enriched += 1
+                        
+                    total_processed += 1
+                    
+                    # Extract special term arrays for the enriched terms
+                    molecular_functions, cellular_locations = self._extract_special_terms(enriched_terms)
+                    
+                    updates.append((
+                        json.dumps(enriched_terms),
+                        molecular_functions,
+                        cellular_locations,
+                        gene_symbol
+                    ))
+                    
+                    if len(updates) >= self.batch_size:
+                        self._update_enriched_terms_batch(updates)
+                        updates = []
+                        
+                    pbar.update(1)
+            
+            # Process remaining updates
+            if updates:
+                self._update_enriched_terms_batch(updates)
+            
+            self.logger.info(
+                f"GO term enrichment completed:\n"
+                f"- Total transcripts processed: {total_processed}\n"
+                f"- Transcripts enriched with ancestors: {total_enriched}"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"GO term enrichment failed: {e}")
+            raise
+    
+    def _update_enriched_terms_batch(self, updates: List[Tuple]) -> None:
+        """Update a batch of enriched GO terms in the database.
+        
+        Args:
+            updates: List of update tuples (go_terms, molecular_functions, cellular_locations, gene_symbol)
+            
+        Raises:
+            DatabaseError: If batch update fails
+        """
+        if not self.db_manager.cursor:
+            raise DatabaseError("No database cursor available")
+            
+        try:
+            self.execute_batch(
+                """
+                UPDATE cancer_transcript_base
+                SET 
+                    go_terms = %s::jsonb,
+                    molecular_functions = %s::text[],
+                    cellular_location = %s::text[]
+                WHERE gene_symbol = %s
+                """,
+                updates
+            )
+        except Exception as e:
+            raise DatabaseError(f"Failed to update enriched GO terms batch: {e}")
+    
+    def run(self) -> None:
+        """Run the complete GO term enrichment pipeline.
+        
+        Steps:
+        1. Download GO OBO file
+        2. Load GO graph
+        3. Populate initial terms from GOA
+        4. Enrich terms with hierarchy
+        
+        Raises:
+            Various ETLError subclasses based on failure point
+        """
+        try:
+            self.logger.info("Starting GO term enrichment pipeline")
+            
+            # Check schema version using enhanced base class method
+            if not self.ensure_schema_version('v0.1.3'):
+                raise DatabaseError("Incompatible database schema version")
+            
+            # Download GO OBO file and load graph
             obo_path = self.download_obo()
             self.load_go_graph(obo_path)
             
-            logger.info("Populating initial GO terms from GOA...")
+            # Populate initial terms from GOA
+            self.logger.info("Populating initial GO terms from GOA")
             self.populate_initial_terms()
             
             # Ensure connection is still valid before enrichment
-            self._ensure_connection()
+            self.ensure_connection()
             
-            logger.info("Enriching GO terms with ancestors...")
+            # Enrich terms with hierarchy
+            self.logger.info("Enriching GO terms with ancestors")
             self.enrich_transcripts()
             
-            logger.info("GO term processing completed successfully")
+            self.logger.info("GO term processing completed successfully")
             
         except Exception as e:
-            logger.error(f"GO term processing failed: {e}")
+            self.logger.error(f"GO term processing failed: {e}")
             raise
-        finally:
-            # Only close connection when completely done
-            if hasattr(self, 'db_manager'):
-                self.db_manager.close()
 

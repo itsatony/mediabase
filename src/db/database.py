@@ -289,6 +289,27 @@ class DatabaseManager:
             logger.error(f"Version check failed: {e}")
             return None
 
+    def get_current_schemaversion_number(self) -> Optional[int]:
+        """Get current schema version number - we extract and 4-digit each major, minor, patch to return 1 comparable number."""
+        current_version = self.get_current_version()
+        if current_version:
+            # Extract major, minor, patch from version string
+            parts = current_version.split('.')
+            if len(parts) == 3:
+                major = int(parts[0][1:])
+                minor = int(parts[1])
+                patch = int(parts[2])
+                # Convert to a single integer
+                # Examples for v0.1.3: 0.1.3 -> 0*10000 + 1*100 + 3 = 103
+                # Examples for v1.0.0: 1.0.0 -> 1*10000 + 0*100 + 0 = 10000
+                # Examples for v0.10.3: 0.10.3 -> 0*10000 + 10*100 + 3 = 1003
+                # Examples for v0.1.10: 0.1.10 -> 0*10000 + 1*100 + 10 = 110
+                # Examples for v1.2.3: 1.2.3 -> 1*10000 + 2*100 + 3 = 10203
+                return major * 10000 + minor * 100 + patch
+            else:
+                logger.error(f"Invalid version format: {current_version}")
+        return None
+
     def migrate_to_version(self, target_version: str) -> bool:
         """Migrate schema to target version.
         

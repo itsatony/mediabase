@@ -1,20 +1,32 @@
-"""Publications processing module for Cancer Transcriptome Base."""
+"""Publications processing module for Cancer Transcriptome Base.
 
-import logging
-from typing import Dict, List, Optional, Any, Set, TypedDict, cast, Union
-import json
-from datetime import datetime
-import requests
-import time
-from tqdm import tqdm
-from pathlib import Path
+This module handles downloading, processing, and enrichment of publication metadata
+from PubMed for transcript records, enhancing source references with detailed
+publication information.
+"""
+
+# Standard library imports
 import os
-import gzip
-import hashlib
-from ..db.database import get_db_manager
-from psycopg2.extras import execute_batch
+import json
+import logging
+import time
+import re
+from typing import Dict, List, Optional, Any, Set, TypedDict, cast, Union, Tuple
+from datetime import datetime
+from pathlib import Path
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
-logger = logging.getLogger(__name__)
+# Third party imports
+import requests
+from tqdm import tqdm
+from psycopg2.extras import execute_batch
+from rich.console import Console
+from rich.table import Table
+
+# Local imports
+from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
+from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 
 # Constants for PubMed API
 PUBMED_API_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -36,776 +48,706 @@ class Publication(TypedDict, total=False):
     doi: Optional[str]
     url: Optional[str]
 
-class PublicationsProcessor:
+class PublicationsProcessor(BaseProcessor):
     """Process and enrich publication references."""
     
     def __init__(self, config: Dict[str, Any]) -> None:
-        """Initialize publications processor.
+        """Initialize the publications processor with configuration.
         
         Args:
-            config: Configuration dictionary containing:
-                - pubmed_api_key: NCBI E-utilities API key (optional)
-                - pubmed_email: Contact email for API (required)
-                - batch_size: Size of batches for processing
-                - cache_dir: Directory for caching publication data
-                - rate_limit: Wait time between API requests in seconds
-                - force_refresh: Force refresh all publication data
+            config: Configuration dictionary with settings
         """
-        self.config = config
-        self.db_manager = get_db_manager(config)
-        self.batch_size = config.get('batch_size', 100)
-        self.api_key = config.get('pubmed_api_key')
-        self.email = config.get('pubmed_email')
+        super().__init__(config)
         
-        # Set up cache directory
-        self.cache_dir = Path(config.get('cache_dir', '/tmp/mediabase/cache')) / 'publications'
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_file = self.cache_dir / "pubmed_cache.json.gz"
-        self.cache_meta_file = self.cache_dir / "pubmed_cache_meta.json"
-        
-        # Rate limiting configuration
-        self.rate_limit = config.get('rate_limit', PUBMED_RATE_LIMIT)
-        if self.api_key:
-            # Faster rate limit with API key
-            self.rate_limit = min(self.rate_limit, 0.1)  # 10 requests per second max with API key
+        # Set up email and API key for PubMed API
+        self.email = config.get('email', os.environ.get('MB_PUBMED_EMAIL', ''))
+        if not self.email:
+            self.logger.warning("No email configured for PubMed API. Set MB_PUBMED_EMAIL in environment.")
             
-        # Force refresh flag
+        self.api_key = config.get('api_key', os.environ.get('MB_PUBMED_API_KEY', ''))
+        if self.api_key:
+            self.logger.info("Using API key for PubMed requests (higher rate limits)")
+            self.rate_limit = 0.1  # 10 requests per second with API key
+        else:
+            self.rate_limit = PUBMED_RATE_LIMIT
+        
+        # Allow rate limit override from config
+        self.rate_limit = config.get('rate_limit', self.rate_limit)
+        
+        # Force refresh of publication data
         self.force_refresh = config.get('force_refresh', False)
         
-        # Initialize cache
-        self.publication_cache = self._load_cache()
+        # Create a directory for publication cache
+        self.pub_dir = self.cache_dir / 'publications'
+        self.pub_dir.mkdir(exist_ok=True)
         
-        # Validate email (required by NCBI)
-        if not self.email:
-            logger.warning("PubMed API requires an email address. Set MB_PUBMED_EMAIL environment variable.")
+        # Initialize a cache for frequently accessed publications
+        self.publication_cache: Dict[str, Dict[str, Any]] = self._load_cache()
+        self.cache_modified = False
+        
+        # Set a longer cache TTL for publications
+        self.cache_ttl = config.get('cache_ttl', DEFAULT_CACHE_TTL)
+        
+        # Track hit/miss statistics
+        self.cache_hits = 0
+        self.cache_misses = 0
     
     def _load_cache(self) -> Dict[str, Dict[str, Any]]:
-        """Load publication cache from file.
+        """Load publication cache from disk.
         
         Returns:
             Dictionary mapping PMIDs to publication metadata
         """
-        cache: Dict[str, Dict[str, Any]] = {}
+        cache_path = self.pub_dir / "pubmed_cache.json"
         
-        if self.cache_file.exists() and not self.force_refresh:
-            try:
-                with gzip.open(self.cache_file, 'rt') as f:
-                    cache = json.load(f)
-                logger.info(f"Loaded {len(cache)} cached publications from {self.cache_file}")
-            except Exception as e:
-                logger.warning(f"Failed to load publication cache: {e}")
-                # Create a new cache file if the existing one is corrupt
-                self._save_cache(cache)
+        if not cache_path.exists():
+            self.logger.info("No publication cache found, initializing empty cache")
+            return {}
         
-        return cache
+        try:
+            with open(cache_path, 'r') as f:
+                cache_data = json.load(f)
+                self.logger.info(f"Loaded {len(cache_data)} publications from cache")
+                return cache_data
+        except (json.JSONDecodeError, IOError) as e:
+            self.logger.warning(f"Failed to load publication cache: {e}")
+            return {}
     
     def _save_cache(self, cache: Dict[str, Dict[str, Any]]) -> None:
-        """Save publication cache to file.
+        """Save publication cache to disk.
         
         Args:
             cache: Dictionary mapping PMIDs to publication metadata
         """
+        if not self.cache_modified:
+            return
+            
+        cache_path = self.pub_dir / "pubmed_cache.json"
+        
         try:
-            with gzip.open(self.cache_file, 'wt') as f:
+            with open(cache_path, 'w') as f:
                 json.dump(cache, f)
-                
-            # Update cache metadata
-            meta = {
-                'timestamp': datetime.now().isoformat(),
-                'count': len(cache)
-            }
-            with open(self.cache_meta_file, 'w') as f:
-                json.dump(meta, f)
-                
-            logger.info(f"Saved {len(cache)} publications to cache")
-        except Exception as e:
-            logger.error(f"Failed to save publication cache: {e}")
+                self.logger.info(f"Saved {len(cache)} publications to cache")
+        except IOError as e:
+            self.logger.warning(f"Failed to save publication cache: {e}")
     
     @staticmethod
     def create_publication_reference(
-        pmid: Optional[str],
-        evidence_type: str,
-        source_db: str,
-        **kwargs
+        pmid: str,
+        evidence_type: str = "unknown",
+        source_db: str = "PubMed",
+        url: Optional[str] = None
     ) -> Publication:
-        """Create a standardized publication reference.
+        """Create a basic publication reference.
         
         Args:
             pmid: PubMed ID
-            evidence_type: Type of evidence (e.g., "experimental", "computational")
-            source_db: Source database (e.g., "GO", "DrugCentral", "UniProt")
-            **kwargs: Additional publication metadata
+            evidence_type: Type of evidence (e.g., experimental, review)
+            source_db: Source database (e.g., GO, UniProt)
+            url: Optional URL to the reference
             
         Returns:
-            Publication: Standardized publication reference
+            Publication reference dictionary
         """
-        publication: Publication = {
-            "pmid": pmid or "",
-            "evidence_type": evidence_type,
-            "source_db": source_db
+        # Ensure PMID is a string
+        pmid_str = str(pmid)
+        
+        pub_ref: Publication = {
+            'pmid': pmid_str,
+            'evidence_type': evidence_type,
+            'source_db': source_db
         }
         
-        # Add optional fields if provided
-        for field in [
-            "title", "abstract", "year", "journal",
-            "authors", "citation_count", "doi", "url"
-        ]:
-            if field in kwargs and kwargs[field] is not None:
-                publication[field] = kwargs[field]
-                
-        return publication
+        # Add URL if provided, otherwise generate from PMID
+        if url:
+            pub_ref['url'] = url
+        else:
+            pub_ref['url'] = format_pmid_url(pmid_str)
+            
+        return pub_ref
     
-    def add_reference_to_transcript(
-        self,
-        transcript_id: str,
-        reference: Publication,
-        source_category: str
-    ) -> bool:
-        """Add a publication reference to a transcript.
+    def get_publication_metadata(self, pmid: str) -> Optional[Dict[str, Any]]:
+        """Get publication metadata for a specific PMID.
         
         Args:
-            transcript_id: Transcript ID
-            reference: Publication reference
-            source_category: Source category (go_terms, uniprot, drugs, pathways)
+            pmid: PubMed ID
             
         Returns:
-            bool: True if successful
+            Publication metadata dictionary or None if not found
         """
-        # Ensure we have a valid connection
-        if not self.db_manager.ensure_connection():
-            logger.error("Failed to establish database connection")
-            return False
-            
-        if not self.db_manager.cursor:
-            logger.error("No database cursor available")
-            return False
-            
-        try:
-            # Get current references
-            self.db_manager.cursor.execute("""
-                SELECT source_references 
-                FROM cancer_transcript_base
-                WHERE transcript_id = %s
-            """, (transcript_id,))
-            
-            # Check cursor before fetching results
-            if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                logger.error("Cursor became invalid during query execution")
-                return False
-                
-            result = self.db_manager.cursor.fetchone()
-            if not result:
-                logger.warning(f"Transcript {transcript_id} not found")
-                return False
-                
-            source_refs = result[0] or {}
-            
-            # Add new reference to appropriate category
-            if source_category not in source_refs:
-                source_refs[source_category] = []
-                
-            # Check if reference already exists (by PMID)
-            if reference.get("pmid"):
-                existing_refs = [ref for ref in source_refs.get(source_category, [])
-                                if ref.get("pmid") == reference.get("pmid")]
-                if existing_refs:
-                    # Update existing reference
-                    for ref in source_refs[source_category]:
-                        if ref.get("pmid") == reference.get("pmid"):
-                            ref.update({k: v for k, v in reference.items() if v is not None})
-                    updated_refs = source_refs[source_category]
-                else:
-                    # Add new reference
-                    updated_refs = source_refs[source_category] + [reference]
-            else:
-                # Add new reference without PMID
-                updated_refs = source_refs[source_category] + [reference]
-                
-            source_refs[source_category] = updated_refs
-            
-            # Verify connection before update
-            if not self.db_manager.ensure_connection():
-                logger.warning("Connection lost before update, reconnecting...")
-                if not self.db_manager.ensure_connection():
-                    logger.error("Failed to reestablish database connection")
-                    return False
-            
-            # Update database
-            if not self.db_manager.cursor:
-                logger.error("No database cursor available for update")
-                return False
-                
-            self.db_manager.cursor.execute("""
-                UPDATE cancer_transcript_base
-                SET source_references = %s
-                WHERE transcript_id = %s
-            """, (json.dumps(source_refs), transcript_id))
-            
-            if self.db_manager.conn and not self.db_manager.conn.closed:
-                self.db_manager.conn.commit()
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to add reference: {e}")
-            if self.db_manager.conn and not self.db_manager.conn.closed:
-                self.db_manager.conn.rollback()
-            return False
+        # Check cache first
+        if pmid in self.publication_cache and not self.force_refresh:
+            self.cache_hits += 1
+            return self.publication_cache[pmid]
         
-    def _fetch_pubmed_metadata(self, pmids: Set[str]) -> Dict[str, Dict[str, Any]]:
-        """Fetch metadata for PubMed IDs using E-utilities with caching.
+        self.cache_misses += 1
+        
+        # Fetch from PubMed API
+        metadata = self._fetch_pubmed_metadata([pmid])
+        
+        # Return the specific publication or None
+        return metadata.get(pmid)
+    
+    def get_publications_metadata(self, pmids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Get metadata for multiple publications.
         
         Args:
-            pmids: Set of PubMed IDs to fetch
+            pmids: List of PubMed IDs
             
         Returns:
-            Dictionary mapping PMIDs to their metadata
+            Dictionary mapping PMIDs to publication metadata
         """
-        # First, filter out PMIDs already in cache (unless force_refresh)
-        pmids_to_fetch = set()
-        result_metadata: Dict[str, Dict[str, Any]] = {}
+        if not pmids:
+            return {}
+            
+        # Deduplicate PMIDs
+        unique_pmids = list(set(pmids))
         
-        for pmid in pmids:
+        # Split into cached and uncached
+        cached_pmids = []
+        uncached_pmids = []
+        
+        for pmid in unique_pmids:
             if pmid in self.publication_cache and not self.force_refresh:
-                result_metadata[pmid] = self.publication_cache[pmid]
+                cached_pmids.append(pmid)
             else:
-                pmids_to_fetch.add(pmid)
+                uncached_pmids.append(pmid)
         
-        if not pmids_to_fetch:
-            logger.info("All requested publications found in cache")
-            return result_metadata
-            
-        logger.info(f"Fetching {len(pmids_to_fetch)} publications from PubMed")
+        # Update cache statistics
+        self.cache_hits += len(cached_pmids)
+        self.cache_misses += len(uncached_pmids)
         
-        # Validate required parameters
-        if not self.email:
-            logger.error("Email is required for PubMed API")
-            return result_metadata
+        # Get cached publications
+        result = {pmid: self.publication_cache[pmid] for pmid in cached_pmids}
+        
+        # Fetch uncached publications if needed
+        if uncached_pmids:
+            uncached_data = self._fetch_pubmed_metadata(uncached_pmids)
+            result.update(uncached_data)
+        
+        return result
+    
+    def _fetch_pubmed_metadata(self, pmids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch metadata for multiple publications from PubMed E-utilities.
+        
+        Args:
+            pmids: List of PubMed IDs to fetch
             
-        try:
-            # Process in batches of PUBMED_BATCH_SIZE with rate limiting
-            pmid_list = list(pmids_to_fetch)
+        Returns:
+            Dictionary mapping PMIDs to publication metadata
+        """
+        if not pmids:
+            return {}
             
-            with tqdm(total=len(pmid_list), desc="Fetching PubMed data") as pbar:
-                for i in range(0, len(pmid_list), PUBMED_BATCH_SIZE):
-                    batch = pmid_list[i:i + PUBMED_BATCH_SIZE]
+        # Deduplicate and validate PMIDs
+        valid_pmids = []
+        for pmid in pmids:
+            if pmid and str(pmid).strip() and str(pmid).isdigit():
+                valid_pmids.append(str(pmid).strip())
+        
+        if not valid_pmids:
+            return {}
+            
+        results: Dict[str, Dict[str, Any]] = {}
+        
+        # Process in batches to avoid API limits
+        with tqdm(total=len(valid_pmids), desc="Fetching PubMed data") as pbar:
+            for i in range(0, len(valid_pmids), PUBMED_BATCH_SIZE):
+                batch = valid_pmids[i:i+PUBMED_BATCH_SIZE]
+                
+                try:
+                    # Fetch summary data for the batch
+                    summary_data = self._fetch_pubmed_summary(batch)
                     
-                    # Prepare API parameters
-                    api_params = {
-                        'db': 'pubmed',
-                        'tool': 'mediabase',
-                        'email': self.email,
-                        'retmode': 'json',
-                    }
+                    # Fetch abstract data for the batch
+                    abstract_data = self._fetch_pubmed_abstracts(batch)
                     
-                    # Add API key if available
-                    if self.api_key:
-                        api_params['api_key'] = self.api_key
-                    
-                    # First get summary data with retries
-                    summary_data = {}
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            summary_params = api_params.copy()
-                            summary_params['id'] = ','.join(batch)
+                    # Merge summary and abstract data
+                    for pmid in batch:
+                        pub_data = {}
+                        
+                        # Add summary data if available
+                        if pmid in summary_data:
+                            pub_data.update(summary_data[pmid])
                             
-                            summary_response = requests.get(
-                                f"{PUBMED_API_BASE}/esummary.fcgi", 
-                                params=summary_params,
-                                timeout=30  # Add timeout to avoid hanging
-                            )
+                        # Add abstract data if available
+                        if pmid in abstract_data:
+                            pub_data.update(abstract_data[pmid])
+                        
+                        # Only add if we have some data
+                        if pub_data:
+                            results[pmid] = pub_data
                             
-                            if summary_response.status_code == 200:
-                                data = summary_response.json()
-                                summary_data = data
-                                break
-                            elif summary_response.status_code == 429:  # Too Many Requests
-                                wait_time = int(summary_response.headers.get('Retry-After', 60))
-                                logger.warning(f"Rate limited by PubMed API. Waiting {wait_time} seconds.")
-                                time.sleep(wait_time)
-                            else:
-                                logger.warning(f"PubMed API error: {summary_response.status_code}")
-                                time.sleep(2 ** attempt)  # Exponential backoff
-                        except requests.RequestException as e:
-                            logger.warning(f"PubMed API request failed: {e}")
-                            time.sleep(2 ** attempt)  # Exponential backoff
+                            # Update the cache
+                            self.publication_cache[pmid] = pub_data
+                            self.cache_modified = True
                     
-                    # Process summary data
-                    batch_metadata = {}
-                    if summary_data and 'result' in summary_data:
-                        for pmid, article in summary_data.get('result', {}).items():
-                            if pmid != 'uids':
-                                try:
-                                    pub_date = article.get('pubdate', '')
-                                    year = None
-                                    if pub_date:
-                                        # Handle different date formats
-                                        year_part = pub_date.split()[0]
-                                        if year_part.isdigit():
-                                            year = int(year_part)
-                                    
-                                    authors = []
-                                    if 'authors' in article:
-                                        authors = [author.get('name', '') 
-                                                for author in article.get('authors', [])]
-                                    
-                                    batch_metadata[pmid] = {
-                                        'year': year,
-                                        'citation_count': None,
-                                        'title': article.get('title', ''),
-                                        'journal': article.get('source', ''),
-                                        'authors': authors,
-                                        'doi': article.get('elocationid', '').replace('doi: ', '') if article.get('elocationid', '').startswith('doi: ') else article.get('doi', ''),
-                                        'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                                    }
-                                except Exception as e:
-                                    logger.debug(f"Error processing PMID {pmid}: {e}")
-                                    continue
-                    
-                    # Apply rate limiting before next request
-                    time.sleep(self.rate_limit)
-                    
-                    # Then get abstracts using efetch with retries
-                    for attempt in range(max_retries):
-                        try:
-                            abstract_params = api_params.copy()
-                            abstract_params['id'] = ','.join(batch)
-                            abstract_params['rettype'] = 'abstract'
-                            
-                            abstract_response = requests.get(
-                                f"{PUBMED_API_BASE}/efetch.fcgi", 
-                                params=abstract_params,
-                                timeout=30
-                            )
-                            
-                            if abstract_response.status_code == 200:
-                                # efetch returns XML by default
-                                try:
-                                    from lxml import etree
-                                    
-                                    xml_parser = etree.XMLParser(recover=True)
-                                    root = etree.fromstring(abstract_response.content, parser=xml_parser)
-                                    
-                                    for article in root.xpath('//PubmedArticle'):
-                                        try:
-                                            pmid_nodes = article.xpath('.//PMID/text()')
-                                            article_pmid = pmid_nodes[0] if pmid_nodes else None
-                                            
-                                            if article_pmid and article_pmid in batch_metadata:
-                                                # Extract abstract text
-                                                abstract_texts = article.xpath('.//AbstractText/text()')
-                                                if abstract_texts:
-                                                    batch_metadata[article_pmid]['abstract'] = ' '.join(abstract_texts)
-                                                    
-                                        except (IndexError, KeyError) as e:
-                                            logger.debug(f"Error extracting abstract: {e}")
-                                            continue
-                                except ImportError:
-                                    logger.warning("lxml not available for XML parsing. Abstracts will not be included.")
-                                except Exception as e:
-                                    logger.debug(f"Error parsing XML: {e}")
-                                    
-                                break
-                            elif abstract_response.status_code == 429:  # Too Many Requests
-                                wait_time = int(abstract_response.headers.get('Retry-After', 60))
-                                logger.warning(f"Rate limited by PubMed API. Waiting {wait_time} seconds.")
-                                time.sleep(wait_time)
-                            else:
-                                logger.warning(f"PubMed API error: {abstract_response.status_code}")
-                                time.sleep(2 ** attempt)  # Exponential backoff
-                        except requests.RequestException as e:
-                            logger.warning(f"PubMed API request failed: {e}")
-                            time.sleep(2 ** attempt)  # Exponential backoff
-                    
-                    # Update results and cache
-                    for pmid, metadata in batch_metadata.items():
-                        result_metadata[pmid] = metadata
-                        self.publication_cache[pmid] = metadata
-                    
-                    # Save cache periodically
-                    if i % (PUBMED_BATCH_SIZE * 5) == 0:
-                        self._save_cache(self.publication_cache)
-                    
-                    # Apply rate limiting before next batch
-                    time.sleep(self.rate_limit)
-                    
-                    # Update progress bar
+                    # Update progress
                     pbar.update(len(batch))
+                    
+                    # Rate limiting
+                    time.sleep(self.rate_limit)
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error fetching batch {i}-{i+PUBMED_BATCH_SIZE}: {e}")
+                    continue
+        
+        # Save the updated cache
+        self._save_cache(self.publication_cache)
+        
+        return results
+    
+    def _fetch_pubmed_summary(self, pmids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch summary data for publications from PubMed ESummary.
+        
+        Args:
+            pmids: List of PubMed IDs
             
-            # Save final cache
-            self._save_cache(self.publication_cache)
+        Returns:
+            Dictionary mapping PMIDs to summary data
+        """
+        if not pmids:
+            return {}
+            
+        results: Dict[str, Dict[str, Any]] = {}
+        
+        # Construct URL with parameters
+        pmid_str = ",".join(pmids)
+        params = {
+            'db': 'pubmed',
+            'tool': 'mediabase',
+            'email': self.email,
+            'retmode': 'json',
+            'id': pmid_str
+        }
+        
+        if self.api_key:
+            params['api_key'] = self.api_key
+            
+        url = f"{PUBMED_API_BASE}/esummary.fcgi"
+        
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Process each publication in the result
+            if 'result' in data:
+                for pmid in pmids:
+                    if pmid in data['result']:
+                        pub_data = data['result'][pmid]
+                        
+                        # Extract relevant fields
+                        title = pub_data.get('title', '')
+                        authors = []
+                        if 'authors' in pub_data:
+                            for author in pub_data['authors']:
+                                if 'name' in author:
+                                    authors.append(author['name'])
+                        
+                        journal = pub_data.get('fulljournalname', '')
+                        year = None
+                        if 'pubdate' in pub_data:
+                            # Extract year from date string
+                            match = re.search(r'\b\d{4}\b', pub_data['pubdate'])
+                            if match:
+                                year = int(match.group(0))
+                                
+                        doi = pub_data.get('elocationid', '')
+                        if doi and doi.startswith('doi:'):
+                            doi = doi[4:]  # Remove 'doi:' prefix
+                            
+                        # Create structured result
+                        results[pmid] = {
+                            'pmid': pmid,
+                            'title': title,
+                            'authors': authors,
+                            'journal': journal,
+                            'year': year,
+                            'doi': doi,
+                            'url': format_pmid_url(pmid)
+                        }
+            
+            return results
             
         except Exception as e:
-            logger.error(f"Error fetching PubMed metadata: {e}")
-            
-        return result_metadata
-
-    def get_pmids_to_enrich(self) -> Set[str]:
-        """Get all PMIDs from the database that need enrichment.
+            self.logger.debug(f"Error fetching publication summaries: {e}")
+            return {}
+    
+    def _fetch_pubmed_abstracts(self, pmids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch abstract data for publications from PubMed EFetch.
         
-        Returns:
-            Set of PMIDs that need metadata
-        """
-        # Ensure we have a valid connection
-        if not self.db_manager.ensure_connection():
-            raise RuntimeError("Failed to establish database connection")
+        Args:
+            pmids: List of PubMed IDs
             
-        if not self.db_manager.cursor:
-            raise RuntimeError("Database cursor is not available")
+        Returns:
+            Dictionary mapping PMIDs to abstract data
+        """
+        if not pmids:
+            return {}
+            
+        results: Dict[str, Dict[str, Any]] = {}
+        
+        # Construct URL with parameters
+        pmid_str = ",".join(pmids)
+        params = {
+            'db': 'pubmed',
+            'tool': 'mediabase',
+            'email': self.email,
+            'retmode': 'json',
+            'id': pmid_str,
+            'rettype': 'abstract'
+        }
+        
+        if self.api_key:
+            params['api_key'] = self.api_key
+            
+        url = f"{PUBMED_API_BASE}/efetch.fcgi"
+        
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            
+            # Try to parse as XML
+            try:
+                # Make sure we have valid XML before attempting to parse
+                if response.text and '<PubmedArticleSet>' in response.text:
+                    root = ET.fromstring(response.text)
+                    
+                    # Process each publication
+                    for article_elem in root.findall('.//PubmedArticle'):
+                        # Safely extract PMID
+                        pmid_elem = article_elem.find('.//PMID')
+                        if pmid_elem is None or pmid_elem.text is None:
+                            continue
+                            
+                        pmid = pmid_elem.text
+                        
+                        # Safely extract abstract
+                        abstract_texts = []
+                        for abstract_elem in article_elem.findall('.//AbstractText'):
+                            if abstract_elem is not None and abstract_elem.text:
+                                abstract_texts.append(abstract_elem.text)
+                        
+                        abstract = ' '.join(abstract_texts)
+                        
+                        results[pmid] = {'abstract': abstract}
+                else:
+                    self.logger.debug("Response does not contain valid XML")
+            except Exception as e:
+                self.logger.debug(f"Error parsing XML: {e}")
+            
+            return results
+            
+        except Exception as e:
+            self.logger.debug(f"Error fetching publication abstracts: {e}")
+            return {}
+    
+    def enrich_publication_references(self) -> None:
+        """Enrich all publication references in the database with metadata.
+        
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection():
+            raise DatabaseError("Database connection failed")
             
         try:
-            # First, identify PMIDs from all source categories
+            # Get all unique PMIDs from the database
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
             self.db_manager.cursor.execute("""
-                WITH RECURSIVE 
-                source_refs AS (
-                    SELECT jsonb_array_elements(source_references->'go_terms') as ref
+                WITH all_refs AS (
+                    SELECT 
+                        jsonb_array_elements(source_references->'go_terms') as ref
                     FROM cancer_transcript_base
                     WHERE source_references->'go_terms' IS NOT NULL
                     UNION ALL
-                    SELECT jsonb_array_elements(source_references->'drugs') as ref
+                    SELECT 
+                        jsonb_array_elements(source_references->'uniprot') as ref
+                    FROM cancer_transcript_base
+                    WHERE source_references->'uniprot' IS NOT NULL
+                    UNION ALL
+                    SELECT 
+                        jsonb_array_elements(source_references->'drugs') as ref
                     FROM cancer_transcript_base
                     WHERE source_references->'drugs' IS NOT NULL
                     UNION ALL
-                    SELECT jsonb_array_elements(source_references->'pathways') as ref
+                    SELECT 
+                        jsonb_array_elements(source_references->'pathways') as ref
                     FROM cancer_transcript_base
                     WHERE source_references->'pathways' IS NOT NULL
-                    UNION ALL
-                    SELECT jsonb_array_elements(source_references->'uniprot') as ref
-                    FROM cancer_transcript_base
-                    WHERE source_references->'uniprot' IS NOT NULL
                 )
-                SELECT DISTINCT ref->>'pmid' as pmid
-                FROM source_refs
-                WHERE ref->>'pmid' IS NOT NULL 
-                AND ref->>'pmid' != ''
-                AND (ref->>'title' IS NULL OR ref->>'year' IS NULL);
+                SELECT DISTINCT
+                    ref->>'pmid' as pmid
+                FROM all_refs
+                WHERE ref->>'pmid' IS NOT NULL
+                AND ref->>'pmid' ~ '^[0-9]+$'  -- Only numeric PMIDs
             """)
             
-            # Make sure cursor is still valid before fetching results
-            if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                raise RuntimeError("Cursor became invalid during query execution")
-                
-            # Get only PMIDs that are not yet enriched (missing title or year)
-            pmids = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
+            all_pmids = [row[0] for row in self.db_manager.cursor.fetchall() if row[0]]
+            unique_pmids = list(set(all_pmids))
             
-            logger.info(f"Found {len(pmids)} PMIDs that need enrichment")
+            if not unique_pmids:
+                self.logger.info("No publication references found to enrich")
+                return
+                
+            self.logger.info(f"Found {len(unique_pmids)} unique PMIDs to enrich")
             
-            # If force_refresh is enabled, get ALL PMIDs instead
-            if self.force_refresh:
-                # Verify connection before executing another query
-                if not self.db_manager.ensure_connection():
-                    logger.warning("Connection lost before force refresh query, reconnecting...")
-                    if not self.db_manager.ensure_connection():
-                        raise RuntimeError("Failed to reestablish database connection")
-                    if not self.db_manager.cursor:
-                        raise RuntimeError("Failed to create a valid cursor")
-                        
-                self.db_manager.cursor.execute("""
-                    WITH RECURSIVE 
-                    source_refs AS (
-                        SELECT jsonb_array_elements(source_references->'go_terms') as ref
-                        FROM cancer_transcript_base
-                        WHERE source_references->'go_terms' IS NOT NULL
-                        UNION ALL
-                        SELECT jsonb_array_elements(source_references->'drugs') as ref
-                        FROM cancer_transcript_base
-                        WHERE source_references->'drugs' IS NOT NULL
-                        UNION ALL
-                        SELECT jsonb_array_elements(source_references->'pathways') as ref
-                        FROM cancer_transcript_base
-                        WHERE source_references->'pathways' IS NOT NULL
-                        UNION ALL
-                        SELECT jsonb_array_elements(source_references->'uniprot') as ref
-                        FROM cancer_transcript_base
-                        WHERE source_references->'uniprot' IS NOT NULL
-                    )
-                    SELECT DISTINCT ref->>'pmid' as pmid
-                    FROM source_refs
-                    WHERE ref->>'pmid' IS NOT NULL 
-                    AND ref->>'pmid' != '';
-                """)
-                
-                # Check cursor again before fetching results
-                if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                    raise RuntimeError("Cursor became invalid during force refresh query")
-                    
-                all_pmids = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
-                logger.info(f"Force refresh enabled. Will update all {len(all_pmids)} PMIDs")
-                pmids = all_pmids
-                
-            return pmids
+            # Fetch metadata for all PMIDs
+            pub_metadata = self.get_publications_metadata(unique_pmids)
+            
+            # Display cache statistics
+            self.logger.info(
+                f"Cache statistics: {self.cache_hits} hits, {self.cache_misses} misses "
+                f"({self.cache_hits / max(1, self.cache_hits + self.cache_misses) * 100:.1f}% hit rate)"
+            )
+            
+            # Update the database with enriched references
+            self._update_publication_references(pub_metadata)
             
         except Exception as e:
-            logger.error(f"Error getting PMIDs to enrich: {e}")
-            return set()
-
-    def enrich_references(self) -> None:
-        """Enrich source-specific references with metadata.
+            self.logger.error(f"Failed to enrich publication references: {e}")
+            raise DatabaseError(f"Publication enrichment failed: {e}")
+    
+    def _update_publication_references(self, pub_metadata: Dict[str, Dict[str, Any]]) -> None:
+        """Update publication references in the database with metadata.
         
-        This method:
-        1. Identifies references that need enrichment
-        2. Fetches publication metadata from PubMed or cache
-        3. Updates references in the database
-        """
-        # Ensure we have a valid connection
-        if not self.db_manager.ensure_connection():
-            raise RuntimeError("Failed to establish database connection")
+        Args:
+            pub_metadata: Dictionary mapping PMIDs to publication metadata
             
-        if not self.db_manager.cursor:
-            raise RuntimeError("Database cursor is not available")
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not pub_metadata:
+            self.logger.info("No publication metadata to update")
+            return
+            
+        if not self.ensure_connection() or not self.db_manager.cursor:
+            raise DatabaseError("Database connection failed")
             
         try:
-            # Get PMIDs to enrich
-            pmids = self.get_pmids_to_enrich()
+            self.logger.info(f"Updating {len(pub_metadata)} publications in the database")
             
-            if not pmids:
-                logger.info("No PMIDs found to enrich")
-                return
-                
-            # Fetch metadata with caching
-            metadata = self._fetch_pubmed_metadata(pmids)
+            # Get the total count of records directly
+            row_count = 0
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
+                count_result = self.db_manager.cursor.fetchone()
+                if count_result:
+                    row_count = count_result[0]
             
-            if not metadata:
-                logger.warning("No metadata retrieved for publications")
-                return
-                
-            # Check connection state before continuing
-            if not self.db_manager.ensure_connection():
-                logger.warning("Database connection lost after fetching metadata. Reconnecting...")
-                if not self.db_manager.ensure_connection():
-                    raise RuntimeError("Failed to reestablish database connection")
-                    
-            if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                raise RuntimeError("Database cursor is not valid")
-                    
-            # Update references in batches with progress tracking
-            logger.info(f"Updating {len(metadata)} publications in the database")
+            # Process each source reference section
+            sections = ['go_terms', 'uniprot', 'drugs', 'pathways']
             
-            self.db_manager.cursor.execute("""
-                SELECT gene_symbol, source_references
-                FROM cancer_transcript_base
-                WHERE source_references != '{}'::jsonb
-            """)
+            updates_counter = 0
+            records_enriched = 0
             
-            updates = []
-            processed = 0
-            enriched = 0
-            
-            # Make sure we have results before proceeding
-            if not self.db_manager.cursor or self.db_manager.cursor.closed:
-                raise RuntimeError("Cursor became invalid during query execution")
+            # Create a progress bar for the updates
+            with tqdm(total=row_count, 
+                    desc="Enriching references in database") as pbar:
                 
-            rows = self.db_manager.cursor.fetchall()
-            if not rows:
-                logger.info("No references found in database to enrich")
-                return
-                
-            for gene_symbol, refs in tqdm(
-                rows,
-                desc="Enriching references in database"
-            ):
-                if not isinstance(refs, dict):
-                    continue
-                    
-                enriched_refs = refs.copy()
-                modified = False
-                
-                # Process each source's references
-                for source in ['go_terms', 'drugs', 'pathways', 'uniprot']:
-                    if source in refs and isinstance(refs.get(source), list):
-                        enriched_source_refs = []
-                        for ref in refs.get(source, []):
-                            # Fix: Add a proper null check before dictionary lookup
-                            pmid = ref.get("pmid") if isinstance(ref, dict) else None
-                            if isinstance(ref, dict) and pmid and pmid in metadata:
-                                # Only update fields that don't already exist or are empty
-                                for key, value in metadata[pmid].items():
-                                    if key not in ref or not ref.get(key):
-                                        ref[key] = value
-                                        modified = True
-                            enriched_source_refs.append(ref)
-                        enriched_refs[source] = enriched_source_refs
-                
-                if modified:
-                    updates.append((
-                        json.dumps(enriched_refs),
-                        gene_symbol
-                    ))
-                    enriched += 1
-                    
-                if len(updates) >= self.batch_size:
-                    # Verify connection before batch update
-                    if not self.db_manager.ensure_connection():
-                        logger.warning("Connection lost during reference updates, reconnecting...")
-                        if not self.db_manager.ensure_connection():
-                            raise RuntimeError("Failed to reestablish database connection")
-                    
-                    self._update_batch(updates)
-                    processed += len(updates)
+                for section in sections:
+                    # Initialize batch updates
                     updates = []
                     
-            # Process remaining updates
-            if updates:
-                # Verify connection before final updates
-                if not self.db_manager.ensure_connection():
-                    logger.warning("Connection lost before final updates, reconnecting...")
-                    if not self.db_manager.ensure_connection():
-                        raise RuntimeError("Failed to reestablish database connection")
+                    # Query for records with references in this section
+                    self.db_manager.cursor.execute(f"""
+                        SELECT 
+                            transcript_id,
+                            source_references->'{section}' as refs
+                        FROM cancer_transcript_base
+                        WHERE source_references->'{section}' IS NOT NULL
+                        AND source_references->'{section}' != '[]'::jsonb
+                    """)
+                    
+                    for transcript_id, refs in self.db_manager.cursor.fetchall():
+                        if not refs:
+                            continue
+                            
+                        # Convert JSON to Python
+                        refs_list = refs if isinstance(refs, list) else json.loads(refs)
+                        modified = False
                         
-                self._update_batch(updates)
-                processed += len(updates)
+                        # Enrich each reference with metadata if available
+                        for ref in refs_list:
+                            if not isinstance(ref, dict) or 'pmid' not in ref:
+                                continue
+                                
+                            pmid = ref.get('pmid')
+                            if not pmid or not isinstance(pmid, str) or not pmid.isdigit():
+                                continue
+                                
+                            # Add metadata if available
+                            if pmid in pub_metadata:
+                                meta = pub_metadata[pmid]
+                                
+                                # Add each metadata field if not already present
+                                for key, value in meta.items():
+                                    if key not in ref or ref[key] is None:
+                                        ref[key] = value
+                                        modified = True
+                        
+                        # Add to update batch if modified
+                        if modified:
+                            updates.append((
+                                json.dumps(refs_list),
+                                section,
+                                transcript_id
+                            ))
+                            records_enriched += 1
+                        
+                        # Process in batches
+                        if len(updates) >= self.batch_size:
+                            self._execute_publication_updates(updates, section)
+                            updates_counter += len(updates)
+                            updates = []
+                    
+                    # Process remaining updates
+                    if updates:
+                        self._execute_publication_updates(updates, section)
+                        updates_counter += len(updates)
+                    
+                    # Update progress - estimate section completion
+                    pbar.update(row_count // len(sections))
             
-            logger.info(f"Enrichment completed. Enriched {enriched} records. Processed {processed} updates.")
+            self.logger.info(f"Enrichment completed. Enriched {records_enriched} records. Processed {updates_counter} updates.")
+            
+            # Check enrichment statistics
+            self._display_enrichment_statistics()
             
         except Exception as e:
-            logger.error(f"Reference enrichment failed: {e}")
-            if self.db_manager.conn and not self.db_manager.conn.closed:
-                self.db_manager.conn.rollback()
-            raise
-
-    def _update_batch(self, updates: List[tuple]) -> None:
-        """Update a batch of enriched references."""
-        # Ensure we have a valid cursor
-        if not self.db_manager.cursor or self.db_manager.cursor.closed:
-            if not self.db_manager.ensure_connection():
-                raise RuntimeError("Failed to establish database connection for batch update")
-            if not self.db_manager.cursor:
-                raise RuntimeError("Failed to create a valid cursor for batch update")
+            self.logger.error(f"Failed to update publication references: {e}")
+            raise DatabaseError(f"Publication reference update failed: {e}")
+    
+    def _execute_publication_updates(self, updates: List[Tuple[str, str, str]], section: str) -> None:
+        """Execute batch updates for publication references.
         
-        execute_batch(
-            self.db_manager.cursor,
-            """
-            UPDATE cancer_transcript_base
-            SET source_references = %s::jsonb
-            WHERE gene_symbol = %s
-            """,
-            updates,
-            page_size=self.batch_size
-        )
-        
-        if self.db_manager.conn and not self.db_manager.conn.closed:
-            self.db_manager.conn.commit()
-
-    def run(self) -> None:
-        """Run the complete publications enrichment pipeline."""
+        Args:
+            updates: List of tuples (json_refs, section, transcript_id)
+            section: Reference section name
+            
+        Raises:
+            DatabaseError: If batch update fails
+        """
+        if not updates:
+            return
+            
+        if not self.db_manager.cursor:
+            raise DatabaseError("No database cursor available")
+            
         try:
-            # Ensure database schema is compatible
-            if not self.db_manager.ensure_connection():
-                raise RuntimeError("Failed to establish database connection")
-                
-            if not self.db_manager.cursor:
-                raise RuntimeError("Database cursor is not available")
-                    
-            # Check schema version
-            self.db_manager.cursor.execute("SELECT version FROM schema_version")
-            result = self.db_manager.cursor.fetchone()
-            
-            if not result or result[0] != 'v0.1.4':
-                logger.warning(f"Schema version {result[0] if result else 'unknown'} detected. Upgrading to v0.1.4")
-                if not self.db_manager.migrate_to_version('v0.1.4'):
-                    raise RuntimeError("Failed to upgrade database schema to v0.1.4")
-            
-            # Run the enrichment process
-            logger.info("Starting publication metadata enrichment")
-            self.enrich_references()
-            
-            # Print statistics - ensure we have a valid cursor
-            cursor = None
-            if not self.db_manager.ensure_connection():
-                logger.warning("Connection lost after enrichment. Reconnecting for statistics...")
-                if not self.db_manager.ensure_connection():
-                    logger.warning("Failed to reconnect for statistics. Skipping statistics output.")
-                    return
-            
-            cursor = self.db_manager.cursor
-            if not cursor or cursor.closed:
-                logger.warning("Cursor is closed or None. Cannot collect statistics.")
-                return
-                
-            cursor.execute("""
-                WITH stats AS (
-                    SELECT
-                        COUNT(*) as total_genes,
-                        COUNT(CASE WHEN source_references IS NOT NULL THEN 1 END) as with_refs,
-                        (
-                            SELECT COUNT(*)
-                            FROM (
-                                WITH RECURSIVE all_refs AS (
-                                    SELECT jsonb_array_elements(source_references->'go_terms') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'go_terms' IS NOT NULL
-                                    UNION ALL
-                                    SELECT jsonb_array_elements(source_references->'drugs') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'drugs' IS NOT NULL
-                                    UNION ALL
-                                    SELECT jsonb_array_elements(source_references->'pathways') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'pathways' IS NOT NULL
-                                    UNION ALL
-                                    SELECT jsonb_array_elements(source_references->'uniprot') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'uniprot' IS NOT NULL
-                                )
-                                SELECT DISTINCT ref->>'pmid' as pmid
-                                FROM all_refs
-                                WHERE ref->>'pmid' IS NOT NULL
-                            ) pm
-                        ) as unique_pmids,
-                        (
-                            SELECT COUNT(*)
-                            FROM (
-                                WITH RECURSIVE all_refs AS (
-                                    SELECT jsonb_array_elements(source_references->'go_terms') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'go_terms' IS NOT NULL
-                                    UNION ALL
-                                    SELECT jsonb_array_elements(source_references->'drugs') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'drugs' IS NOT NULL
-                                    UNION ALL
-                                    SELECT jsonb_array_elements(source_references->'pathways') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'pathways' IS NOT NULL
-                                    UNION ALL
-                                    SELECT jsonb_array_elements(source_references->'uniprot') as ref
-                                    FROM cancer_transcript_base
-                                    WHERE source_references->'uniprot' IS NOT NULL
-                                )
-                                SELECT DISTINCT ref->>'pmid' as pmid
-                                FROM all_refs
-                                WHERE ref->>'pmid' IS NOT NULL
-                                AND ref->>'title' IS NOT NULL
-                            ) pm
-                        ) as enriched_pmids
-                    FROM cancer_transcript_base
+            query = f"""
+                UPDATE cancer_transcript_base
+                SET source_references = jsonb_set(
+                    COALESCE(source_references, '{{}}'::jsonb),
+                    '{{{section}}}',
+                    %s::jsonb,
+                    true
                 )
-                SELECT 
-                    total_genes, 
-                    with_refs, 
-                    unique_pmids, 
-                    enriched_pmids, 
-                    ROUND((enriched_pmids::float / NULLIF(unique_pmids, 0)::float) * 100, 1) as percent_enriched
-                FROM stats;
+                WHERE transcript_id = %s
+            """
+            
+            self.execute_batch(
+                query,
+                [(refs, transcript_id) for refs, _, transcript_id in updates]
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to execute publication updates: {e}")
+            raise DatabaseError(f"Publication update batch failed: {e}")
+    
+    def _display_enrichment_statistics(self) -> None:
+        """Display statistics about enriched publications.
+        
+        Raises:
+            DatabaseError: If database operations fail
+        """
+        if not self.ensure_connection() or not self.db_manager.cursor:
+            return
+            
+        try:
+            # Use a safer version of the ROUND function with explicit casting to numeric
+            self.db_manager.cursor.execute("""
+                WITH stats AS (
+                    WITH pmid_counts AS (
+                        SELECT
+                            COUNT(DISTINCT ref->>'pmid') AS unique_pmids,
+                            COUNT(CASE WHEN ref->>'title' IS NOT NULL THEN 1 END) AS enriched_pmids
+                        FROM (
+                            SELECT jsonb_array_elements(source_references->'go_terms') AS ref
+                            FROM cancer_transcript_base
+                            WHERE source_references->'go_terms' IS NOT NULL
+                            UNION ALL
+                            SELECT jsonb_array_elements(source_references->'uniprot') AS ref
+                            FROM cancer_transcript_base
+                            WHERE source_references->'uniprot' IS NOT NULL
+                            UNION ALL
+                            SELECT jsonb_array_elements(source_references->'drugs') AS ref
+                            FROM cancer_transcript_base
+                            WHERE source_references->'drugs' IS NOT NULL
+                            UNION ALL
+                            SELECT jsonb_array_elements(source_references->'pathways') AS ref
+                            FROM cancer_transcript_base
+                            WHERE source_references->'pathways' IS NOT NULL
+                        ) AS all_refs
+                        WHERE ref->>'pmid' IS NOT NULL
+                    )
+                    SELECT
+                        unique_pmids,
+                        enriched_pmids,
+                        (enriched_pmids::numeric / NULLIF(unique_pmids, 0) * 100)::numeric AS percent_enriched
+                    FROM pmid_counts
+                )
+                SELECT
+                    unique_pmids,
+                    enriched_pmids,
+                    ROUND(percent_enriched::numeric, 2) AS percent_enriched
+                FROM stats
             """)
             
-            result = cursor.fetchone() if cursor and not cursor.closed else None
-            if result:
-                logger.info(f"Publications enrichment statistics:")
-                logger.info(f"- Total genes in database: {result[0]:,}")
-                logger.info(f"- Genes with references: {result[1]:,}")
-                logger.info(f"- Unique PMIDs: {result[2]:,}")
-                logger.info(f"- Enriched PMIDs: {result[3]:,}")
-                logger.info(f"- Enrichment coverage: {result[4]}%")
+            stats = self.db_manager.cursor.fetchone()
             
-            logger.info("Publications enrichment completed successfully")
-            logger.info(f"Publication cache contains {len(self.publication_cache):,} entries")
+            if stats:
+                unique_pmids, enriched_pmids, percent_enriched = stats
+                
+                table = Table(title="Publication Enrichment Statistics")
+                table.add_column("Metric", style="cyan")
+                table.add_column("Value", style="green")
+                
+                table.add_row("Total Unique PMIDs", f"{unique_pmids:,}")
+                table.add_row("Enriched PMIDs", f"{enriched_pmids:,}")
+                table.add_row("Enrichment Rate", f"{percent_enriched}%")
+                
+                console = Console()
+                console.print(table)
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to display enrichment statistics: {e}")
+    
+    def run(self) -> None:
+        """Run the complete publication enrichment pipeline.
+        
+        Raises:
+            Various ETLError subclasses based on failure point
+        """
+        try:
+            self.logger.info("Starting publication enrichment pipeline")
+            
+            # Check if we have an email for PubMed API
+            if not self.email:
+                self.logger.warning(
+                    "No email configured for PubMed API. Set MB_PUBMED_EMAIL in environment. "
+                    "Continuing with limited functionality."
+                )
+            
+            # Enrich publication references
+            self.enrich_publication_references()
+            
+            self.logger.info("Publication enrichment completed successfully")
             
         except Exception as e:
-            logger.error(f"Publications enrichment failed: {e}")
+            self.logger.error(f"Publications enrichment failed: {e}")
             raise
-        finally:
-            # Ensure connection is closed properly at the end
-            if self.db_manager and self.db_manager.conn and not self.db_manager.conn.closed:
-                self.db_manager.conn.close()

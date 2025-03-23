@@ -1,6 +1,6 @@
 # MEDIABASE: Cancer Transcriptome Base
 
-A comprehensive database for cancer transcriptomics analysis, enriched with gene products, GO terms, pathways, drugs, and scientific publications.
+A comprehensive database for cancer transcriptomics analysis, enriched with gene products, GO terms, pathways, drugs, scientific publications, and cross-database identifiers.
 
 ## Overview
 
@@ -12,14 +12,14 @@ MEDIABASE integrates various biological databases to provide a unified interface
 - Pathway integration from Reactome
 - Drug interactions from DrugCentral
 - Scientific literature from PubMed
+- Cross-database identifier mappings (UniProt, NCBI, RefSeq, Ensembl)
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.10 or higher
-- Poetry for dependency management
-- Git
+- Poetry 2.0.1 or higher for dependency management
 - PostgreSQL 12+
 
 ### Environment Setup
@@ -28,6 +28,7 @@ MEDIABASE integrates various biological databases to provide a unified interface
    ```bash
    git clone https://github.com/itsatony/mediabase.git
    cd mediabase
+   ```
 
 2. Set up using poetry:
     ```bash
@@ -37,12 +38,9 @@ MEDIABASE integrates various biological databases to provide a unified interface
     # Configure poetry to create virtual environment in project directory
     poetry config virtualenvs.in-project true
 
-    # Initialize poetry project 
-    poetry init
-
     # Install project dependencies
     poetry install
-
+    
     # Activate the poetry environment
     poetry shell
     ```
@@ -56,19 +54,30 @@ MEDIABASE integrates various biological databases to provide a unified interface
    nano .env
    ```
 
+### Database Setup
+
+1. Create a PostgreSQL database:
+   ```bash
+   # Using psql command line
+   createdb mediabase
+   
+   # Or initialize the database using our script
+   poetry run python scripts/manage_db.py --create-db
+   ```
+
+2. Apply the database schema:
+   ```bash
+   poetry run python scripts/manage_db.py --apply-schema
+   ```
+
 ### Development
 
 1. Ensure the virtual environment is activated:
    ```bash
-   source mbase/bin/activate
+   poetry shell
    ```
 
-2. Install dependencies:
-   ```bash
-   poetry install
-   ```
-
-3. Run tests:
+2. Run tests:
    ```bash
    # Run all tests
    poetry run pytest
@@ -86,7 +95,7 @@ MEDIABASE integrates various biological databases to provide a unified interface
    poetry run pytest -v
    ```
 
-4. Before running tests, ensure your test database is configured:
+3. Before running tests, ensure your test database is configured:
    ```bash
    # Set up test environment variables
    export MB_POSTGRES_HOST=localhost
@@ -103,7 +112,7 @@ MEDIABASE integrates various biological databases to provide a unified interface
 
 After completing the setup, you can:
 
-1. Run the ETL pipeline (will load and insert the inital transcript data):
+1. Run the complete ETL pipeline:
    ```bash
    poetry run python scripts/run_etl.py
    ```
@@ -113,11 +122,11 @@ After completing the setup, you can:
    # Reset the database and process only 100 transcripts
    poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100
    
-   # Only process transcript data (not drugs, pathways, etc.)
-   poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100 --module transcript
+   # Only process specific modules
+   poetry run python scripts/run_etl.py --module transcript,products
    
-   # If you want to run with more verbose output
-   poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100 --log-level DEBUG
+   # Run with more verbose output
+   poetry run python scripts/run_etl.py --log-level DEBUG
    ```
 
 3. Start the API server:
@@ -130,165 +139,85 @@ After completing the setup, you can:
    poetry run jupyter lab notebooks/01_data_exploration.ipynb
    ```
 
-### Running Gene Product Classification
+## ETL Processor Modules
 
-1. Download and process UniProt data:
-   ```bash
-   poetry run python scripts/download_uniprot_data.py
-   ```
+### Transcript Processor
 
-2. Run the classification:
-   ```bash
-   poetry run python scripts/run_product_classification.py
-   ```
+The core module that loads gene transcript data from Gencode GTF files into the database.
 
-   Options:
-   - `--batch-size`: Number of genes to process per batch (default: 100)
-   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+```bash
+# Run only transcript processing
+poetry run python scripts/run_etl.py --module transcript
+```
 
-3. Run tests:
-   ```bash
-   # Run all product classification tests
-   poetry run pytest tests/etl/test_products.py
+Options:
+- `--limit-transcripts`: Number of transcripts to process (default: all)
+- `--gtf-url`: Custom GTF file URL
+- `--force-download`: Force new download of GTF file
 
-   # Run only integration tests
-   poetry run pytest tests/etl/test_integration_products.py
+### Product Classification
 
-   # Run with coverage
-   poetry run pytest tests/etl/test_products.py --cov=src.etl.products
-   ```
+Analyzes and classifies gene products based on UniProt features and GO terms.
 
-### Running GO Term Enrichment
+```bash
+# Run only product classification
+poetry run python scripts/run_etl.py --module products
+```
 
-1. Download and process GO terms:
-   ```bash
-   poetry run python scripts/run_go_enrichment.py
-   ```
+Options:
+- `--batch-size`: Number of genes to process per batch (default: 100)
+- `--process-limit`: Limit number of genes to process
 
-   Options:
-   - `--batch-size`: Number of terms to process per batch (default: 100)
-   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
-   - `--force-download`: Force new download of GO.obo file
-   - `--aspect`: Filter by aspect (molecular_function, biological_process, cellular_component)
+### GO Term Enrichment
 
-2. Monitor progress:
-   ```bash
-   # Check database statistics
-   poetry run python scripts/manage_db.py
-   ```
+Downloads and integrates Gene Ontology (GO) terms with transcripts.
 
-3. Run tests:
-   ```bash
-   # Run GO term tests
-   poetry run pytest tests/etl/test_go_terms.py
+```bash
+# Run only GO term enrichment
+poetry run python scripts/run_etl.py --module go_terms
+```
 
-   # Run with coverage
-   poetry run pytest tests/etl/test_go_terms.py --cov=src.etl.go_terms
-   ```
+Options:
+- `--force-download`: Force new download of GO.obo file
+- `--aspect`: Filter by aspect (molecular_function, biological_process, cellular_component)
 
-### Running Pathway Enrichment
+### Pathway Enrichment
 
-1. Download and process Reactome pathways:
-   ```bash
-   poetry run python scripts/run_pathway_enrichment.py
-   ```
+Integrates Reactome pathway data with transcripts.
 
-   Options:
-   - `--batch-size`: Number of pathways to process per batch (default: 100)
-   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
-   - `--force-download`: Force new download of Reactome data file
+```bash
+# Run only pathway enrichment
+poetry run python scripts/run_etl.py --module pathways
+```
 
-2. Monitor progress:
-   ```bash
-   # Check database statistics
-   poetry run python scripts/manage_db.py
-   ```
+Options:
+- `--force-download`: Force new download of Reactome data file
 
-   Example output:
-   ```
-   Processing pathways: 100%|████████| 18619/18619 [02:15<00:00, 137.42it/s]
-   INFO: Pathway enrichment completed:
-   - Total genes processed: 18,619
-   - Genes with pathways: 15,234
-   - Average pathways per gene: 12.3
-   ```
+### Drug Integration
 
-3. Run tests:
-   ```bash
-   # Run pathway tests
-   poetry run pytest tests/etl/test_pathways.py
+Adds drug interaction data from DrugCentral.
 
-   # Run with coverage
-   poetry run pytest tests/etl/test_pathways.py --cov=src.etl.pathways
-   ```
+```bash
+# Run only drug integration
+poetry run python scripts/run_etl.py --module drugs
+```
 
-4. Verify pathway data:
-   ```bash
-   # Check a specific gene's pathways
-   psql -U your_user -d your_db -c "
-   SELECT gene_symbol, pathways 
-   FROM cancer_transcript_base 
-   WHERE gene_symbol = 'TP53';"
-   ```
-
-   Expected output format:
-   ```
-   gene_symbol |                        pathways
-   ------------+--------------------------------------------------------
-   TP53       | {"Apoptosis [Reactome:R-HSA-109581]",
-              |  "Cell Cycle [Reactome:R-HSA-1640170]",
-              |  "DNA Repair [Reactome:R-HSA-73894]"}
-   ```
-
-### Running Drug Integration
-
-1. Download and process DrugCentral data:
-   ```bash
-   poetry run python scripts/run_drug_integration.py
-   ```
-
-   Options:
-   - `--batch-size`: Number of drugs to process per batch (default: 100)
-   - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR)
-   - `--skip-scores`: Skip drug score calculation
-   - `--force-download`: Force new download of DrugCentral data
-
-2. View drug statistics:
-   ```bash
-   poetry run python scripts/analyze_drugs.py
-   ```
-
-3. Run tests:
-   ```bash
-   # Run drug integration tests
-   poetry run pytest tests/etl/test_drugs.py
-
-   # Run with coverage
-   poetry run pytest tests/etl/test_drugs.py --cov=src.etl.drugs
-   ```
+Options:
+- `--force-download`: Force new download of DrugCentral data
+- `--skip-scores`: Skip drug score calculation
 
 ### Publication Enrichment
 
-The publication enrichment module enhances existing transcript records with metadata from scientific literature. It:
+Enhances transcript records with publication metadata from PubMed.
 
-1. Extracts PubMed IDs (PMIDs) from GO terms, pathways, drugs, and UniProt references
-2. Retrieves comprehensive publication metadata from PubMed's E-utilities API
-3. Caches responses for efficient future use
-4. Enhances source-specific publication references with titles, authors, abstracts, etc.
-
-To run only the publications enrichment:
-```
+```bash
+# Run only publication enrichment
 poetry run python scripts/run_etl.py --module publications
 ```
 
-Additional options for publication enrichment:
-```
-# Force refresh all cached publication data
-poetry run python scripts/run_etl.py --module publications --force-refresh
-
-# Adjust API rate limiting (requests per second)
-poetry run python scripts/run_etl.py --module publications --rate-limit 0.1
-```
+Options:
+- `--force-refresh`: Force refresh of all cached publication data
+- `--rate-limit`: Adjust API rate limiting (requests per second)
 
 Required environment variables for PubMed API:
 ```
@@ -503,7 +432,6 @@ Current development status and upcoming milestones:
   - Enhanced statistics tracking in drug integration pipeline
 - [x] STEP_AZ: ID Enrichment Pre-filtering Optimization (2025-03-16)
   - Added pre-filtering of large database files to human entries only
-  - Implemented smart caching of both raw and filtered files
   - Reduced UniProt idmapping processing time by 90%+ 
   - Reduced NCBI gene info processing time by 95%+
   - Added proper cache management with filter metadata tracking
@@ -526,42 +454,60 @@ Current development status and upcoming milestones:
   - Enhanced error handling for limit settings
   - Added proper fallback to use all transcripts when limit is not set
   - Updated documentation for limit usage
-- [ ] STEP_CA: unify console logging for all system parts / modules. especially for ETLs. prefix each line with source module name, add timestamp of start, progress should be filling bars with time elapsed, percentage and counter of total, live-updating this one line.
-- [ ] STEP_DA: fix the publication enrichment part. this is the error we got last:
-  ```console
-  DEBUG:src.etl.publications:Error parsing XML: 'NoneType' object has no attribute 'xpath'
-  INFO:src.etl.publications:Saved 199 publications to cache
-  Fetching PubMed data:  83%|████████████████████████████████▎                                      | 200/240 [00:03<00:00, 57.33it/s]DEBUG:urllib3.connectionpool:Starting new HTTPS connection (1): eutils.ncbi.nlm.nih.gov:443
-  DEBUG:urllib3.connectionpool:https://eutils.ncbi.nlm.nih.gov:443 "GET /entrez/eutils/esummary.fcgi?db=pubmed&tool=mediabase&email=toni.wagner%40vaudience.ai&retmode=json&api_key=0fcaac3eb246f10a2414b27f354b9f1cf609&id=28859078%2C9989505%2C25691535%2C28083649%2C35947500%2C17357160%2C17671431%2C28017370%2C25877302%2C17569869%2C1373383%2C12183469%2C24498351%2C8054366%2C9%2C26647308%2C7539744%2C18976966%2C10%2C58%2C20573744%2C20519654%2C11115895%2C15031724%2C15314609%2C17359283%2C23589386%2C34507348%2C17294403%2C16636079%2C10806483%2C15522866%2C29249973%2C22940612%2C1710033%2C18228599%2C22325362%2C23468431%2C44%2C9427755 HTTP/1.1" 200 None
-  DEBUG:urllib3.connectionpool:Starting new HTTPS connection (1): eutils.ncbi.nlm.nih.gov:443
-  DEBUG:urllib3.connectionpool:https://eutils.ncbi.nlm.nih.gov:443 "GET /entrez/eutils/efetch.fcgi?db=pubmed&tool=mediabase&email=toni.wagner%40vaudience.ai&retmode=json&api_key=0fcaac3eb246f10a2414b27f354b9f1cf609&id=28859078%2C9989505%2C25691535%2C28083649%2C35947500%2C17357160%2C17671431%2C28017370%2C25877302%2C17569869%2C1373383%2C12183469%2C24498351%2C8054366%2C9%2C26647308%2C7539744%2C18976966%2C10%2C58%2C20573744%2C20519654%2C11115895%2C15031724%2C15314609%2C17359283%2C23589386%2C34507348%2C17294403%2C16636079%2C10806483%2C15522866%2C29249973%2C22940612%2C1710033%2C18228599%2C22325362%2C23468431%2C44%2C9427755&rettype=abstract HTTP/1.1" 200 None
-  DEBUG:src.etl.publications:Error parsing XML: 'NoneType' object has no attribute 'xpath'
-  Fetching PubMed data: 100%|████████████████████████████████████| 240/240 [00:05<00:00, 46.98it/s]
-  INFO:src.etl.publications:Saved 239 publications to cache
-  INFO:src.etl.publications:Updating 239 publications in the database
-  Enriching references in database: 100%|███████████████████████████████████████████| 72228/72228 [00:01<00:00, 70493.16it/s]
-  INFO:src.etl.publications:Enrichment completed. Enriched 1003 records. Processed 1003 updates.
-  ERROR:src.etl.publications:Publications enrichment failed: function round(double precision, integer) does not exist
-  LINE 64:                     ROUND((enriched_pmids::float / NULLIF(un...
-                              ^
-  HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+- [x] STEP_CA: ETL Code Refactoring and Optimization
+  - [x] Enhanced Logging System (2025-06-01)
+    - Created comprehensive logging utility in `src/utils/logging.py`
+    - Implemented console logging with rich formatting
+    - Added file logging with proper rotation
+    - Created standardized progress tracking with tqdm integration
+    - Added support for multiple log levels with consistent formatting
+  - [x] Enhanced BaseProcessor Class (2025-06-01)
+    - Added robust download and caching utilities
+    - Implemented cache metadata management with TTL support
+    - Added standardized batch processing methods
+    - Improved database connection management
+    - Added error handling with specialized exception types
+    - Implemented file compression/decompression utilities
+  - [x] Refactor Processors (2025-06-02)
+    - [x] TranscriptProcessor refactored to use BaseProcessor
+      - Simplified code by removing duplicate cache and download logic
+      - Enhanced error handling with specialized exceptions
+      - Improved logging with consistent messages
+    - [x] ProductProcessor refactored to use BaseProcessor
+      - Added inheritance from BaseProcessor
+      - Standardized database operations
+      - Enhanced caching and download mechanisms
+      - Improved error handling with specialized exception types
+    - [x] PathwayProcessor refactored to use BaseProcessor
+      - Implemented missing methods
+      - Added robust caching with download utilities
+      - Enhanced error handling with specialized exceptions
+      - Standardized database operations with transaction support
+      - Improved publication reference extraction
+    - [x] DrugProcessor refactored to use BaseProcessor (2025-06-03)
+      - Simplified drug download and caching using base methods
+      - Improved database transaction handling with context managers
+      - Refactored complex methods into smaller, more focused functions
+      - Enhanced error handling with specialized exceptions
+      - Standardized database operations with proper transaction support
+      - Added robust verification of integration results
+  - [x] Enhanced Transaction Management and Schema Validation (2025-06-04)
+    - Improved database transaction context manager with cursor validation 
+    - Added robust schema version checking and migration support
+    - Fixed incompatible method override in DrugProcessor
+    - Standardized schema version requirements across processors
+    - Added consistent error handling for database operations
+    - Improved type safety with property-based cursor access
+  - [x] Optimized ID Enrichment Process (2025-06-05)
+    - Streamlined to use only UniProt as the universal ID mapping resource
+    - Enhanced filtering for human-specific entries for improved performance
+    - Expanded ID extraction to fully populate all schema fields
+    - Added comprehensive alt_transcript_ids population
+    - Improved statistical reporting with coverage metrics
+  - [ ] Update Documentation
+    - Document changes in README.md
+    - Add code comments for new utilities
 
-  ETL pipeline failed: function round(double precision, integer) does not exist
-  LINE 64:                     ROUND((enriched_pmids::float / NULLIF(un...
-                              ^
-  HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
-
-  ERROR:master_etl:Detailed error trace:
-  Traceback (most recent call last):
-    File "/home/itsatony/code/mediabase/scripts/run_etl.py", line 217, in run_etl
-      publications_processor.run()
-    File "/home/itsatony/code/mediabase/src/etl/publications.py", line 729, in run
-      cursor.execute("""
-  psycopg2.errors.UndefinedFunction: function round(double precision, integer) does not exist
-  LINE 64:                     ROUND((enriched_pmids::float / NULLIF(un...
-                              ^
-  HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
-  ```
 - [ ] STEP_EA: Add ETL for cancer/disease association
 - [ ] STEP_FA: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
@@ -1335,10 +1281,4 @@ For reference of the enrichment success of the current ETL pipeline, here are ex
     "pathways": []
   }
 }
-```
-
-```csv
-"transcript_id","gene_symbol","gene_id","gene_type","chromosome","coordinates","product_type","go_terms","pathways","drugs","expression_fold_change","expression_freq","cancer_types","features","molecular_functions","cellular_location","drug_scores","alt_transcript_ids","alt_gene_ids","uniprot_ids","ncbi_ids","refseq_ids","source_references"
-"ENST00000503052.3","ENSG00000251161","ENSG00000251161.5","lncRNA","chr15","{""end"":40910337,""start"":40906811,""strand"":1}",[],{},[],{},1,"{""low"":[],""high"":[]}",[],{},{},"{""CCDS"":"""",""HAVANA"":""OTTHUMT00000418857.2""}","{""HGNC"":"""",""HAVANA"":""OTTHUMG00000172510.3""}",[],[],[],"{""drugs"":[],""uniprot"":[],""go_terms"":[],""pathways"":[]}"
-"ENST00000613205.4","NUMA1","ENSG00000137497.19","protein_coding","chr11","{""end"":72080693,""start"":72002865,""strand"":-1}","[""nuclear"",""structural_protein"",""cytoplasmic"",""membrane_associated""]","{""GO:0000132"":{""term"":""establishment of mitotic spindle orientation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0000922"":{""term"":""spindle pole"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0001578"":{""term"":""microtubule bundle formation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0005198"":{""term"":""structural molecule activity"",""aspect"":""molecular_function"",""evidence"":""TAS""},""GO:0005515"":{""term"":""protein binding"",""aspect"":""molecular_function"",""evidence"":""IPI""},""GO:0005634"":{""term"":""nucleus"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005654"":{""term"":""nucleoplasm"",""aspect"":""cellular_component"",""evidence"":""TAS""},""GO:0005694"":{""term"":""chromosome"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0005813"":{""term"":""centrosome"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005819"":{""term"":""spindle"",""aspect"":""cellular_component"",""evidence"":""TAS""},""GO:0005829"":{""term"":""cytosol"",""aspect"":""cellular_component"",""evidence"":""TAS""},""GO:0005876"":{""term"":""spindle microtubule"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005886"":{""term"":""plasma membrane"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0005938"":{""term"":""cell cortex"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0006997"":{""term"":""nucleus organization"",""aspect"":""biological_process"",""evidence"":""TAS""},""GO:0008017"":{""term"":""microtubule binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0015631"":{""term"":""tubulin binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0016328"":{""term"":""lateral plasma membrane"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0016363"":{""term"":""nuclear matrix"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0019904"":{""term"":""protein domain specific binding"",""aspect"":""molecular_function"",""evidence"":""IPI""},""GO:0030425"":{""term"":""dendrite"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0030513"":{""term"":""positive regulation of BMP signaling pathway"",""aspect"":""biological_process"",""evidence"":""ISS""},""GO:0030953"":{""term"":""astral microtubule organization"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0031116"":{""term"":""positive regulation of microtubule polymerization"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0031616"":{""term"":""spindle pole centrosome"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0032388"":{""term"":""positive regulation of intracellular transport"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0032991"":{""term"":""protein-containing complex"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0035091"":{""term"":""phosphatidylinositol binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0035371"":{""term"":""microtubule plus-end"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0036449"":{""term"":""microtubule minus-end"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0043025"":{""term"":""neuronal cell body"",""aspect"":""cellular_component"",""evidence"":""IEA""},""GO:0044877"":{""term"":""protein-containing complex binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0045618"":{""term"":""positive regulation of keratinocyte differentiation"",""aspect"":""biological_process"",""evidence"":""ISS""},""GO:0051010"":{""term"":""microtubule plus-end binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0051011"":{""term"":""microtubule minus-end binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0051301"":{""term"":""cell division"",""aspect"":""biological_process"",""evidence"":""IEA""},""GO:0051321"":{""term"":""meiotic cell cycle"",""aspect"":""biological_process"",""evidence"":""IEA""},""GO:0051798"":{""term"":""positive regulation of hair follicle development"",""aspect"":""biological_process"",""evidence"":""ISS""},""GO:0051984"":{""term"":""positive regulation of chromosome segregation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0055028"":{""term"":""cortical microtubule"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0055048"":{""term"":""anastral spindle assembly"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0060236"":{""term"":""regulation of mitotic spindle organization"",""aspect"":""biological_process"",""evidence"":""IDA""},""GO:0061673"":{""term"":""mitotic spindle astral microtubule"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0070062"":{""term"":""extracellular exosome"",""aspect"":""cellular_component"",""evidence"":""HDA""},""GO:0070840"":{""term"":""dynein complex binding"",""aspect"":""molecular_function"",""evidence"":""IDA""},""GO:0072686"":{""term"":""mitotic spindle"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0090235"":{""term"":""regulation of metaphase plate congression"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:0097427"":{""term"":""microtubule bundle"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0097431"":{""term"":""mitotic spindle pole"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:0097575"":{""term"":""lateral cell cortex"",""aspect"":""cellular_component"",""evidence"":""ISS""},""GO:0097718"":{""term"":""disordered domain specific binding"",""aspect"":""molecular_function"",""evidence"":""IMP""},""GO:0099738"":{""term"":""cell cortex region"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:1902365"":{""term"":""positive regulation of protein localization to spindle pole body"",""aspect"":""biological_process"",""evidence"":""IDA""},""GO:1902846"":{""term"":""positive regulation of mitotic spindle elongation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1904778"":{""term"":""positive regulation of protein localization to cell cortex"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1905720"":{""term"":""cytoplasmic microtubule bundle"",""aspect"":""cellular_component"",""evidence"":""IDA""},""GO:1905820"":{""term"":""positive regulation of chromosome separation"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1905832"":{""term"":""positive regulation of spindle assembly"",""aspect"":""biological_process"",""evidence"":""IMP""},""GO:1990023"":{""term"":""mitotic spindle midzone"",""aspect"":""cellular_component"",""evidence"":""IDA""}}",[],{},"{""low"":[],""high"":[]}",[],{},"[""disordered domain specific binding"",""dynein complex binding"",""microtubule binding"",""microtubule minus-end binding"",""microtubule plus-end binding"",""phosphatidylinositol binding"",""protein binding"",""protein-containing complex binding"",""protein domain specific binding"",""structural molecule activity"",""tubulin binding""]","[""cell cortex"",""cell cortex region"",""centrosome"",""chromosome"",""cortical microtubule"",""cytoplasmic microtubule bundle"",""cytosol"",""dendrite"",""extracellular exosome"",""lateral cell cortex"",""lateral plasma membrane"",""microtubule bundle"",""microtubule minus-end"",""microtubule plus-end"",""mitotic spindle"",""mitotic spindle astral microtubule"",""mitotic spindle midzone"",""mitotic spindle pole"",""neuronal cell body"",""nuclear matrix"",""nucleoplasm"",""nucleus"",""plasma membrane"",""protein-containing complex"",""spindle"",""spindle microtubule"",""spindle pole"",""spindle pole centrosome""]",{},"{""CCDS"":"""",""HAVANA"":""""}","{""HGNC"":""HGNC:8059"",""HAVANA"":""OTTHUMG00000167697.4""}",[],[],[],"{""drugs"":[],""uniprot"":[],""go_terms"":[{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IPI""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""TAS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IPI""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IEA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""HDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""ISS""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IMP""},{""pmid"":null,""year"":null,""source_db"":""GO"",""evidence_type"":""IDA""}],""pathways"":[]}"
 ```

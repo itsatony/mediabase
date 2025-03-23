@@ -27,6 +27,7 @@ from ..utils.pandas_helpers import (
     clean_dataframe, 
     PandasOperationSafe
 )
+from ..utils.gene_matcher import normalize_gene_symbol, match_genes_bulk, get_gene_match_stats
 
 # Constants
 GO_TERM_WEIGHT_FACTOR = 0.5  # GO terms weighted at 50% of pathway weight
@@ -321,6 +322,32 @@ class DrugProcessor(BaseProcessor):
             raise DatabaseError("Database connection failed")
             
         try:
+            # Get all gene symbols from the database for matching
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol FROM cancer_transcript_base
+                WHERE gene_symbol IS NOT NULL
+            """)
+            db_genes = [row[0] for row in self.db_manager.cursor.fetchall() if row[0]]
+            
+            # Create a normalized map for case-insensitive lookups
+            self.logger.info(f"Building normalized gene symbol map for {len(db_genes)} database genes")
+            db_gene_map = {normalize_gene_symbol(g): g for g in db_genes if g}
+            
+            # Get unique gene symbols from drug targets
+            drug_genes = drug_targets['gene_symbol'].unique().tolist()
+            
+            # Match drug target genes to database genes
+            matched_genes = match_genes_bulk(drug_genes, db_genes, use_fuzzy=True)
+            
+            # Log matching statistics
+            match_stats = get_gene_match_stats(drug_genes, matched_genes)
+            self.logger.info(
+                f"Gene matching statistics:\n"
+                f"- Total drug target genes: {match_stats['total_genes']}\n"
+                f"- Matched to database: {match_stats['matched_genes']} ({match_stats['match_rate']}%)\n"
+                f"- Unmatched genes: {match_stats['unmatched_genes']}"
+            )
+            
             # Create temporary table for batch updates
             with self.get_db_transaction() as transaction:
                 # Create temporary table with enhanced reference support
@@ -336,13 +363,30 @@ class DrugProcessor(BaseProcessor):
             # Process drugs by gene
             updates = []
             processed = 0
+            matched_count = 0
             
             for gene, group in drug_targets.groupby('gene_symbol'):
+                # Use matched gene symbol from our bulk matching
+                db_gene = matched_genes.get(str(gene) if gene is not None else "")
+                
+                # If no match from bulk matching, try direct normalized lookup
+                if not db_gene:
+                    # Fix: Ensure gene is a string before using as a parameter
+                    norm_gene = normalize_gene_symbol(str(gene) if gene is not None else "")
+                    db_gene = db_gene_map.get(norm_gene)
+                
+                # Skip if we couldn't find a match
+                if not db_gene:
+                    continue
+                    
+                matched_count += 1
                 drug_info = {}
                 references = []
                 
                 for _, row in group.iterrows():
-                    drug_info[row.get('drug_id')] = {
+                    # Fix: Ensure drug_id is a string
+                    drug_id = str(row.get('drug_id', ''))
+                    drug_info[drug_id] = {
                         'name': row.get('drug_name', ''),
                         'mechanism': row.get('mechanism', 'unknown'),
                         'action_type': row.get('action_type', 'unknown'),
@@ -738,6 +782,31 @@ class DrugProcessor(BaseProcessor):
         """
         try:
             self.logger.info("Starting drug processing pipeline...")
+            
+            # Add diagnostic query to count transcripts before processing
+            if not self.ensure_connection() or not self.db_manager.cursor:
+                raise DatabaseError("Database connection failed")
+                    
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_records,
+                    COUNT(CASE WHEN drugs IS NOT NULL AND drugs != '{}'::jsonb THEN 1 END) as with_drugs,
+                    COUNT(CASE WHEN drug_scores IS NOT NULL AND drug_scores != '{}'::jsonb THEN 1 END) as with_scores,
+                    COUNT(CASE WHEN gene_symbol IS NOT NULL THEN 1 END) as with_genes,
+                    COUNT(CASE WHEN uniprot_ids IS NOT NULL AND array_length(uniprot_ids, 1) > 0 THEN 1 END) as with_uniprot
+                FROM cancer_transcript_base
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                self.logger.info(
+                    f"Before drug processing:\n"
+                    f"- Total records: {stats[0]:,}\n"
+                    f"- Records with drugs: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Records with drug scores: {stats[2]:,} ({stats[2]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Records with gene symbols: {stats[3]:,} ({stats[3]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Records with UniProt IDs: {stats[4]:,} ({stats[4]/max(1, stats[0])*100:.1f}%)"
+                )
             
             # Download and extract data
             drug_data_path = self.download_drugcentral()

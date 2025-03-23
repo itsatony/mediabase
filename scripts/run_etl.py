@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
-# Add src to Python path
+# Add project root to Python path
 src_path = Path(__file__).resolve().parent.parent
 sys.path.append(str(src_path))
 
@@ -30,6 +30,8 @@ from src.etl.pathways import PathwayProcessor
 from src.etl.drugs import DrugProcessor
 from src.etl.publications import PublicationsProcessor
 from src.etl.id_enrichment import IDEnrichmentProcessor
+
+from config.etl_sequence import get_optimal_sequence, validate_sequence
 
 def get_config() -> Dict[str, Any]:
     """Load configuration from environment variables."""
@@ -217,6 +219,32 @@ def run_pipeline(
         # Close progress bar if it exists and is not already closed
         if 'progress_bar' in locals() and not progress_bar._is_finished:
             progress_bar.close()
+
+# Update the code that determines which modules to run
+def get_modules_to_run(args) -> List[str]:
+    """Get the list of modules to run based on command-line arguments."""
+    if args.module:
+        # Split comma-separated list of modules
+        requested_modules = args.module.split(',')
+        
+        # Get optimal sequence that includes all dependencies
+        modules_to_run = get_optimal_sequence(requested_modules)
+        
+        # Validate the sequence
+        if not validate_sequence(modules_to_run):
+            logging.error("Invalid module sequence. Check dependencies.")
+            sys.exit(1)
+            
+        # Log the final sequence with dependency information
+        logging.info(f"Running modules in optimal sequence: {', '.join(modules_to_run)}")
+        if set(modules_to_run) != set(requested_modules):
+            additional = set(modules_to_run) - set(requested_modules)
+            logging.info(f"Added dependency modules: {', '.join(additional)}")
+            
+        return modules_to_run
+    else:
+        # Run all modules in the correct order
+        return get_optimal_sequence()
 
 def main() -> int:  # Change return type to int for clarity
     """Main entry point for ETL pipeline.

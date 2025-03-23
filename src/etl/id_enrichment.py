@@ -587,6 +587,31 @@ class IDEnrichmentProcessor(BaseProcessor):
         try:
             self.logger.info("Starting ID enrichment pipeline using UniProt mapping")
             
+            # Add diagnostic query to count transcripts before processing
+            if not self.ensure_connection() or not self.db_manager.cursor:
+                raise DatabaseError("Database connection failed")
+                    
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_records,
+                    COUNT(CASE WHEN uniprot_ids IS NOT NULL AND array_length(uniprot_ids, 1) > 0 THEN 1 END) as with_uniprot,
+                    COUNT(CASE WHEN ncbi_ids IS NOT NULL AND array_length(ncbi_ids, 1) > 0 THEN 1 END) as with_ncbi,
+                    COUNT(CASE WHEN alt_gene_ids IS NOT NULL AND alt_gene_ids != '{}'::jsonb THEN 1 END) as with_alt_gene_ids,
+                    COUNT(CASE WHEN alt_transcript_ids IS NOT NULL AND alt_transcript_ids != '{}'::jsonb THEN 1 END) as with_alt_transcript_ids
+                FROM cancer_transcript_base
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                self.logger.info(
+                    f"Before ID enrichment:\n"
+                    f"- Total records: {stats[0]:,}\n"
+                    f"- Records with UniProt IDs: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Records with NCBI IDs: {stats[2]:,} ({stats[2]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Records with alt gene IDs: {stats[3]:,} ({stats[3]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Records with alt transcript IDs: {stats[4]:,} ({stats[4]/max(1, stats[0])*100:.1f}%)"
+                )
+            
             # Check schema version
             if not self.ensure_schema_version('v0.1.4'):
                 raise DatabaseError("Incompatible database schema version")

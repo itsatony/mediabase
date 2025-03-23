@@ -19,6 +19,7 @@ from psycopg2.extras import execute_batch
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 from .publications import Publication, PublicationsProcessor
 from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
+from ..utils.gene_matcher import normalize_gene_symbol, match_genes_bulk, get_gene_match_stats
 
 # Constants
 HUMAN_SPECIES = 'Homo sapiens'
@@ -231,12 +232,14 @@ class PathwayProcessor(BaseProcessor):
                     AND array_length(ncbi_ids, 1) > 0
             """)
             
-            # Build mapping dictionary
+            # Build mapping dictionary with normalized keys for case-insensitive lookup
             mapping = {}
             for row in self.db_manager.cursor.fetchall():
                 gene_symbol, ncbi_id = row
                 if ncbi_id and gene_symbol:
+                    # Add both normalized and original versions of the NCBI ID
                     mapping[ncbi_id] = gene_symbol
+                    mapping[ncbi_id.upper()] = gene_symbol
             
             # If no mappings found in database, use a fallback
             if not mapping:
@@ -246,14 +249,15 @@ class PathwayProcessor(BaseProcessor):
                 self.db_manager.cursor.execute("""
                     SELECT DISTINCT gene_symbol
                     FROM cancer_transcript_base
-                    WHERE gene_type = 'protein_coding'
+                    WHERE gene_symbol IS NOT NULL
                 """)
                 
-                # Create a self-mapping for known gene symbols
+                # Create a self-mapping for known gene symbols with normalize keys
                 for row in self.db_manager.cursor.fetchall():
                     gene_symbol = row[0]
                     if gene_symbol:
                         mapping[gene_symbol] = gene_symbol
+                        mapping[normalize_gene_symbol(gene_symbol)] = gene_symbol
             
             self.logger.info(f"Retrieved {len(mapping)} NCBI ID to gene symbol mappings")
             return mapping
@@ -281,8 +285,52 @@ class PathwayProcessor(BaseProcessor):
         try:
             self.logger.info("Enriching transcripts with pathway data")
             
+            # Add diagnostic query to count transcripts before processing
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                    
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_genes,
+                    COUNT(CASE WHEN pathways IS NOT NULL AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
+                    (SELECT COUNT(DISTINCT gene_symbol) FROM cancer_transcript_base) as unique_genes
+                FROM cancer_transcript_base
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                self.logger.info(
+                    f"Before pathway enrichment:\n"
+                    f"- Total records: {stats[0]:,}\n"
+                    f"- Records with pathways: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Unique genes: {stats[2]:,}"
+                )
+                
             # Load pathway publications
             pathway_publications = self._load_pathway_publications()
+            
+            # Get all gene symbols from the database for matching
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol FROM cancer_transcript_base
+                WHERE gene_symbol IS NOT NULL
+            """)
+            db_genes = [row[0] for row in self.db_manager.cursor.fetchall() if row[0]]
+            
+            # Match our pathway genes to database genes
+            pathway_genes = list(gene_to_pathways.keys())
+            matched_genes = match_genes_bulk(pathway_genes, db_genes, use_fuzzy=True)
+            
+            # Log matching statistics
+            match_stats = get_gene_match_stats(pathway_genes, matched_genes)
+            self.logger.info(
+                f"Gene matching statistics:\n"
+                f"- Total pathway genes: {match_stats['total_genes']}\n"
+                f"- Matched to database: {match_stats['matched_genes']} ({match_stats['match_rate']}%)\n"
+                f"- Unmatched genes: {match_stats['unmatched_genes']}"
+            )
             
             # Prepare updates for each gene
             updates = []
@@ -292,6 +340,11 @@ class PathwayProcessor(BaseProcessor):
                 if not pathways:
                     continue
                 
+                # Use matched gene symbol if available
+                db_gene = matched_genes.get(gene_symbol)
+                if not db_gene:
+                    continue
+                    
                 # Get publication references for this gene's pathways
                 gene_publications = []
                 for pathway in pathways:
@@ -307,7 +360,7 @@ class PathwayProcessor(BaseProcessor):
                 updates.append((
                     list(pathways),
                     json.dumps(gene_publications),
-                    gene_symbol
+                    db_gene
                 ))
                 
                 # Process in batches
@@ -319,6 +372,24 @@ class PathwayProcessor(BaseProcessor):
             if updates:
                 self._update_batch(updates)
             
+            # At the end of the method, add another diagnostic query
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_genes,
+                    COUNT(CASE WHEN pathways IS NOT NULL AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
+                    AVG(CASE WHEN pathways IS NOT NULL THEN array_length(pathways, 1) ELSE 0 END) as avg_pathway_count
+                FROM cancer_transcript_base
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                self.logger.info(
+                    f"After pathway enrichment:\n"
+                    f"- Total records: {stats[0]:,}\n"
+                    f"- Records with pathways: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Average pathways per record: {stats[2]:.2f}"
+                )
+                
             self.logger.info("Pathway enrichment completed successfully")
             
         except Exception as e:

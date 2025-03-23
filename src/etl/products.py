@@ -26,6 +26,7 @@ from .base_processor import BaseProcessor, DownloadError, ProcessingError, Datab
 from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 from ..utils.publication_types import Publication
 from .publications import PublicationsProcessor
+from ..utils.gene_matcher import normalize_gene_symbol, match_genes_bulk, get_gene_match_stats
 
 # Constants
 DEFAULT_PRODUCT_TYPES = [
@@ -271,10 +272,10 @@ class ProductProcessor(BaseProcessor):
                 self.process_limit = None
     
     def get_genes_with_features(self) -> List[Dict[str, Any]]:
-        """Get genes with features from the database.
+        """Get genes from the database, including those without features.
         
         Returns:
-            List of genes with features data
+            List of genes with features data (initializing empty features if needed)
             
         Raises:
             DatabaseError: If database operations fail
@@ -283,26 +284,47 @@ class ProductProcessor(BaseProcessor):
             raise DatabaseError("Database connection failed")
         
         try:
-            self.logger.info("Retrieving genes with features from database")
+            self.logger.info("Retrieving genes for product classification")
             
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
             
-            # Get genes with features
+            # Add diagnostic query to count genes before processing
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_genes,
+                    COUNT(CASE WHEN features IS NOT NULL AND features != '{}'::jsonb THEN 1 END) as with_features,
+                    COUNT(CASE WHEN go_terms IS NOT NULL AND go_terms != '{}'::jsonb THEN 1 END) as with_go_terms,
+                    COUNT(CASE WHEN product_type IS NOT NULL AND array_length(product_type, 1) > 0 THEN 1 END) as with_product_type
+                FROM cancer_transcript_base
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                self.logger.info(
+                    f"Before product classification:\n"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Genes with features: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Genes with GO terms: {stats[2]:,} ({stats[2]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Genes with product types: {stats[3]:,} ({stats[3]/max(1, stats[0])*100:.1f}%)"
+                )
+            
+            # Get all genes, without requiring features or go_terms to exist
             self.db_manager.cursor.execute("""
                 SELECT 
                     gene_symbol, 
-                    features,
-                    go_terms,
-                    source_references
+                    COALESCE(features, '{}'::jsonb) as features,
+                    COALESCE(go_terms, '{}'::jsonb) as go_terms,
+                    COALESCE(source_references, '{
+                        "go_terms": [],
+                        "uniprot": [],
+                        "drugs": [],
+                        "pathways": []
+                    }'::jsonb) as source_references
                 FROM 
                     cancer_transcript_base
                 WHERE 
-                    gene_type = 'protein_coding'
-                AND 
-                    features IS NOT NULL
-                AND 
-                    features != '{}'::jsonb
+                    gene_symbol IS NOT NULL
                 GROUP BY
                     gene_symbol, features, go_terms, source_references
             """)
@@ -312,20 +334,20 @@ class ProductProcessor(BaseProcessor):
                 gene_symbol, features, go_terms, source_refs = row
                 genes.append({
                     'gene_symbol': gene_symbol,
-                    'features': features,
-                    'go_terms': go_terms or {},
-                    'source_references': source_refs or {},
+                    'features': features,  # Now guaranteed to be at least an empty dict
+                    'go_terms': go_terms,  # Now guaranteed to be at least an empty dict
+                    'source_references': source_refs,  # Now guaranteed to have a valid structure
                 })
             
             if self.process_limit and len(genes) > self.process_limit:
                 genes = genes[:self.process_limit]
                 self.logger.info(f"Limited to {self.process_limit} genes")
                 
-            self.logger.info(f"Retrieved {len(genes)} genes with features")
+            self.logger.info(f"Retrieved {len(genes)} genes for product classification")
             return genes
-            
+                
         except Exception as e:
-            raise DatabaseError(f"Failed to retrieve genes with features: {e}")
+            raise DatabaseError(f"Failed to retrieve genes for product classification: {e}")
     
     def classify_genes(self, genes: List[Dict[str, Any]]) -> List[Tuple[str, List[str], List[Publication]]]:
         """Classify genes based on their features and GO terms.
@@ -375,6 +397,28 @@ class ProductProcessor(BaseProcessor):
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
             
+            # Get all gene symbols from the database for matching
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol FROM cancer_transcript_base
+                WHERE gene_symbol IS NOT NULL
+            """)
+            db_genes = [row[0] for row in self.db_manager.cursor.fetchall() if row[0]]
+            
+            # Get the gene symbols from our classified genes
+            classified_symbols = [gene for gene, _, _ in classified_genes]
+            
+            # Match our classified genes to database genes
+            matched_genes = match_genes_bulk(classified_symbols, db_genes, use_fuzzy=True)
+            
+            # Log matching statistics
+            match_stats = get_gene_match_stats(classified_symbols, matched_genes)
+            self.logger.info(
+                f"Gene matching statistics:\n"
+                f"- Total genes: {match_stats['total_genes']}\n"
+                f"- Matched genes: {match_stats['matched_genes']} ({match_stats['match_rate']}%)\n"
+                f"- Unmatched genes: {match_stats['unmatched_genes']}"
+            )
+            
             # Create temporary table for batch updates
             self.db_manager.cursor.execute("""
                 CREATE TEMP TABLE temp_gene_types (
@@ -392,13 +436,25 @@ class ProductProcessor(BaseProcessor):
                 for i in range(0, total_genes, self.batch_size):
                     batch = classified_genes[i:i+self.batch_size]
                     
-                    # Insert batch into temp table
+                    # Insert batch into temp table, using matched gene symbols
+                    batch_data = []
+                    for gene, types, pubs in batch:
+                        # Use matched gene symbol if available
+                        db_gene = matched_genes.get(gene, gene)
+                        if db_gene:
+                            batch_data.append((db_gene, types, json.dumps(pubs)))
+                    
+                    # Skip if no valid data
+                    if not batch_data:
+                        continue
+                        
+                    # Insert batch data
                     self.execute_batch(
                         """
                         INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
                         VALUES (%s, %s, %s::jsonb)
                         """,
-                        [(gene, types, json.dumps(pubs)) for gene, types, pubs in batch]
+                        batch_data
                     )
                     
                     # Update from temp table to main table

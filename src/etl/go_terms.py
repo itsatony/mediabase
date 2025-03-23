@@ -21,6 +21,8 @@ from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 # Fix: Add get_progress_bar to the imports
 from ..utils.progress import tqdm_with_logging, SuppressPandasWarnings, get_progress_bar
 from ..utils.pandas_helpers import safe_assign, safe_batch_assign
+# Add new import at the top with other imports
+from ..utils.gene_matcher import normalize_gene_symbol, match_genes_bulk, get_gene_match_stats
 
 # Constants
 HUMAN_SPECIES = 'Homo sapiens'
@@ -229,8 +231,7 @@ class GOTermProcessor(BaseProcessor):
             self.db_manager.cursor.execute("""
                 SELECT DISTINCT gene_symbol 
                 FROM cancer_transcript_base 
-                WHERE gene_type = 'protein_coding'
-                AND gene_symbol IS NOT NULL
+                WHERE gene_symbol IS NOT NULL
             """)
             valid_genes = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
             self.logger.info(f"Found {len(valid_genes)} valid gene symbols in database")
@@ -258,6 +259,11 @@ class GOTermProcessor(BaseProcessor):
             valid_genes = self._get_valid_genes()
             sample_entries: List[List[str]] = []
             
+            # Build normalized gene symbol map for faster matching
+            valid_gene_list = list(valid_genes)
+            self.logger.info(f"Building normalized gene symbol map for {len(valid_gene_list)} genes")
+            gene_matches = {normalize_gene_symbol(g): g for g in valid_gene_list if g}
+            
             with gzip.open(goa_path, 'rt') as f:
                 for line in tqdm_with_logging(f, desc='Processing GOA entries', module_name="etl.go_terms"):
                     if line.startswith('!'):
@@ -275,7 +281,7 @@ class GOTermProcessor(BaseProcessor):
                         sample_entries.append(fields)
                     
                     # Extract required fields with safe access
-                    gene_symbol = fields[2].upper() if len(fields) > 2 else ''
+                    gene_symbol = fields[2] if len(fields) > 2 else ''
                     go_id = fields[4] if len(fields) > 4 else ''
                     evidence = fields[6] if len(fields) > 6 else ''
                     aspect = fields[8] if len(fields) > 8 else ''
@@ -283,8 +289,13 @@ class GOTermProcessor(BaseProcessor):
                     if not (gene_symbol and go_id and evidence and aspect):
                         continue
                     
-                    if gene_symbol not in valid_genes or go_id not in self.go_graph:
+                    # Use case-insensitive matching with the normalized map
+                    norm_gene = normalize_gene_symbol(gene_symbol)
+                    if norm_gene not in gene_matches or go_id not in self.go_graph:
                         continue
+                    
+                    # Get matched database gene symbol
+                    db_gene = gene_matches[norm_gene]
                     
                     # Get GO term data with safe access
                     node_data = self.go_graph.nodes.get(go_id, {})
@@ -293,11 +304,11 @@ class GOTermProcessor(BaseProcessor):
                         continue
                     
                     # Initialize gene entry if needed
-                    if gene_symbol not in gene_go_terms:
-                        gene_go_terms[gene_symbol] = {}
+                    if db_gene not in gene_go_terms:
+                        gene_go_terms[db_gene] = {}
                     
                     # Store GO term with safe type construction
-                    gene_go_terms[gene_symbol][go_id] = {
+                    gene_go_terms[db_gene][go_id] = {
                         'term': term_name,
                         'evidence': evidence,
                         'aspect': self._convert_aspect(aspect)
@@ -446,6 +457,31 @@ class GOTermProcessor(BaseProcessor):
             raise DatabaseError("Database connection failed")
             
         try:
+            # Add diagnostic query to count genes before processing
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            self.db_manager.cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_genes,
+                    COUNT(CASE WHEN gene_type = 'protein_coding' THEN 1 END) as protein_coding,
+                    COUNT(CASE WHEN go_terms IS NOT NULL THEN 1 END) as with_go_terms,
+                    COUNT(CASE WHEN molecular_functions IS NOT NULL AND array_length(molecular_functions, 1) > 0 THEN 1 END) as with_functions,
+                    COUNT(CASE WHEN cellular_location IS NOT NULL AND array_length(cellular_location, 1) > 0 THEN 1 END) as with_locations
+                FROM cancer_transcript_base
+            """)
+            
+            stats = self.db_manager.cursor.fetchone()
+            if stats:
+                self.logger.info(
+                    f"Before GO term processing:\n"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Protein-coding genes: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Genes with GO terms: {stats[2]:,} ({stats[2]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Genes with molecular functions: {stats[3]:,} ({stats[3]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Genes with cellular locations: {stats[4]:,} ({stats[4]/max(1, stats[0])*100:.1f}%)"
+                )
+            
             # Download and process GOA file
             goa_path = self.download_goa()
             gene_go_terms = self.process_goa_file(goa_path)
@@ -455,9 +491,6 @@ class GOTermProcessor(BaseProcessor):
                 return
                 
             # First, get a count of existing terms
-            if not self.db_manager.cursor:
-                raise DatabaseError("No database cursor available")
-                
             self.db_manager.cursor.execute("""
                 SELECT COUNT(*) FROM cancer_transcript_base 
                 WHERE go_terms IS NOT NULL
@@ -468,13 +501,11 @@ class GOTermProcessor(BaseProcessor):
             
             # Use a transaction for the updates
             with self.get_db_transaction():
-                # Clear existing GO terms
+                # Clear existing GO terms - REMOVED gene_type filter
                 self.db_manager.cursor.execute("""
                     UPDATE cancer_transcript_base 
                     SET go_terms = NULL, molecular_functions = NULL, cellular_location = NULL
-                    WHERE gene_type = 'protein_coding'
                 """)
-                
                 # Process in smaller batches with regular commits
                 updates = []
                 processed = 0
@@ -526,7 +557,6 @@ class GOTermProcessor(BaseProcessor):
                     COUNT(CASE WHEN molecular_functions IS NOT NULL THEN 1 END) as with_mf,
                     COUNT(CASE WHEN cellular_location IS NOT NULL THEN 1 END) as with_cl
                 FROM cancer_transcript_base
-                WHERE gene_type = 'protein_coding'
             """)
             stats = self.db_manager.cursor.fetchone()
             
@@ -601,12 +631,11 @@ class GOTermProcessor(BaseProcessor):
             raise DatabaseError("No database cursor available")
             
         try:
-            # Get transcripts with existing GO terms
+            # Get transcripts with existing GO terms - REMOVED gene_type filter
             self.db_manager.cursor.execute("""
                 SELECT transcript_id, gene_symbol, go_terms 
                 FROM cancer_transcript_base 
-                WHERE go_terms IS NOT NULL 
-                AND gene_type = 'protein_coding'
+                WHERE go_terms IS NOT NULL
             """)
             
             transcripts = self.db_manager.cursor.fetchall()
@@ -620,7 +649,7 @@ class GOTermProcessor(BaseProcessor):
                 if not go_terms:
                     progress_bar.update(1)
                     continue
-                        
+                    
                 initial_term_count = len(go_terms)
                 enriched_terms = {}
                 
@@ -786,7 +815,7 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
             # Skip empty or invalid data
             if not gene_symbol or not terms:
                 continue
-                
+            
             # Get additional IDs for this gene for more comprehensive mapping
             uniprot_ids = []
             if self.db_manager.cursor:
@@ -854,7 +883,6 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
                 FROM temp_go_data go
                 WHERE cb.gene_symbol = go.gene_symbol
             """)
-            
             # Also update by UniProt ID for broader coverage
             transaction.cursor.execute("""
                 UPDATE cancer_transcript_base cb
@@ -877,7 +905,6 @@ def integrate_go_terms(self, go_data: Dict[str, Any]) -> None:
                 AND go.uniprot_ids IS NOT NULL
                 AND array_length(go.uniprot_ids, 1) > 0
             """)
-            
             # Clean up
             transaction.cursor.execute("DROP TABLE IF EXISTS temp_go_data")
         
@@ -907,4 +934,3 @@ def _update_go_batch(self, updates: List[Tuple[str, List[str], str, str]]) -> No
         )
     except Exception as e:
         raise DatabaseError(f"Failed to update GO term batch: {e}")
-

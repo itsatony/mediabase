@@ -146,6 +146,15 @@ class DrugProcessor(BaseProcessor):
             # Rename columns according to our mapping
             df = df.rename(columns={v: k for k, v in column_mapping.items()})
             
+            # Also map SwissProt ID column if available
+            if 'SWISSPROT' in df.columns:
+                df = df.rename(columns={'SWISSPROT': 'swissprot'})
+            elif 'swissprot' not in df.columns and 'SWISSPROT' in column_mapping.values():
+                # Find the column mapped to SwissProt
+                for k, v in column_mapping.items():
+                    if v == 'SWISSPROT':
+                        df = df.rename(columns={k: 'swissprot'})
+            
             # Clean and standardize data
             df = self._clean_drug_data(df, column_mapping)
             
@@ -205,6 +214,9 @@ class DrugProcessor(BaseProcessor):
             # Map mechanism (if available)
             elif col_clean == 'MOA':
                 column_mapping['mechanism'] = col
+            # Add SwissProt mapping
+            elif col_clean == 'SWISSPROT':
+                column_mapping['swissprot'] = col
         
         self.logger.info("Column mapping found:")
         for our_col, file_col in column_mapping.items():
@@ -239,7 +251,7 @@ class DrugProcessor(BaseProcessor):
         
         return df
     
-    def _normalize_drug_data(self, df):
+    def _normalize_drug_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Normalize drug data to ensure consistent format.
         
         Args:
@@ -281,6 +293,14 @@ class DrugProcessor(BaseProcessor):
             List of processed drug-target dictionaries
         """
         processed_data = []
+        
+        # Show sample of references column for debugging
+        if 'references' in df.columns:
+            ref_sample = df['references'].dropna().head(5).tolist()
+            self.logger.info(f"Sample of references column values: {ref_sample}")
+        else:
+            self.logger.warning("No 'references' column found in drug data")
+            
         for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing drug targets"):
             try:
                 processed_row = {
@@ -298,10 +318,17 @@ class DrugProcessor(BaseProcessor):
                 references = []
                 if 'references' in row and row['references']:
                     references = self.extract_publication_references(row['references'])
+                    # Debug every 500th row to avoid too much output
+                    if len(processed_data) % 500 == 0:
+                        self.logger.debug(f"Row {len(processed_data)}: Reference text '{row['references']}' -> {len(references)} publications")
                 
                 # Add publication references if found
                 if references:
                     processed_row['publications'] = [dict(ref) for ref in references]
+                
+                # Add SwissProt ID if available
+                if 'swissprot' in row and row['swissprot']:
+                    processed_row['swissprot'] = str(row['swissprot'])
                 
                 processed_data.append(processed_row)
             except Exception as e:
@@ -334,20 +361,84 @@ class DrugProcessor(BaseProcessor):
             self.logger.info(f"Building normalized gene symbol map for {len(db_genes)} database genes")
             db_gene_map = {normalize_gene_symbol(g): g for g in db_genes if g}
             
+            # Get UniProt IDs from database for additional matching
+            self.db_manager.cursor.execute("""
+                SELECT gene_symbol, uniprot_ids 
+                FROM cancer_transcript_base
+                WHERE uniprot_ids IS NOT NULL AND array_length(uniprot_ids, 1) > 0
+            """)
+            
+            # Create UniProt to gene mapping
+            uniprot_to_gene = {}
+            for row in self.db_manager.cursor.fetchall():
+                gene_symbol, uniprot_ids = row
+                if gene_symbol and uniprot_ids:
+                    for uniprot_id in uniprot_ids:
+                        uniprot_to_gene[uniprot_id.upper()] = gene_symbol
+            
+            self.logger.info(f"Loaded {len(uniprot_to_gene)} UniProt ID mappings from database")
+            
             # Get unique gene symbols from drug targets
             drug_genes = drug_targets['gene_symbol'].unique().tolist()
+            
+            # Fetch SwissProt IDs from drug targets for alternative matching
+            swissprot_map = {}
+            if 'swissprot' in drug_targets.columns:
+                swissprot_ids = drug_targets[['gene_symbol', 'swissprot']].dropna()
+                swissprot_map = {
+                    row['swissprot'].split('_')[0].upper(): row['gene_symbol'] 
+                    for _, row in swissprot_ids.iterrows() 
+                    if isinstance(row['swissprot'], str)
+                }
+                self.logger.info(f"Extracted {len(swissprot_map)} SwissProt IDs from drug targets")
             
             # Match drug target genes to database genes
             matched_genes = match_genes_bulk(drug_genes, db_genes, use_fuzzy=True)
             
-            # Log matching statistics
-            match_stats = get_gene_match_stats(drug_genes, matched_genes)
+            # Enhanced matching with SwissProt IDs
+            enhanced_matches = matched_genes.copy()
+            unmatched_count = 0
+            matched_by_uniprot = 0
+            
+            # Process genes that didn't match by gene symbol
+            for gene in drug_genes:
+                if gene in enhanced_matches and enhanced_matches[gene]:
+                    continue
+                    
+                # Try to match by SwissProt ID if available
+                if 'swissprot' in drug_targets.columns:
+                    # Get SwissProt IDs for this gene from the drug data
+                    gene_rows = drug_targets[drug_targets['gene_symbol'] == gene]
+                    for _, row in gene_rows.iterrows():
+                        if isinstance(row.get('swissprot'), str):
+                            swissprot_id = row['swissprot'].split('_')[0].upper()
+                            if swissprot_id in uniprot_to_gene:
+                                enhanced_matches[gene] = uniprot_to_gene[swissprot_id]
+                                matched_by_uniprot += 1
+                                break
+                
+                # If still no match, try normalized gene symbol as last resort
+                if gene not in enhanced_matches or not enhanced_matches[gene]:
+                    norm_gene = normalize_gene_symbol(gene)
+                    if norm_gene in db_gene_map:
+                        enhanced_matches[gene] = db_gene_map[norm_gene]
+                    else:
+                        unmatched_count += 1
+            
+            # Log enhanced matching statistics
+            match_stats = get_gene_match_stats(drug_genes, enhanced_matches)
             self.logger.info(
-                f"Gene matching statistics:\n"
+                f"Enhanced gene matching statistics:\n"
                 f"- Total drug target genes: {match_stats['total_genes']}\n"
                 f"- Matched to database: {match_stats['matched_genes']} ({match_stats['match_rate']}%)\n"
+                f"  - Matched by UniProt ID: {matched_by_uniprot}\n"
                 f"- Unmatched genes: {match_stats['unmatched_genes']}"
             )
+            
+            # Log sample of unmatched genes for debugging
+            if match_stats['unmatched_genes'] > 0:
+                unmatched_sample = [g for g in drug_genes if g not in enhanced_matches or not enhanced_matches[g]][:10]
+                self.logger.info(f"Sample of unmatched genes: {unmatched_sample}")
             
             # Create temporary table for batch updates
             with self.get_db_transaction() as transaction:
@@ -366,16 +457,33 @@ class DrugProcessor(BaseProcessor):
             processed = 0
             matched_count = 0
             unmatched_count = 0
+            matched_genes = []  # Track all matched genes for debugging
+            
+            # Count existing references before processing
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    SELECT COUNT(*) FROM cancer_transcript_base
+                    WHERE jsonb_array_length(
+                        COALESCE(source_references->'drugs', '[]'::jsonb)
+                    ) > 0
+                """)
+                result = self.db_manager.cursor.fetchone()
+                self.logger.info(f"Records with drug references before processing: {result[0] if result else 0}")
+            
+            # Debug sample of reference_ids in drug_targets
+            has_refs = drug_targets['reference_ids'].apply(lambda x: bool(x) if isinstance(x, list) else False)
+            ref_count = has_refs.sum()
+            self.logger.info(f"Drug targets with non-empty reference_ids: {ref_count} out of {len(drug_targets)}")
+            
+            if ref_count > 0:
+                # Sample some references for debugging
+                sample_refs = drug_targets[has_refs].head(5)
+                for idx, row in sample_refs.iterrows():
+                    self.logger.info(f"Sample reference for {row['gene_symbol']}: {row['reference_ids']}")
             
             for gene, group in drug_targets.groupby('gene_symbol'):
-                # Use matched gene symbol from our bulk matching
-                db_gene = matched_genes.get(str(gene) if gene is not None else "")
-                
-                # If no match from bulk matching, try direct normalized lookup
-                if not db_gene:
-                    # Fix: Ensure gene is a string before using as a parameter
-                    norm_gene = normalize_gene_symbol(str(gene) if gene is not None else "")
-                    db_gene = db_gene_map.get(norm_gene)
+                # Use matched gene symbol from our enhanced matching
+                db_gene = enhanced_matches.get(str(gene) if gene is not None else "")
                 
                 # Skip if we couldn't find a match
                 if not db_gene:
@@ -387,8 +495,14 @@ class DrugProcessor(BaseProcessor):
                     continue
                     
                 matched_count += 1
+                matched_genes.append(db_gene)  # Track matched genes
                 drug_info = {}
                 references = []
+                
+                # Debug output for every 10th matched gene
+                debug_this_gene = matched_count % 20 == 1
+                if debug_this_gene:
+                    self.logger.info(f"===== Debug: Processing gene {db_gene} (match #{matched_count}) =====")
                 
                 for _, row in group.iterrows():
                     # Fix: Ensure drug_id is a string
@@ -403,14 +517,29 @@ class DrugProcessor(BaseProcessor):
                         }
                     }
                     
+                    # Debug drug and reference info for selected genes
+                    if debug_this_gene:                        
+                        drg = row.to_json()
+                        self.logger.info(f"{drg}")
+                    #     self.logger.info(f"  References field raw value: '{row.get('references', '')}'")
+                    #     ref_ids = row.get('reference_ids', [])
+                    #     self.logger.info(f"  Reference IDs: {ref_ids}")
+                    
                     # Process references
                     if row.get('reference_ids'):
                         for ref_id in row.get('reference_ids', []):
                             if ref_id and isinstance(ref_id, str):
                                 ref_id = ref_id.strip()
                                 
+                                # Debug reference processing for selected genes
+                                if debug_this_gene:
+                                    self.logger.info(f"  Processing reference ID: '{ref_id}'")
+                                    self.logger.info(f"  Is digit: {ref_id.isdigit()}")
+                                
                                 # Skip non-PMID references but log them
                                 if not ref_id.isdigit():
+                                    if debug_this_gene:
+                                        self.logger.info(f"  Skipping non-PMID reference: '{ref_id}'")
                                     continue
                                     
                                 # Drug-specific reference
@@ -423,19 +552,23 @@ class DrugProcessor(BaseProcessor):
                                     'drug_id': row.get('drug_id', '')
                                 })
                 
+                # Debug the final references for selected genes
+                if debug_this_gene:
+                    self.logger.info(f"  Final extracted references: {references}")
+                
                 # Get UniProt IDs for this gene if available
                 uniprot_ids = []
                 if self.db_manager.cursor:
                     self.db_manager.cursor.execute("""
                         SELECT uniprot_ids FROM cancer_transcript_base
                         WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
-                    """, (gene,))
+                    """, (db_gene,))
                     result = self.db_manager.cursor.fetchone()
                     if result and result[0]:
                         uniprot_ids = result[0]
                 
                 updates.append((
-                    gene,
+                    db_gene,
                     uniprot_ids,
                     json.dumps(drug_info),
                     json.dumps(references)
@@ -500,6 +633,17 @@ class DrugProcessor(BaseProcessor):
                 
                 # Drop temporary table
                 transaction.cursor.execute("DROP TABLE IF EXISTS temp_drug_data")
+                
+            # After processing, check if any references were created
+            if self.db_manager.cursor:
+                self.db_manager.cursor.execute("""
+                    SELECT COUNT(*) FROM cancer_transcript_base
+                    WHERE jsonb_array_length(
+                        COALESCE(source_references->'drugs', '[]'::jsonb)
+                    ) > 0
+                """)
+                result = self.db_manager.cursor.fetchone()
+                self.logger.info(f"Records with drug references after processing: {result[0] if result else 0}")
                 
         except Exception as e:
             if self.db_manager.conn and not self.db_manager.conn.closed:
@@ -787,12 +931,17 @@ class DrugProcessor(BaseProcessor):
         """
         publications: List[Publication] = []
         
+        # Debug the input
+        self.logger.debug(f"Extracting references from: '{drug_references}'")
+        
         # Skip empty references
         if not drug_references:
+            self.logger.debug("References field is empty, skipping extraction")
             return publications
             
         # Extract PMIDs from reference text
         pmids = extract_pmids_from_text(drug_references)
+        self.logger.debug(f"Extracted PMIDs: {pmids}")
         
         # Create publication references for each PMID
         for pmid in pmids:
@@ -915,6 +1064,7 @@ class DrugProcessor(BaseProcessor):
                 self.logger.warning("Cannot verify results - no database cursor available")
                 return
                 
+            # Detailed verification that includes reference counts
             self.db_manager.cursor.execute("""
                 SELECT 
                     COUNT(*) as total,
@@ -922,7 +1072,11 @@ class DrugProcessor(BaseProcessor):
                     COUNT(CASE WHEN drug_scores != '{}'::jsonb THEN 1 END) as with_scores,
                     COUNT(CASE WHEN source_references->'drugs' IS NOT NULL 
                               AND source_references->'drugs' != '[]'::jsonb 
-                         THEN 1 END) as with_refs
+                         THEN 1 END) as with_refs,
+                    SUM(CASE WHEN source_references->'drugs' IS NOT NULL 
+                             THEN jsonb_array_length(source_references->'drugs')
+                             ELSE 0 
+                        END) as total_refs
                 FROM cancer_transcript_base
             """)
             
@@ -933,8 +1087,25 @@ class DrugProcessor(BaseProcessor):
                     f"- Total records: {stats[0]:,}\n"
                     f"- Records with drugs: {stats[1]:,}\n"
                     f"- Records with drug scores: {stats[2]:,}\n"
-                    f"- Records with drug references: {stats[3]:,}"
+                    f"- Records with drug references: {stats[3]:,}\n"
+                    f"- Total drug references: {stats[4]:,}"
                 )
+                
+                # If there are no references, add extra debugging info
+                if stats[3] == 0:
+                    self.logger.warning("No drug references were found! Checking reference storage...")
+                    
+                    # Check a sample of records with drugs for reference structure
+                    self.db_manager.cursor.execute("""
+                        SELECT gene_symbol, source_references 
+                        FROM cancer_transcript_base 
+                        WHERE drugs != '{}'::jsonb
+                        LIMIT 5
+                    """)
+                    
+                    sample_records = self.db_manager.cursor.fetchall()
+                    for record in sample_records:
+                        self.logger.info(f"Sample gene {record[0]} source_references: {record[1]}")
                 
         except Exception as e:
             self.logger.warning(f"Failed to verify results: {e}")

@@ -50,38 +50,63 @@ def extract_pmid_from_text(text: str) -> Optional[str]:
     return None
 
 def extract_pmids_from_text(text: str) -> List[str]:
-    """Extract all PMIDs from text.
+    """Extract PubMed IDs (PMIDs) from text.
     
     Args:
-        text: Text to extract PMIDs from
+        text: Text that may contain PMIDs
         
     Returns:
-        List[str]: List of valid PMIDs found
+        List of extracted PMIDs
     """
     if not text or not isinstance(text, str):
         return []
-        
-    pmids: Set[str] = set()
     
-    # Try each pattern
-    for pattern in PMID_PATTERNS:
-        matches = re.finditer(pattern, text)
-        for match in matches:
-            if match and match.group(1):
-                pmid = match.group(1)
-                if is_valid_pmid(pmid):
-                    pmids.add(pmid)
+    # Log the input for debugging
+    # logger.debug(f"Extracting PMIDs from: '{text}'")
     
-    return list(pmids)
+    pmids = []
+    
+    # Pattern 1: PMID: 12345678
+    pmid_pattern = r'PMID:?\s*(\d+)'
+    matches = re.findall(pmid_pattern, text, re.IGNORECASE)
+    pmids.extend(matches)
+    
+    # Pattern 2: PubMed ID: 12345678
+    pubmed_pattern = r'pubmed\s*(?:id)?:?\s*(\d+)'
+    matches = re.findall(pubmed_pattern, text, re.IGNORECASE)
+    pmids.extend(matches)
+    
+    # Pattern 3: www.ncbi.nlm.nih.gov/pubmed/12345678
+    url_pattern = r'(?:pubmed|www\.ncbi\.nlm\.nih\.gov/pubmed)/(\d+)'
+    matches = re.findall(url_pattern, text, re.IGNORECASE)
+    pmids.extend(matches)
+    
+    # Pattern 4: Find typical PMID numbers in CHEMBL references
+    # This is a special case for DrugCentral data which often contains CHEMBL references
+    if 'CHEMBL' in text:
+        # Look for numeric sequences that could be PMIDs (typically 7-8 digits)
+        # Only do this for CHEMBL references to avoid false positives
+        chembl_number_pattern = r'\b(\d{7,8})\b'
+        matches = re.findall(chembl_number_pattern, text)
+        pmids.extend(matches)
+    
+    # Deduplicate and clean
+    unique_pmids = list(set(pmids))
+    
+    # Log the results for debugging
+    if len(unique_pmids) > 0:
+        logger.debug(f"Extracted PMIDs: {unique_pmids}")
+    
+    return unique_pmids
 
 def format_pmid_url(pmid: str) -> str:
-    """Format a PMID as a URL to PubMed.
+    """Format a PubMed ID as a URL.
     
     Args:
         pmid: PubMed ID
         
     Returns:
-        str: URL to the publication on PubMed
+        URL to the PubMed article
     """
     return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 

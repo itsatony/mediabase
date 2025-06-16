@@ -310,6 +310,411 @@ The `examples/` directory contains realistic patient data files for different ca
 - **Comprehensive Logging**: Detailed progress tracking and error reporting
 - **Rich Terminal Interface**: User-friendly CLI with progress bars and statistics
 
+## Query Examples and Analysis
+
+### Dynamic Queries - Human Language to SQL
+
+These examples demonstrate how to translate common oncological questions into SQL queries against patient-specific databases.
+
+#### Query 1: "Which genes are significantly upregulated in this patient?"
+
+**Clinical Question**: Identify genes with high expression that may represent therapeutic targets or oncogenic drivers.
+
+```sql
+-- Find significantly upregulated transcripts (fold-change > 2.0)
+SELECT 
+    transcript_id,
+    gene_symbol,
+    expression_fold_change,
+    product_type,
+    molecular_functions,
+    pathways[1:3] as top_pathways,  -- Show first 3 pathways
+    CASE 
+        WHEN jsonb_array_length(drugs) > 0 THEN 'Druggable'
+        ELSE 'No known drugs'
+    END as drug_availability
+FROM cancer_transcript_base 
+WHERE expression_fold_change > 2.0 
+ORDER BY expression_fold_change DESC 
+LIMIT 20;
+```
+
+**Expected Results** (using HER2+ breast cancer example):
+```
+transcript_id       | gene_symbol | fold_change | product_type | drug_availability
+ENST00000269571    | ERBB2       | 8.45        | [receptor]   | Druggable
+ENST00000484667    | GRB7        | 6.78        | [adapter]    | No known drugs
+ENST00000355349    | PGAP3       | 5.23        | [enzyme]     | No known drugs
+```
+
+#### Query 2: "What drugs target the overexpressed genes in my patient?"
+
+**Clinical Question**: Identify FDA-approved or investigational drugs that target upregulated genes.
+
+```sql
+-- Find drugs targeting upregulated genes with clinical evidence
+SELECT DISTINCT
+    gene_symbol,
+    expression_fold_change,
+    drug_info->>'name' as drug_name,
+    drug_info->>'mechanism' as mechanism_of_action,
+    drug_info->>'clinical_status' as clinical_status,
+    drug_scores->>'overall_score' as drug_score
+FROM cancer_transcript_base,
+     jsonb_array_elements(drugs) as drug_info
+WHERE expression_fold_change > 1.5
+    AND jsonb_array_length(drugs) > 0
+    AND (drug_info->>'clinical_status' IN ('approved', 'phase_3', 'phase_2'))
+ORDER BY expression_fold_change DESC, (drug_scores->>'overall_score')::float DESC;
+```
+
+#### Query 3: "Which pathways are disrupted based on my patient's expression profile?"
+
+**Clinical Question**: Identify biological pathways affected by differential gene expression.
+
+```sql
+-- Pathway disruption analysis based on expression changes
+WITH pathway_analysis AS (
+    SELECT 
+        unnest(pathways) as pathway_name,
+        AVG(expression_fold_change) as avg_fold_change,
+        COUNT(*) as gene_count,
+        STDDEV(expression_fold_change) as expression_variance,
+        ARRAY_AGG(gene_symbol || ':' || expression_fold_change::text) as affected_genes
+    FROM cancer_transcript_base 
+    WHERE pathways IS NOT NULL 
+        AND array_length(pathways, 1) > 0
+        AND ABS(expression_fold_change - 1.0) > 0.5  -- Significant change
+    GROUP BY pathway_name
+    HAVING COUNT(*) >= 3  -- At least 3 genes in pathway
+)
+SELECT 
+    pathway_name,
+    ROUND(avg_fold_change, 2) as average_fold_change,
+    gene_count,
+    ROUND(expression_variance, 2) as expression_variability,
+    CASE 
+        WHEN avg_fold_change > 1.5 THEN 'Activated'
+        WHEN avg_fold_change < 0.7 THEN 'Suppressed'
+        ELSE 'Mixed regulation'
+    END as pathway_status,
+    affected_genes[1:5] as sample_genes  -- Show first 5 affected genes
+FROM pathway_analysis 
+ORDER BY ABS(avg_fold_change - 1.0) DESC, gene_count DESC;
+```
+
+#### Query 4: "Are there any published studies relevant to my patient's gene expression pattern?"
+
+**Clinical Question**: Find publications that discuss the upregulated genes in context of cancer research.
+
+```sql
+-- Find relevant publications for highly expressed genes
+SELECT 
+    gene_symbol,
+    expression_fold_change,
+    pub_ref->>'title' as study_title,
+    pub_ref->>'journal' as journal,
+    pub_ref->>'year' as publication_year,
+    pub_ref->>'pmid' as pubmed_id,
+    pub_ref->>'evidence_type' as evidence_type,
+    pub_ref->>'source_db' as data_source
+FROM cancer_transcript_base,
+     jsonb_array_elements(source_references->'publications') as pub_ref
+WHERE expression_fold_change > 2.0
+    AND jsonb_array_length(source_references->'publications') > 0
+    AND (pub_ref->>'year')::integer >= 2020  -- Recent publications
+ORDER BY expression_fold_change DESC, (pub_ref->>'year')::integer DESC
+LIMIT 15;
+```
+
+### Standard Oncological Analysis (SOTA) Queries
+
+These queries should be run automatically for every new patient database to provide comprehensive oncological insights.
+
+#### SOTA Query 1: Oncogene and Tumor Suppressor Analysis
+
+**Clinical Rationale**: Identifies dysregulation of known cancer-driving genes, which is fundamental for understanding tumor biology and therapeutic targeting.
+
+```sql
+-- Comprehensive oncogene and tumor suppressor analysis
+WITH known_cancer_genes AS (
+    SELECT gene_symbol, expression_fold_change, product_type, molecular_functions,
+           CASE 
+               -- Known oncogenes (often amplified/overexpressed in cancer)
+               WHEN gene_symbol IN ('MYC', 'ERBB2', 'EGFR', 'KRAS', 'PIK3CA', 'AKT1', 'CCND1', 'MDM2') 
+               THEN 'oncogene'
+               -- Hormone receptors (context-dependent - can be oncogenes or tumor suppressors)
+               WHEN gene_symbol IN ('ESR1', 'PGR', 'AR') AND expression_fold_change > 1.2
+               THEN 'hormone_receptor_active'
+               WHEN gene_symbol IN ('ESR1', 'PGR', 'AR') AND expression_fold_change < 0.8
+               THEN 'hormone_receptor_suppressed'
+               -- Known tumor suppressors (often deleted/underexpressed in cancer)  
+               WHEN gene_symbol IN ('TP53', 'RB1', 'PTEN', 'BRCA1', 'BRCA2', 'CDKN2A', 'CDKN1A', 'CDKN1B')
+               THEN 'tumor_suppressor'
+               -- DNA repair genes (critical for genomic stability)
+               WHEN gene_symbol IN ('ATM', 'CHEK1', 'CHEK2', 'RAD51', 'PARP1')
+               THEN 'dna_repair'
+               ELSE 'other'
+           END as gene_category
+    FROM cancer_transcript_base
+    WHERE gene_symbol IN ('MYC', 'ERBB2', 'EGFR', 'KRAS', 'PIK3CA', 'AKT1', 'CCND1', 'MDM2',
+                          'TP53', 'RB1', 'PTEN', 'BRCA1', 'BRCA2', 'CDKN2A', 'CDKN1A', 'CDKN1B',
+                          'ATM', 'CHEK1', 'CHEK2', 'RAD51', 'PARP1', 'ESR1', 'PGR', 'AR')
+)
+SELECT 
+    gene_category,
+    gene_symbol,
+    ROUND(expression_fold_change, 2) as fold_change,
+    CASE 
+        WHEN gene_category = 'oncogene' AND expression_fold_change > 1.5 THEN 'ACTIVATED (Concerning)'
+        WHEN gene_category = 'tumor_suppressor' AND expression_fold_change < 0.7 THEN 'SUPPRESSED (Concerning)'
+        WHEN gene_category = 'dna_repair' AND expression_fold_change < 0.8 THEN 'IMPAIRED (High Risk)'
+        WHEN gene_category = 'hormone_receptor_active' THEN 'ACTIVE (Hormone-sensitive cancer)'
+        WHEN gene_category = 'hormone_receptor_suppressed' THEN 'SUPPRESSED (Hormone-independent cancer)'
+        WHEN gene_category = 'oncogene' AND expression_fold_change < 0.8 THEN 'Suppressed (Favorable)'
+        WHEN gene_category = 'tumor_suppressor' AND expression_fold_change > 1.2 THEN 'Active (Favorable)'
+        ELSE 'Normal range'
+    END as clinical_significance,
+    product_type,
+    CASE 
+        WHEN jsonb_array_length(drugs) > 0 THEN 'Targetable'
+        ELSE 'No approved drugs'
+    END as therapeutic_options
+FROM known_cancer_genes
+ORDER BY 
+    CASE gene_category 
+        WHEN 'oncogene' THEN 1 
+        WHEN 'tumor_suppressor' THEN 2 
+        WHEN 'dna_repair' THEN 3 
+        ELSE 4 
+    END,
+    ABS(expression_fold_change - 1.0) DESC;
+```
+
+**Clinical Interpretation**:
+- **Activated oncogenes** (fold-change > 1.5): Potential therapeutic targets
+- **Suppressed tumor suppressors** (fold-change < 0.7): Poor prognosis indicators
+- **Impaired DNA repair** (fold-change < 0.8): Candidate for PARP inhibitors or immunotherapy
+- **Active hormone receptors**: Hormone-sensitive cancer, endocrine therapy indicated
+- **Suppressed hormone receptors**: Hormone-independent cancer, consider alternative therapies
+
+#### SOTA Query 2: Therapeutic Target Prioritization
+
+**Clinical Rationale**: Ranks potential therapeutic targets based on expression level, druggability, and clinical trial availability.
+
+```sql
+-- Comprehensive therapeutic target prioritization
+WITH druggable_targets AS (
+    SELECT 
+        gene_symbol,
+        expression_fold_change,
+        product_type,
+        molecular_functions,
+        pathways,
+        drugs,
+        drug_scores,
+        -- Calculate target priority score
+        CASE 
+            WHEN expression_fold_change > 3.0 THEN 3  -- High expression
+            WHEN expression_fold_change > 2.0 THEN 2  -- Moderate expression  
+            WHEN expression_fold_change > 1.5 THEN 1  -- Mild expression
+            ELSE 0
+        END +
+        CASE 
+            WHEN jsonb_array_length(drugs) > 0 THEN 2  -- Has drug interactions
+            ELSE 0
+        END +
+        CASE 
+            WHEN 'kinase' = ANY(product_type) THEN 2   -- Kinases are highly druggable
+            WHEN 'receptor' = ANY(product_type) THEN 2 -- Receptors are druggable
+            WHEN 'enzyme' = ANY(product_type) THEN 1   -- Enzymes moderately druggable
+            ELSE 0
+        END as priority_score
+    FROM cancer_transcript_base
+    WHERE expression_fold_change > 1.5  -- Only consider upregulated genes
+        AND (jsonb_array_length(drugs) > 0 OR 
+             'kinase' = ANY(product_type) OR 
+             'receptor' = ANY(product_type) OR
+             'enzyme' = ANY(product_type))
+)
+SELECT 
+    gene_symbol,
+    ROUND(expression_fold_change, 2) as fold_change,
+    priority_score,
+    product_type,
+    molecular_functions[1:3] as key_functions,
+    pathways[1:2] as major_pathways,
+    jsonb_array_length(drugs) as available_drugs,
+    CASE 
+        WHEN priority_score >= 6 THEN 'HIGH PRIORITY - Immediate consideration'
+        WHEN priority_score >= 4 THEN 'MEDIUM PRIORITY - Clinical evaluation'  
+        WHEN priority_score >= 2 THEN 'LOW PRIORITY - Research interest'
+        ELSE 'MINIMAL PRIORITY'
+    END as recommendation,
+    -- Extract drug information if available
+    CASE 
+        WHEN jsonb_array_length(drugs) > 0 
+        THEN (drugs->0->>'name') || ' (' || (drugs->0->>'clinical_status') || ')'
+        ELSE 'No approved drugs - research target'
+    END as primary_therapeutic_option
+FROM druggable_targets
+WHERE priority_score >= 2  -- Only show meaningful targets
+ORDER BY priority_score DESC, expression_fold_change DESC
+LIMIT 15;
+```
+
+**Clinical Interpretation**:
+- **High Priority**: Immediate therapeutic consideration, existing drugs available
+- **Medium Priority**: Promising targets requiring clinical evaluation
+- **Low Priority**: Research targets for future drug development
+
+#### SOTA Query 3: Pathway-Based Therapeutic Strategy
+
+**Clinical Rationale**: Identifies dysregulated pathways that can be targeted with combination therapy approaches, essential for precision oncology.
+
+```sql
+-- Comprehensive pathway-based therapeutic strategy analysis
+WITH pathway_enrichment AS (
+    SELECT 
+        unnest(pathways) as pathway_name,
+        COUNT(*) as total_genes,
+        COUNT(*) FILTER (WHERE expression_fold_change > 1.5) as upregulated_genes,
+        COUNT(*) FILTER (WHERE expression_fold_change < 0.7) as downregulated_genes,
+        AVG(expression_fold_change) as avg_fold_change,
+        ARRAY_AGG(
+            CASE WHEN ABS(expression_fold_change - 1.0) > 0.5 
+                 THEN gene_symbol || ':' || ROUND(expression_fold_change, 2)::text 
+                 ELSE NULL END
+        ) FILTER (WHERE ABS(expression_fold_change - 1.0) > 0.5) as dysregulated_genes,
+        -- Count druggable targets in pathway
+        COUNT(*) FILTER (WHERE jsonb_array_length(drugs) > 0 AND expression_fold_change > 1.5) as druggable_targets
+    FROM cancer_transcript_base 
+    WHERE pathways IS NOT NULL 
+        AND array_length(pathways, 1) > 0
+    GROUP BY pathway_name
+    HAVING COUNT(*) >= 3  -- At least 3 genes in pathway
+),
+pathway_classification AS (
+    SELECT *,
+        CASE 
+            -- Oncogenic pathways (typically activated in cancer)
+            WHEN pathway_name ILIKE '%PI3K%' OR pathway_name ILIKE '%AKT%' OR pathway_name ILIKE '%mTOR%' THEN 'growth_survival'
+            WHEN pathway_name ILIKE '%RAS%' OR pathway_name ILIKE '%MAPK%' OR pathway_name ILIKE '%ERK%' THEN 'proliferation'
+            WHEN pathway_name ILIKE '%p53%' OR pathway_name ILIKE '%DNA repair%' OR pathway_name ILIKE '%checkpoint%' THEN 'genome_stability'
+            WHEN pathway_name ILIKE '%apoptosis%' OR pathway_name ILIKE '%cell death%' THEN 'apoptosis'
+            WHEN pathway_name ILIKE '%angiogenesis%' OR pathway_name ILIKE '%VEGF%' THEN 'angiogenesis'
+            WHEN pathway_name ILIKE '%immune%' OR pathway_name ILIKE '%interferon%' THEN 'immune_response'
+            WHEN pathway_name ILIKE '%metabolism%' OR pathway_name ILIKE '%glycolysis%' THEN 'metabolism'
+            ELSE 'other'
+        END as pathway_category,
+        -- Calculate pathway dysregulation score
+        (upregulated_genes::float / total_genes * 2) +  -- Upregulation weight
+        (downregulated_genes::float / total_genes * 1) + -- Downregulation weight  
+        (druggable_targets::float / total_genes * 3) as dysregulation_score  -- Druggability weight
+    FROM pathway_enrichment
+)
+SELECT 
+    pathway_category,
+    pathway_name,
+    total_genes,
+    upregulated_genes,
+    downregulated_genes,
+    ROUND(avg_fold_change, 2) as avg_expression_change,
+    druggable_targets,
+    ROUND(dysregulation_score, 2) as dysregulation_score,
+    CASE 
+        WHEN dysregulation_score > 4.0 THEN 'CRITICAL - Immediate intervention needed'
+        WHEN dysregulation_score > 2.5 THEN 'HIGH - Priority pathway for targeting'
+        WHEN dysregulation_score > 1.5 THEN 'MODERATE - Consider combination therapy'
+        ELSE 'LOW - Monitor for changes'
+    END as therapeutic_priority,
+    dysregulated_genes[1:5] as key_dysregulated_genes,  -- Show top 5 dysregulated genes
+    CASE 
+        WHEN pathway_category = 'growth_survival' AND avg_fold_change > 1.3 
+        THEN 'Consider PI3K/AKT/mTOR inhibitors'
+        WHEN pathway_category = 'proliferation' AND avg_fold_change > 1.3
+        THEN 'Consider MEK/ERK inhibitors'  
+        WHEN pathway_category = 'genome_stability' AND avg_fold_change < 0.8
+        THEN 'Consider PARP inhibitors or DNA damaging agents'
+        WHEN pathway_category = 'apoptosis' AND avg_fold_change < 0.8  
+        THEN 'Consider BCL-2 family inhibitors'
+        WHEN pathway_category = 'angiogenesis' AND avg_fold_change > 1.3
+        THEN 'Consider anti-angiogenic therapy'
+        WHEN pathway_category = 'immune_response' AND avg_fold_change < 0.8
+        THEN 'Consider immunotherapy approaches'
+        ELSE 'Pathway-specific analysis needed'
+    END as therapeutic_recommendation
+FROM pathway_classification
+WHERE dysregulation_score > 1.0  -- Only show significantly dysregulated pathways
+ORDER BY dysregulation_score DESC, druggable_targets DESC
+LIMIT 20;
+```
+
+**Clinical Interpretation**:
+- **Critical pathways**: Require immediate therapeutic intervention
+- **High priority**: Primary targets for precision therapy
+- **Moderate priority**: Combination therapy candidates
+- **Therapeutic recommendations**: Specific drug classes based on pathway analysis
+
+### Query Validation Results
+
+**Example Output** (using breast_cancer_her2_positive.csv):
+
+```bash
+# Test SOTA Query 1 - Oncogene Analysis
+poetry run psql -d mediabase_patient_BREAST_HER2_001 -c "
+SELECT gene_symbol, expression_fold_change, 
+       CASE WHEN gene_symbol = 'ERBB2' AND expression_fold_change > 1.5 
+            THEN 'ACTIVATED (Target for trastuzumab)' END as significance
+FROM cancer_transcript_base 
+WHERE gene_symbol IN ('ERBB2', 'ESR1', 'PGR') 
+ORDER BY expression_fold_change DESC;"
+```
+
+Expected results:
+- **ERBB2**: 8.45-fold (ACTIVATED - Primary target)
+- **ESR1**: 0.23-fold (SUPPRESSED - Indicates hormone independence)  
+- **PGR**: 0.18-fold (SUPPRESSED - Confirms poor prognosis)
+
+### Automated Analysis Pipeline
+
+For clinical workflow efficiency, the SOTA queries should be run automatically after patient database creation:
+
+```bash
+# Run complete oncological analysis for a patient
+poetry run python scripts/run_patient_analysis.py --patient-id PATIENT123
+
+# Run specific analysis modules
+poetry run python scripts/run_patient_analysis.py --patient-id PATIENT123 --analysis oncogenes,targets,pathways
+
+# Generate clinical report
+poetry run python scripts/run_patient_analysis.py --patient-id PATIENT123 --generate-report
+```
+
+**Automated Analysis Includes**:
+1. **Oncogene/Tumor Suppressor Analysis** - Identifies critical cancer gene dysregulation
+2. **Therapeutic Target Prioritization** - Ranks druggable targets by clinical relevance  
+3. **Pathway-Based Strategy** - Identifies dysregulated pathways for combination therapy
+4. **Clinical Report Generation** - Produces oncologist-ready summary with recommendations
+
+**Integration with LLM Systems**:
+- Query results formatted for LLM input
+- Natural language summaries generated
+- Clinical decision support integration
+- Interactive analysis with follow-up queries
+
+### Query Validation
+
+Validate all queries against current schema:
+
+```bash
+# Test query syntax and compatibility
+poetry run python scripts/validate_queries.py --test-syntax --test-compatibility
+
+# Validate against specific patient database
+poetry run python scripts/validate_queries.py --test-with-database mediabase_patient_PATIENT123
+```
+
 ## Documentation
 
 Comprehensive documentation is available in the `docs/` directory:

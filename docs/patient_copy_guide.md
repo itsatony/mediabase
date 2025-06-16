@@ -287,28 +287,39 @@ DROP DATABASE IF EXISTS mediabase_patient_PATIENT123;
 ### Example Queries
 
 ```sql
--- Find significantly upregulated transcripts
+-- Find significantly upregulated transcripts with therapeutic information
 SELECT 
     transcript_id, 
     gene_symbol, 
     expression_fold_change,
-    pathways,
-    drugs
+    product_type,
+    pathways[1:3] as major_pathways,
+    CASE 
+        WHEN jsonb_array_length(drugs) > 0 THEN 'Druggable'
+        ELSE 'No known drugs'
+    END as drug_availability
 FROM cancer_transcript_base 
 WHERE expression_fold_change > 2.0 
 ORDER BY expression_fold_change DESC 
 LIMIT 20;
 
--- Find downregulated genes with drug targets
+-- Find downregulated genes with drug targets (potential resistance markers)
 SELECT 
     transcript_id,
     gene_symbol,
     expression_fold_change,
-    jsonb_pretty(drugs) as drug_targets
+    product_type,
+    molecular_functions[1:2] as key_functions,
+    CASE 
+        WHEN jsonb_array_length(drugs) > 0 THEN 
+            (drugs->0->>'name') || ' (potential resistance)'
+        ELSE 'No drug interactions'
+    END as therapeutic_implications
 FROM cancer_transcript_base 
 WHERE expression_fold_change < 0.5 
     AND jsonb_array_length(drugs) > 0
-ORDER BY expression_fold_change ASC;
+ORDER BY expression_fold_change ASC
+LIMIT 15;
 ```
 
 ## Security Considerations

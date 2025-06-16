@@ -371,9 +371,14 @@ class PatientDatabaseCreator:
             # Process updates in batches
             transcript_ids = list(self.transcript_updates.keys())
             
-            with get_progress_bar() as progress:
-                task = progress.add_task("Updating fold-changes", total=len(transcript_ids))
-                
+            # Create progress bar for batch updates
+            progress_bar = get_progress_bar(
+                total=len(transcript_ids),
+                desc="Updating fold-changes",
+                module_name="patient_copy"
+            )
+            
+            try:
                 for i in range(0, len(transcript_ids), BATCH_SIZE):
                     batch_ids = transcript_ids[i:i + BATCH_SIZE]
                     batch_updates = [
@@ -381,9 +386,14 @@ class PatientDatabaseCreator:
                     ]
                     
                     # Execute batch update
-                    with target_db.transaction() as cursor:
+                    try:
+                        # Ensure connection is active
+                        if not target_db.ensure_connection():
+                            raise Exception("Failed to connect to target database")
+                        
+                        # Execute batch update
                         execute_batch(
-                            cursor,
+                            target_db.cursor,
                             """
                             UPDATE cancer_transcript_base 
                             SET expression_fold_change = %s 
@@ -394,7 +404,7 @@ class PatientDatabaseCreator:
                         )
                         
                         # Count successful updates
-                        cursor.execute(
+                        target_db.cursor.execute(
                             """
                             SELECT COUNT(*) FROM cancer_transcript_base 
                             WHERE transcript_id = ANY(%s)
@@ -402,11 +412,28 @@ class PatientDatabaseCreator:
                             (batch_ids,)
                         )
                         
-                        found_count = cursor.fetchone()[0]
+                        found_count = target_db.cursor.fetchone()[0]
                         self.stats["updates_applied"] += found_count
                         self.stats["transcripts_not_found"] += len(batch_ids) - found_count
+                        
+                        # Commit the batch
+                        target_db.conn.commit()
+                        
+                    except Exception as e:
+                        # Rollback on error
+                        if target_db.conn:
+                            target_db.conn.rollback()
+                        raise e
                     
-                    progress.update(task, advance=len(batch_ids))
+                    # Update progress bar
+                    progress_bar.update(len(batch_ids))
+                
+                # Complete the progress bar
+                progress_bar.complete()
+                
+            finally:
+                # Ensure progress bar is closed
+                progress_bar.close()
             
             self._log_update_statistics()
             
@@ -441,27 +468,30 @@ class PatientDatabaseCreator:
             target_config['dbname'] = self.target_db_name
             target_db = get_db_manager(target_config)
             
-            with target_db.transaction() as cursor:
-                # Check total transcript count
-                cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
-                total_transcripts = cursor.fetchone()[0]
-                
-                # Check transcripts with non-default fold-change
-                cursor.execute(
-                    "SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change != 1.0"
-                )
-                modified_transcripts = cursor.fetchone()[0]
-                
-                # Sample some updated values
-                cursor.execute(
-                    """
+            # Ensure connection is active
+            if not target_db.ensure_connection():
+                raise Exception("Failed to connect to target database for validation")
+            
+            # Check total transcript count
+            target_db.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
+            total_transcripts = target_db.cursor.fetchone()[0]
+            
+            # Check transcripts with non-default fold-change
+            target_db.cursor.execute(
+                "SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change != 1.0"
+            )
+            modified_transcripts = target_db.cursor.fetchone()[0]
+            
+            # Sample some updated values
+            target_db.cursor.execute(
+                """
                     SELECT transcript_id, expression_fold_change 
                     FROM cancer_transcript_base 
                     WHERE expression_fold_change != 1.0 
                     LIMIT 5
                     """
                 )
-                samples = cursor.fetchall()
+            samples = target_db.cursor.fetchall()
             
             self.console.print(f"[green]✓ Validation complete[/green]")
             self.console.print(f"Total transcripts: {total_transcripts:,}")
@@ -536,10 +566,10 @@ Examples:
         # Get database configuration
         db_config = {
             'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('MB_POSTGRES_PORT', 5432)),
+            'port': int(os.getenv('MB_POSTGRES_PORT', 5435)),
             'dbname': args.source_db,
-            'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
-            'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
         
         # Display operation summary

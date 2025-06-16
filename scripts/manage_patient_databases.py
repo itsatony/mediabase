@@ -545,10 +545,10 @@ Examples:
         # Get database configuration
         db_config = {
             'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('MB_POSTGRES_PORT', 5432)),
+            'port': int(os.getenv('MB_POSTGRES_PORT', 5435)),
             'dbname': 'postgres',  # We connect to postgres to manage other databases
-            'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
-            'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
         
         # Create patient database manager

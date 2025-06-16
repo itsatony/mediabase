@@ -23,6 +23,8 @@ from .drugs import DrugProcessor
 from .id_enrichment import IDEnrichmentProcessor
 # Import publications last to avoid circular references
 from .publications import PublicationsProcessor
+from .drug_repurposing_hub import DrugRepurposingHubProcessor
+from .pharmgkb_annotations import PharmGKBAnnotationsProcessor
 
 # Export all main processor classes
 __all__ = [
@@ -34,4 +36,6 @@ __all__ = [
     'GOTermProcessor',
     'IDEnrichmentProcessor',
     'PublicationsProcessor',
+    'DrugRepurposingHubProcessor',
+    'PharmGKBAnnotationsProcessor',
 ]

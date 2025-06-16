@@ -1,0 +1,232 @@
+# Evidence Scoring Configuration for MEDIABASE
+# This file configures the comprehensive evidence scoring system
+
+# Core scoring parameters
+scoring:
+  max_evidence_score: 100.0
+  confidence_threshold: 0.3
+  evidence_decay_days: 1095  # 3 years
+  min_evidence_items: 1
+  
+  # Component score weights for different use cases
+  use_case_weights:
+    drug_repurposing:
+      clinical: 0.40      # Clinical evidence is most important for repurposing
+      safety: 0.25        # Safety profile critical for existing drugs
+      mechanistic: 0.20   # Mechanism of action understanding
+      publication: 0.10   # Literature support
+      genomic: 0.05       # Genomic evidence less critical
+      
+    biomarker_discovery:
+      genomic: 0.35       # Genomic evidence most important
+      clinical: 0.25      # Clinical validation needed
+      publication: 0.20   # Literature support important
+      mechanistic: 0.15   # Mechanistic understanding
+      safety: 0.05        # Safety less critical for biomarkers
+      
+    pathway_analysis:
+      mechanistic: 0.40   # Mechanistic evidence most important
+      publication: 0.25   # Literature support critical
+      genomic: 0.20       # Genomic context important
+      clinical: 0.10      # Clinical relevance moderate
+      safety: 0.05        # Safety less critical for pathways
+      
+    therapeutic_target:
+      clinical: 0.30      # Balanced approach for therapeutic targets
+      mechanistic: 0.25   # Mechanism understanding important
+      genomic: 0.20       # Genomic evidence important
+      publication: 0.15   # Literature support
+      safety: 0.10        # Safety considerations
+
+# Source reliability weights (0-1 scale)
+source_weights:
+  DrugCentral: 0.85
+  ChEMBL: 0.90
+  Drug_Repurposing_Hub: 0.80
+  PharmGKB_Clinical_Annotations: 0.95
+  ClinicalTrials.gov: 0.90
+  PubMed: 0.75
+  FDA_Labels: 0.95
+  EMA_Labels: 0.90
+  Reactome: 0.85
+  GO_Annotations: 0.80
+
+# Clinical phase scoring (0-100 scale)
+clinical_phase_scores:
+  phase_4: 90          # FDA approved
+  phase_3: 75          # Late-stage trials
+  phase_2: 60          # Mid-stage trials
+  phase_1: 45          # Early-stage trials
+  preclinical: 30      # Preclinical studies
+  unknown: 20          # No phase information
+
+# Evidence type scoring thresholds
+evidence_thresholds:
+  clinical_high: 70    # High clinical evidence threshold
+  clinical_medium: 40  # Medium clinical evidence threshold
+  mechanistic_high: 60 # High mechanistic evidence threshold
+  mechanistic_medium: 30 # Medium mechanistic evidence threshold
+  publication_high: 50 # High publication support threshold
+  publication_medium: 25 # Medium publication support threshold
+  genomic_high: 40     # High genomic evidence threshold
+  genomic_medium: 20   # Medium genomic evidence threshold
+  safety_high: 60      # High safety profile threshold
+  safety_medium: 30    # Medium safety profile threshold
+
+# Quality metrics configuration
+quality_metrics:
+  min_evidence_threshold: 3
+  high_confidence_threshold: 0.8
+  clinical_relevance_weight: 0.4
+  diversity_bonus_factor: 0.1
+  consistency_penalty_factor: 0.2
+
+# Cancer research priorities for enhanced scoring
+cancer_research_priorities:
+  immunotherapy_targets:
+    - CD19
+    - CD20  
+    - CTLA4
+    - PD1
+    - PDL1
+    - TIGIT
+    - LAG3
+    - TIM3
+    
+  oncogenes:
+    - MYC
+    - EGFR
+    - HER2
+    - KRAS
+    - BRAF
+    - PI3K
+    - AKT
+    - MTOR
+    - ALK
+    - ROS1
+    
+  tumor_suppressors:
+    - TP53
+    - RB1
+    - BRCA1
+    - BRCA2
+    - PTEN
+    - APC
+    - VHL
+    - NF1
+    
+  dna_repair:
+    - BRCA1
+    - BRCA2
+    - ATM
+    - CHEK2
+    - PALB2
+    - RAD51
+    - MLH1
+    - MSH2
+    - MSH6
+    - PMS2
+    
+  cell_cycle:
+    - CDK4
+    - CDK6
+    - CCND1
+    - CCNE1
+    - RB1
+    - E2F1
+    - CDK2
+    - CDKN1A
+    
+  apoptosis:
+    - BCL2
+    - BAX
+    - BAK1
+    - CASP3
+    - CASP9
+    - APAF1
+    - MCL1
+    - BCL2L1
+    
+  angiogenesis:
+    - VEGFA
+    - VEGFR1
+    - VEGFR2
+    - FLT1
+    - KDR
+    - ANGPT1
+    - ANGPT2
+    
+  metastasis:
+    - MMP9
+    - MMP2
+    - TIMP1
+    - CDH1
+    - SNAI1
+    - TWIST1
+    - ZEB1
+    - VIM
+
+# Advanced scoring features
+advanced_features:
+  enable_age_decay: true
+  enable_cross_validation: true
+  enable_uncertainty_quantification: true
+  enable_confidence_intervals: true
+  enable_dynamic_weights: false
+  
+  # Confidence interval calculation
+  confidence_interval:
+    base_margin_factor: 0.5
+    variance_margin_factor: 0.3
+    sample_margin_factor: 0.2
+    
+  # Age decay parameters
+  age_decay:
+    linear_decay: true
+    min_decay_factor: 0.1
+    decay_period_days: 1095
+    
+  # Cross-validation parameters
+  cross_validation:
+    consistency_threshold: 0.8
+    min_sources_for_validation: 2
+    variance_penalty_factor: 0.001
+
+# Output and reporting configuration
+output:
+  score_precision: 2        # Decimal places for scores
+  confidence_precision: 3   # Decimal places for confidence values
+  include_metadata: true    # Include scoring metadata in output
+  include_evidence_items: false  # Include individual evidence items
+  
+  # Export formats
+  export_formats:
+    - json
+    - csv
+    - excel
+    
+  # Analytics settings
+  analytics:
+    generate_comparative_analysis: true
+    generate_portfolio_recommendations: true
+    max_genes_for_comparison: 1000
+    top_n_rankings: 20
+
+# Database integration
+database:
+  batch_size: 100
+  commit_frequency: 10
+  enable_progress_tracking: true
+  enable_parallel_processing: false
+  
+  # Evidence scoring table settings
+  evidence_table:
+    enable_partitioning: false
+    retention_days: 365
+    enable_compression: true
+    
+  # Analytics refresh settings
+  analytics_refresh:
+    auto_refresh: true
+    refresh_frequency_hours: 24
+    refresh_on_scoring_update: true

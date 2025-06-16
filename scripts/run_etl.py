@@ -31,6 +31,9 @@ from src.etl.drugs import DrugProcessor
 from src.etl.publications import PublicationsProcessor
 from src.etl.id_enrichment import IDEnrichmentProcessor
 from src.etl.chembl_drugs import ChemblDrugProcessor
+from src.etl.drug_repurposing_hub import DrugRepurposingHubProcessor
+from src.etl.pharmgkb_annotations import PharmGKBAnnotationsProcessor
+from src.etl.evidence_scoring import EvidenceScoringProcessor
 
 from config.etl_sequence import get_optimal_sequence, validate_sequence
 
@@ -129,6 +132,15 @@ def run_module(
         elif module_name == 'chembl_drugs':
             # Explicit ChEMBL drug processor
             processor = ChemblDrugProcessor(config)
+        elif module_name == 'drug_repurposing_hub':
+            # Drug Repurposing Hub processor
+            processor = DrugRepurposingHubProcessor(config)
+        elif module_name == 'pharmgkb_annotations':
+            # PharmGKB annotations processor
+            processor = PharmGKBAnnotationsProcessor(config)
+        elif module_name == 'evidence_scoring':
+            # Evidence scoring processor
+            processor = EvidenceScoringProcessor(config)
         elif module_name == 'publications':
             processor = PublicationsProcessor(config)
         else:
@@ -166,6 +178,8 @@ def run_pipeline(
         'products',
         'pathways',
         'drugs',
+        'drug_repurposing_hub',  # Add drug repurposing hub after drugs
+        'pharmgkb_annotations',  # Add PharmGKB annotations after repurposing hub
         'publications'
     ]
 
@@ -355,7 +369,7 @@ def main() -> int:  # Change return type to int for clarity
     parser.add_argument(
         "--modules",
         nargs="+",
-        choices=['transcripts', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs', 'chembl_drugs', 'publications'],
+        choices=['transcripts', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs', 'chembl_drugs', 'drug_repurposing_hub', 'pharmgkb_annotations', 'publications'],
         help="Specific modules to run"
     )
     parser.add_argument(

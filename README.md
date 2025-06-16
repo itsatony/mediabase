@@ -10,9 +10,40 @@ MEDIABASE integrates various biological databases to provide a unified interface
 - Gene product classification from UniProt
 - GO terms enrichment for functional analysis
 - Pathway integration from Reactome
-- Drug interactions from DrugCentral and ChEMBL
+- Drug interactions from DrugCentral, ChEMBL, and Drug Repurposing Hub
+- Pharmacogenomic annotations from PharmGKB
 - Scientific literature from PubMed
 - Cross-database identifier mappings (UniProt, NCBI, RefSeq, Ensembl)
+
+## ETL Data Integration Philosophy
+
+**MEDIABASE prioritizes downloadable datasets over API-based integration** for sustainable, high-throughput processing:
+
+### Why Downloadable Datasets?
+
+1. **Scale Requirements**: Processing 100k+ genes requires bulk operations, not individual API calls
+2. **Rate Limit Compliance**: Most APIs have rate limits (e.g., 3-10 requests/second) making large-scale processing impractical
+3. **Reproducibility**: Downloaded datasets ensure consistent results across runs
+4. **Offline Processing**: Enables development and testing without constant internet connectivity
+5. **Performance**: Local file processing is orders of magnitude faster than API calls
+6. **Cost Efficiency**: Avoids API usage fees and quota limitations
+
+### Data Source Strategy
+
+- **Primary Sources**: Bulk downloads from FTP/HTTP endpoints (NCBI, EBI, UniProt, etc.)
+- **Cache Management**: Smart caching with TTL to avoid unnecessary re-downloads
+- **Format Preferences**: TSV/CSV > XML > JSON for processing efficiency
+- **Compression Support**: Automatic handling of .gz, .bz2, .zip formats
+- **API Usage**: Only for small-scale metadata enrichment or when bulk data unavailable
+
+### Implementation Benefits
+
+This approach enables MEDIABASE to:
+- Process entire human transcriptome (200k+ transcripts) in minutes vs days
+- Maintain comprehensive ID mapping (5M+ UniProt entries processed locally)
+- Achieve 84.5% ID coverage improvement through bulk processing
+- Support offline development and testing environments
+- Scale horizontally without API bottlenecks
 
 ## Setup
 
@@ -218,6 +249,140 @@ Options for ChEMBL:
 - `--chembl-schema`: Schema name for ChEMBL data tables (default: chembl_temp)
 - `--no-chembl-temp-schema`: Use a persistent schema instead of temporary schema
 
+### Drug Repurposing Hub Integration
+
+Integrates clinical-phase drug data from the Broad Institute Drug Repurposing Hub:
+
+```bash
+# Run Drug Repurposing Hub integration
+poetry run python scripts/run_etl.py --module drug_repurposing_hub
+```
+
+Options:
+- `--force-download`: Force new download of data file
+- `--skip-scores`: Skip drug score calculation
+
+### PharmGKB Pharmacogenomic Annotations
+
+Integrates pharmacogenomic clinical annotations from PharmGKB (Pharmacogenomics Knowledge Base):
+
+```bash
+# Run PharmGKB annotations integration
+poetry run python scripts/run_etl.py --module pharmgkb_annotations
+```
+
+**Data Source**: https://www.pharmgkb.org/downloads
+
+**Manual Download Required**: PharmGKB data requires manual download and setup:
+
+1. Register for PharmGKB access at https://www.pharmgkb.org/downloads
+2. Download the following files:
+   - `clinicalAnnotations.zip` - Clinical annotation summaries
+   - `variantAnnotations.zip` - Variant annotation summaries (optional)
+   - Additional pathway and gene data (optional)
+3. Extract files to `/tmp/mediabase/cache/pharmgkb/` maintaining directory structure:
+   ```
+   /tmp/mediabase/cache/pharmgkb/
+   ├── clinical_annotations/
+   │   └── clinical_annotations.tsv
+   ├── variantAnnotations/
+   │   └── var_drug_ann.tsv
+   └── pathways/
+       └── [pathway files]
+   ```
+
+**Caching Strategy**: "Cache forever" - PharmGKB data is manually downloaded and cached indefinitely to avoid repeated manual downloads.
+
+**Data Integration**:
+- **5,185+ clinical annotation records** with evidence levels and clinical significance
+- **1,086+ unique genes** with pharmacogenomic annotations
+- **12,558+ variant annotation records** with pharmacogenomic evidence (NEW)
+- **1,195+ unique genes** with variant-level pharmacogenomic data (NEW)
+- **264 drug-specific pathway files** with metabolic networks
+- **3,064+ biochemical reactions** with gene-enzyme relationships
+- **1,163+ unique genes** involved in drug metabolism pathways
+- **22+ cancer-relevant pathways** (Tamoxifen, Platinum agents, etc.)
+- Evidence-based scoring system (1A-4, where 1A = high evidence, 4 = no effect)
+- Clinical categories: Efficacy, Toxicity, Metabolism/PK, Dosage
+- PMID counts and evidence tracking for clinical validation
+- Cell-type specific reactions (hepatocyte, malignant cell)
+- Specialty population support (pediatric, ethnic populations)
+- **High-impact pharmacogenomic variants** with clinical actionability scoring (NEW)
+- **CYP450 variants** for drug metabolism analysis (NEW)
+- **Cancer-relevant drug variants** (tamoxifen, platinum agents, etc.) (NEW)
+
+Options:
+- `--include-variant-annotations`: Include variant-level annotations (default: true)
+- `--include-vip-summaries`: Include VIP (Very Important Pharmacogene) summaries (default: true, not available in current download)
+- `--skip-scores`: Skip pharmacogenomic score calculation
+
+### Evidence Scoring System
+
+MEDIABASE includes a comprehensive evidence scoring framework that integrates multiple data sources to generate confidence-based scores (0-100 scale) for drug-gene interactions, optimized for different cancer research use cases.
+
+```bash
+# Run evidence scoring as part of ETL pipeline
+poetry run python scripts/run_etl.py --module evidence_scoring
+
+# Run evidence scoring standalone
+python scripts/run_evidence_scoring.py --test --limit 10   # Test mode
+python scripts/run_evidence_scoring.py --full              # Full processing
+```
+
+**Important**: Evidence scoring should be run **after** all data integration modules (PharmGKB, Drug Repurposing Hub, etc.) to ensure all evidence sources are available for comprehensive scoring.
+
+**Multi-Dimensional Evidence Integration**:
+- **Clinical Evidence** (0-30 points): PharmGKB clinical annotations, PharmGKB variant annotations (pharmacogenomics), clinical trials, FDA approvals
+- **Mechanistic Evidence** (0-25 points): Pathway involvement, drug-target interactions
+- **Publication Support** (0-20 points): Literature volume and quality metrics
+- **Genomic Evidence** (0-15 points): GO terms, cancer relevance, molecular functions
+- **Safety Evidence** (0-10 points): Toxicity profiles, adverse events, safety data
+
+**Use Case Optimization**:
+- **Drug Repurposing**: Emphasizes clinical safety (35%) and proven mechanisms (25%)
+- **Biomarker Discovery**: Prioritizes genomic evidence (35%) and clinical validation (25%)
+- **Pathway Analysis**: Focuses on mechanistic understanding (40%) and literature (25%)
+- **Therapeutic Targeting**: Balanced approach across all evidence types (30%/25%/20%/15%/10%)
+
+**Advanced Analytics**:
+- **Confidence Intervals**: 95% confidence bounds using uncertainty propagation
+- **Evidence Quality Metrics**: Source reliability weighting (FDA: 0.95, ChEMBL: 0.90, PharmGKB: 0.85)
+- **Component Score Breakdown**: Detailed scoring for each evidence type
+- **Statistical Summaries**: Distribution analysis across use cases
+
+**Enhanced Database Structure**:
+```json
+{
+  "use_case_scores": {
+    "drug_repurposing": {
+      "overall_score": 78.5,
+      "confidence_interval": [72.1, 84.9],
+      "component_scores": {"clinical": 25.2, "safety": 8.7, ...},
+      "evidence_quality": 0.83
+    }
+  },
+  "drug_specific_scores": {...},
+  "scoring_version": "1.0"
+}
+```
+
+**Query Examples**:
+```sql
+-- High-confidence drug repurposing candidates
+SELECT gene_symbol, 
+       drug_scores->'use_case_scores'->'drug_repurposing'->>'overall_score' as score
+FROM cancer_transcript_base 
+WHERE (drug_scores->'use_case_scores'->'drug_repurposing'->>'overall_score')::float > 70;
+
+-- Biomarkers with strong genomic evidence
+SELECT gene_symbol,
+       drug_scores->'use_case_scores'->'biomarker_discovery'->'component_scores'->>'genomic' as genomic_score
+FROM cancer_transcript_base 
+WHERE (drug_scores->'use_case_scores'->'biomarker_discovery'->'component_scores'->>'genomic')::float > 10;
+```
+
+📖 **Detailed Documentation**: [Evidence Scoring Framework](docs/evidence_scoring.md)
+
 ### Publication Enrichment
 
 Enhances transcript records with publication metadata from PubMed.
@@ -314,7 +479,7 @@ The `examples/` directory contains realistic patient data files for different ca
 
 MEDIABASE uses a comprehensive PostgreSQL schema designed for cancer transcriptomics analysis. The main table `cancer_transcript_base` integrates data from multiple biological databases into a unified structure.
 
-### Current Schema Version: v0.1.6
+### Current Schema Version: v0.1.7
 
 The database schema follows a versioned approach with automated migrations. The current version includes comprehensive support for:
 
@@ -322,13 +487,15 @@ The database schema follows a versioned approach with automated migrations. The 
 - Protein product classification from UniProt  
 - GO terms for functional analysis
 - Pathway data from Reactome
-- Drug interactions from DrugCentral and ChEMBL
+- Drug interactions from DrugCentral, ChEMBL, and Drug Repurposing Hub
+- Pharmacogenomic annotations and drug-specific pathways from PharmGKB
+- Evidence-based scoring system with multi-dimensional confidence metrics
 - Scientific literature references from PubMed
 - Cross-database identifier mappings
 
 ### Core Table: cancer_transcript_base
 
-The main table contains 25 columns covering all aspects of transcript annotation:
+The main table contains 26 columns covering all aspects of transcript annotation:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -341,14 +508,15 @@ The main table contains 25 columns covering all aspects of transcript annotation
 | `product_type` | TEXT[] | Protein product classifications |
 | `go_terms` | JSONB | Gene Ontology term annotations |
 | `pathways` | TEXT[] | Reactome pathway memberships |
-| `drugs` | JSONB | Drug interaction data |
+| `drugs` | JSONB | Drug interaction data from multiple sources |
+| `pharmgkb_pathways` | JSONB | PharmGKB drug-specific metabolic pathways |
 | `expression_fold_change` | DOUBLE PRECISION | Patient-specific expression data (default: 1.0) |
 | `expression_freq` | JSONB | Expression frequency data |
 | `cancer_types` | TEXT[] | Associated cancer types |
 | `features` | JSONB | UniProt feature annotations |
 | `molecular_functions` | TEXT[] | Molecular function classifications |
 | `cellular_location` | TEXT[] | Subcellular localization data |
-| `drug_scores` | JSONB | Drug interaction confidence scores |
+| `drug_scores` | JSONB | Evidence-based confidence scores with use case optimization |
 | `alt_transcript_ids` | JSONB | Alternative transcript identifiers |
 | `alt_gene_ids` | JSONB | Alternative gene identifiers |
 | `uniprot_ids` | TEXT[] | UniProt protein identifiers |
@@ -397,7 +565,30 @@ Here's a fully populated example record showing all data types and structures:
     }
   },
   "drug_scores": {
-    "4344": 138.5
+    "use_case_scores": {
+      "drug_repurposing": {
+        "overall_score": 78.5,
+        "confidence_interval": [72.1, 84.9],
+        "component_scores": {
+          "clinical": 25.2,
+          "safety": 8.7,
+          "mechanistic": 15.8,
+          "publication": 12.3,
+          "genomic": 6.1
+        },
+        "evidence_quality": 0.83
+      },
+      "biomarker_discovery": {...},
+      "therapeutic_targeting": {...}
+    },
+    "drug_specific_scores": {
+      "4344": {
+        "drug_name": "Drug compound 4344",
+        "score": 78.5,
+        "source": "drugcentral"
+      }
+    },
+    "scoring_version": "1.0"
   },
   "uniprot_ids": ["P63279", "Q7KZS0", "A0AAA9YHQ4"],
   "ncbi_ids": ["7329"],

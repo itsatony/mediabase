@@ -187,11 +187,112 @@ SCHEMA_VERSIONS = {
             alt_gene_ids,
             alt_transcript_ids
         FROM cancer_transcript_base;
+    """,
+    "v0.1.7": """
+        -- Add PharmGKB pathway data for drug-specific metabolic pathways
+        ALTER TABLE cancer_transcript_base
+        ADD COLUMN IF NOT EXISTS pharmgkb_pathways JSONB DEFAULT '{}'::jsonb;
+
+        -- Update source_references to include PharmGKB pathway references
+        ALTER TABLE cancer_transcript_base
+        ALTER COLUMN source_references SET DEFAULT jsonb_build_object(
+            'go_terms', jsonb_build_array(),
+            'uniprot', jsonb_build_array(),
+            'drugs', jsonb_build_array(),
+            'pathways', jsonb_build_array(),
+            'publications', jsonb_build_array(),
+            'pharmgkb_pathways', jsonb_build_array()
+        );
+
+        -- Update existing rows to include pharmgkb_pathways array if missing
+        UPDATE cancer_transcript_base
+        SET source_references = source_references || '{"pharmgkb_pathways": []}'::jsonb
+        WHERE NOT (source_references ? 'pharmgkb_pathways');
+
+        -- Add GIN index for efficient PharmGKB pathway queries
+        CREATE INDEX IF NOT EXISTS idx_pharmgkb_pathways ON cancer_transcript_base USING GIN(pharmgkb_pathways);
+
+        -- Add composite index for drug-pathway queries
+        CREATE INDEX IF NOT EXISTS idx_drugs_pharmgkb ON cancer_transcript_base USING GIN(drugs, pharmgkb_pathways);
+
+        -- Update gene_id_lookup view to be more comprehensive
+        DROP VIEW IF EXISTS gene_id_lookup;
+        CREATE OR REPLACE VIEW gene_id_lookup AS
+        SELECT 
+            transcript_id,
+            gene_symbol,
+            gene_id,
+            uniprot_ids,
+            ncbi_ids,
+            refseq_ids,
+            alt_gene_ids,
+            alt_transcript_ids,
+            CASE 
+                WHEN pharmgkb_pathways != '{}'::jsonb THEN TRUE 
+                ELSE FALSE 
+            END as has_pharmgkb_data
+        FROM cancer_transcript_base;
+    """,
+    "v0.1.8": """
+        -- Enhanced evidence scoring system with multi-dimensional analysis
+        
+        -- Add evidence scoring metadata table
+        CREATE TABLE IF NOT EXISTS evidence_scoring_metadata (
+            id SERIAL PRIMARY KEY,
+            gene_symbol TEXT NOT NULL,
+            drug_id TEXT,
+            evidence_score JSONB NOT NULL,
+            use_case TEXT NOT NULL DEFAULT 'therapeutic_target',
+            confidence_lower FLOAT,
+            confidence_upper FLOAT,
+            evidence_count INTEGER,
+            evidence_quality FLOAT,
+            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            scoring_version TEXT DEFAULT '1.0',
+            UNIQUE(gene_symbol, drug_id, use_case)
+        );
+
+        -- Create indexes for evidence scoring queries
+        CREATE INDEX IF NOT EXISTS idx_evidence_scoring_gene ON evidence_scoring_metadata(gene_symbol);
+        CREATE INDEX IF NOT EXISTS idx_evidence_scoring_drug ON evidence_scoring_metadata(drug_id);
+        CREATE INDEX IF NOT EXISTS idx_evidence_scoring_use_case ON evidence_scoring_metadata(use_case);
+        CREATE INDEX IF NOT EXISTS idx_evidence_scoring_quality ON evidence_scoring_metadata(evidence_quality);
+
+        -- Add evidence quality metrics column
+        ALTER TABLE cancer_transcript_base
+        ADD COLUMN IF NOT EXISTS evidence_quality_metrics JSONB DEFAULT jsonb_build_object(
+            'overall_confidence', 0.0,
+            'evidence_count', 0,
+            'source_diversity', 0,
+            'clinical_evidence_ratio', 0.0,
+            'publication_support_ratio', 0.0,
+            'last_assessment', CURRENT_TIMESTAMP
+        );
+
+        -- Update source_references to include evidence scoring references
+        UPDATE cancer_transcript_base
+        SET source_references = source_references || '{"evidence_scoring": []}'::jsonb
+        WHERE NOT (source_references ? 'evidence_scoring');
+    """,
+    "v0.1.9": """
+        -- Add PharmGKB variant annotations support for pharmacogenomics
+        
+        -- Add variant annotations column to main table
+        ALTER TABLE cancer_transcript_base
+        ADD COLUMN IF NOT EXISTS pharmgkb_variants JSONB DEFAULT '{}'::jsonb;
+        
+        -- GIN index for efficient variant queries on main table
+        CREATE INDEX IF NOT EXISTS idx_pharmgkb_variants_jsonb ON cancer_transcript_base USING GIN(pharmgkb_variants);
+        
+        -- Update source_references to include PharmGKB variant references
+        UPDATE cancer_transcript_base
+        SET source_references = source_references || '{"pharmgkb_variants": []}'::jsonb
+        WHERE NOT (source_references ? 'pharmgkb_variants');
     """
 }
 
 # Minimum supported version constant
-MIN_SUPPORTED_VERSION = "v0.1.6"
+MIN_SUPPORTED_VERSION = "v0.1.8"
 
 class DatabaseManager:
     """Manages database operations including connection, schema, and migrations."""
@@ -981,8 +1082,12 @@ class DatabaseManager:
                 self.logger.info("Applying schema changes for v0.1.6")
                 self.cursor.execute(SCHEMA_VERSIONS["v0.1.6"])
                 
-                # Create schema_version table and record that we're at v0.1.6
-                self.logger.info("Creating schema_version table with v0.1.6")
+                # Apply the schema v0.1.7 changes (PharmGKB pathways)
+                self.logger.info("Applying schema changes for v0.1.7")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.7"])
+                
+                # Create schema_version table and record that we're at v0.1.7
+                self.logger.info("Creating schema_version table with v0.1.7")
                 self.cursor.execute("""
                     CREATE TABLE schema_version (
                         version_name TEXT PRIMARY KEY,
@@ -990,9 +1095,9 @@ class DatabaseManager:
                         description TEXT
                     );
                     
-                    -- Insert the schema version record directly as v0.1.6
+                    -- Insert the schema version record directly as v0.1.7
                     INSERT INTO schema_version (version_name, description) 
-                    VALUES ('v0.1.6', 'Direct schema reset to v0.1.6');
+                    VALUES ('v0.1.7', 'Direct schema reset to v0.1.7 with PharmGKB pathways');
                 """)
                 
                 # Commit all changes
@@ -1002,11 +1107,11 @@ class DatabaseManager:
                     
                 # Verify the schema is correctly set up
                 current_version = self.get_current_version()
-                if current_version != "v0.1.6":
-                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.1.6")
+                if current_version != "v0.1.7":
+                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.1.7")
                     return False
                     
-                self.logger.info("Database reset completed successfully with schema v0.1.6")
+                self.logger.info("Database reset completed successfully with schema v0.1.7")
                 return True
             else:
                 self.logger.error("Database cursor is None, cannot reset database")

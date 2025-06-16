@@ -15,18 +15,26 @@ MODULE_DEPENDENCIES = {
     'products': ['transcript', 'id_enrichment'],  # Needs transcript and ID data
     'pathways': ['transcript', 'id_enrichment'],  # Needs transcript and ID data
     'drugs': ['transcript', 'id_enrichment', 'go_terms', 'pathways', 'products'],  # Needs many dependencies
-    'publications': ['transcript', 'go_terms', 'products', 'pathways', 'drugs']  # Needs all sources of PMIDs
+    'publications': ['transcript', 'go_terms', 'products', 'pathways', 'drugs'],  # Needs all sources of PMIDs
+    'evidence_scoring': ['transcript', 'drugs', 'pathways', 'go_terms', 'publications'],  # Needs all evidence sources
+    'pharmgkb_annotations': ['transcript', 'id_enrichment'],  # Needs transcript and ID data
+    'chembl_drugs': ['transcript', 'id_enrichment'],  # Needs transcript and ID data
+    'drug_repurposing_hub': ['transcript']  # Needs transcript data
 }
 
 # Default execution sequence (correct order)
 DEFAULT_SEQUENCE = [
-    'transcript',     # Always first - loads base data
-    'id_enrichment',  # Second - adds cross-database identifiers
-    'go_terms',       # Third - adds GO terms and molecular functions
-    'products',       # Fourth - classifies gene products
-    'pathways',       # Fifth - adds pathway data
-    'drugs',          # Sixth - adds drug interaction data
-    'publications'    # Last - enriches publication references from all modules
+    'transcript',             # Always first - loads base data
+    'id_enrichment',          # Second - adds cross-database identifiers
+    'go_terms',               # Third - adds GO terms and molecular functions
+    'products',               # Fourth - classifies gene products
+    'pathways',               # Fifth - adds pathway data
+    'drugs',                  # Sixth - adds drug interaction data
+    'pharmgkb_annotations',   # Seventh - adds pharmacogenomic annotations
+    'chembl_drugs',           # Eighth - adds ChEMBL drug data
+    'drug_repurposing_hub',   # Ninth - adds drug repurposing data
+    'publications',           # Tenth - enriches publication references from all modules
+    'evidence_scoring'        # Last - generates comprehensive evidence scores
 ]
 
 def validate_sequence(modules: List[str]) -> bool:

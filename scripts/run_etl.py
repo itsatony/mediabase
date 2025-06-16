@@ -30,6 +30,7 @@ from src.etl.pathways import PathwayProcessor
 from src.etl.drugs import DrugProcessor
 from src.etl.publications import PublicationsProcessor
 from src.etl.id_enrichment import IDEnrichmentProcessor
+from src.etl.chembl_drugs import ChemblDrugProcessor
 
 from config.etl_sequence import get_optimal_sequence, validate_sequence
 
@@ -119,7 +120,15 @@ def run_module(
         elif module_name == 'pathways':
             processor = PathwayProcessor(config)
         elif module_name == 'drugs':
-            processor = DrugProcessor(config)
+            # Check if we should use ChEMBL instead of DrugCentral
+            if config.get('use_chembl', True):
+                logger.info("Using ChEMBL for drug data instead of DrugCentral")
+                processor = ChemblDrugProcessor(config)
+            else:
+                processor = DrugProcessor(config)
+        elif module_name == 'chembl_drugs':
+            # Explicit ChEMBL drug processor
+            processor = ChemblDrugProcessor(config)
         elif module_name == 'publications':
             processor = PublicationsProcessor(config)
         else:
@@ -232,8 +241,19 @@ def get_modules_to_run(args) -> List[str]:
         # Split comma-separated list of modules
         requested_modules = args.module.split(',')
         
+        # Handle the case where chembl_drugs is requested
+        if 'chembl_drugs' in requested_modules and 'drugs' in requested_modules:
+            # If both are specified, remove regular drugs to avoid duplicates
+            requested_modules.remove('drugs')
+            logger.info("Both 'drugs' and 'chembl_drugs' were specified. Using only 'chembl_drugs'")
+        
         # Get optimal sequence that includes all dependencies
         modules_to_run = get_optimal_sequence(requested_modules)
+        
+        # Handle the case where drugs module is part of dependencies but chembl_drugs is requested
+        if 'chembl_drugs' in requested_modules and 'drugs' in modules_to_run and 'chembl_drugs' not in modules_to_run:
+            # Replace drugs with chembl_drugs in the sequence
+            modules_to_run = [m if m != 'drugs' else 'chembl_drugs' for m in modules_to_run]
         
         # Validate the sequence
         if not validate_sequence(modules_to_run):
@@ -250,6 +270,80 @@ def get_modules_to_run(args) -> List[str]:
     else:
         # Run all modules in the correct order
         return get_optimal_sequence()
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Run ETL pipeline")
+    
+    parser.add_argument(
+        "--module",
+        type=str,
+        help="Comma-separated list of modules to run (transcripts,id_enrichment,go_terms,products,pathways,drugs,publications,chembl_drugs)"
+    )
+    parser.add_argument(
+        "--limit-transcripts",
+        type=int,
+        help="Limit number of transcripts to process"
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+        default='INFO',
+        help="Set logging level"
+    )
+    parser.add_argument(
+        "--reset-db",
+        action="store_true",
+        help="Reset database before running pipeline"
+    )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Force download of data files even if cache exists"
+    )
+    parser.add_argument(
+        "--skip-scores",
+        action="store_true",
+        help="Skip score calculation in applicable modules"
+    )
+    parser.add_argument(
+        "--rate-limit",
+        type=float,
+        default=1.0,
+        help="API rate limit in seconds for external data sources"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Batch size for database operations"
+    )
+    # ChEMBL-specific arguments
+    parser.add_argument(
+        "--use-chembl",
+        action="store_true",
+        help="Use ChEMBL instead of DrugCentral for drug data"
+    )
+    parser.add_argument(
+        "--chembl-max-phase",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3, 4],
+        help="Only include ChEMBL drugs with max phase >= this value (0-4, where 4 is approved)"
+    )
+    parser.add_argument(
+        "--chembl-schema",
+        type=str,
+        default="chembl_temp",
+        help="Schema name for ChEMBL data tables"
+    )
+    parser.add_argument(
+        "--no-chembl-temp-schema",
+        action="store_true",
+        help="Do not use a temporary schema for ChEMBL data (use permanent schema)"
+    )
+    
+    return parser.parse_args()
 
 def main() -> int:  # Change return type to int for clarity
     """Main entry point for ETL pipeline.
@@ -304,6 +398,13 @@ def main() -> int:  # Change return type to int for clarity
         config['force_refresh'] = True
     if args.rate_limit:
         config['rate_limit'] = args.rate_limit
+
+    # Add ChEMBL-specific configurations
+    if args.use_chembl:
+        config['use_chembl'] = True
+        config['chembl_max_phase'] = args.chembl_max_phase
+        config['chembl_schema'] = args.chembl_schema
+        config['use_temp_schema'] = not args.no_chembl_temp_schema
 
     try:
         # Make sure any previous progress bars are completed

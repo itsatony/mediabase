@@ -10,7 +10,7 @@ MEDIABASE integrates various biological databases to provide a unified interface
 - Gene product classification from UniProt
 - GO terms enrichment for functional analysis
 - Pathway integration from Reactome
-- Drug interactions from DrugCentral
+- Drug interactions from DrugCentral and ChEMBL
 - Scientific literature from PubMed
 - Cross-database identifier mappings (UniProt, NCBI, RefSeq, Ensembl)
 
@@ -195,16 +195,28 @@ Options:
 
 ### Drug Integration
 
-Adds drug interaction data from DrugCentral.
+Adds drug interaction data from either DrugCentral or ChEMBL:
 
 ```bash
-# Run only drug integration
+# Run drug integration with DrugCentral (default)
 poetry run python scripts/run_etl.py --module drugs
+
+# Run drug integration with ChEMBL
+poetry run python scripts/run_etl.py --module drugs --use-chembl
+
+# Run ChEMBL drug integration directly with filtering for clinical phase
+poetry run python scripts/run_chembl_enrichment.py --max-phase-cutoff 1
 ```
 
-Options:
+Options for DrugCentral:
 - `--force-download`: Force new download of DrugCentral data
 - `--skip-scores`: Skip drug score calculation
+
+Options for ChEMBL:
+- `--use-chembl`: Use ChEMBL instead of DrugCentral for drug data
+- `--chembl-max-phase`: Only include drugs with max phase >= this value (0-4, where 4 is approved)
+- `--chembl-schema`: Schema name for ChEMBL data tables (default: chembl_temp)
+- `--no-chembl-temp-schema`: Use a persistent schema instead of temporary schema
 
 ### Publication Enrichment
 
@@ -225,6 +237,79 @@ MB_PUBMED_EMAIL=your.email@example.com  # Required by NCBI
 MB_PUBMED_API_KEY=your_api_key          # Optional, allows higher request rates
 ```
 
+## Patient Copy Functionality
+
+MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis.
+
+### Quick Start
+
+```bash
+# Create patient-specific database with fold-change data
+poetry run python scripts/create_patient_copy.py \
+    --patient-id PATIENT123 \
+    --csv-file patient_transcriptome.csv
+
+# Validate CSV data without making changes (dry run)
+poetry run python scripts/create_patient_copy.py \
+    --patient-id PATIENT123 \
+    --csv-file patient_data.csv \
+    --dry-run
+
+# List all patient databases
+poetry run python scripts/manage_patient_databases.py --list
+
+# Delete patient databases with confirmation
+poetry run python scripts/manage_patient_databases.py --delete PATIENT123
+```
+
+### CSV Data Requirements
+
+Your CSV file must contain at least two columns:
+
+1. **Transcript ID**: Ensembl transcript identifiers (e.g., `ENST00000123456`)
+   - Accepted column names: `transcript_id`, `transcript`, `id`, `gene_id`, `ensembl_id`
+
+2. **Cancer Fold-Change**: Numeric expression fold-change values
+   - Accepted column names: `cancer_fold`, `fold_change`, `expression_fold_change`, `fold`, `fc`
+   - Supports positive, negative, and scientific notation values
+
+### Example CSV Format
+
+```csv
+transcript_id,cancer_fold,gene_symbol,p_value,tissue_type
+ENST00000269571,8.45,ERBB2,0.000001,tumor
+ENST00000484667,6.78,GRB7,0.000012,tumor
+ENST00000355349,5.23,PGAP3,0.000045,tumor
+ENST00000269305,0.23,ESR1,0.001234,tumor
+ENST00000231449,0.18,PGR,0.002345,tumor
+```
+
+### Example Patient Data Files
+
+The `examples/` directory contains realistic patient data files for different cancer types:
+
+- `breast_cancer_her2_positive.csv` - HER2-positive breast cancer (55 transcripts)
+- `breast_cancer_triple_negative.csv` - Triple-negative breast cancer (55 transcripts) 
+- `breast_cancer_luminal_a.csv` - Luminal A breast cancer (55 transcripts)
+- `lung_adenocarcinoma_egfr_mutant.csv` - EGFR-mutant lung adenocarcinoma (55 transcripts)
+- `colorectal_adenocarcinoma_microsatellite_stable.csv` - Microsatellite stable colorectal cancer (55 transcripts)
+
+### Clinical Workflow
+
+1. **Patient Data Loading**: Upload patient transcriptome CSV data
+2. **Database Creation**: Automated creation of patient-specific database copy
+3. **Fold-Change Integration**: Batch update of expression values in patient database
+4. **Standard Queries**: Run predefined oncological analysis queries
+5. **LLM Integration**: Use results for AI-powered clinical discussion and insights
+
+### Features
+
+- **Smart CSV Validation**: Automatic column detection with interactive mapping
+- **Safe Database Operations**: Complete schema preservation with transaction safety
+- **Batch Processing**: Efficient updates for large datasets (1000 records per batch)
+- **Comprehensive Logging**: Detailed progress tracking and error reporting
+- **Rich Terminal Interface**: User-friendly CLI with progress bars and statistics
+
 ## Documentation
 
 Comprehensive documentation is available in the `docs/` directory:
@@ -232,6 +317,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - [Architecture Overview](docs/architecture.md)
 - [API Documentation](docs/api.md)
 - [Deployment Guide](docs/deployment.md)
+- [Patient Copy Guide](docs/patient_copy_guide.md)
 
 ## Project Status and Progress
 
@@ -472,13 +558,14 @@ Current development status and upcoming milestones:
   - Fixed "relation temp_gene_types does not exist" error
 - [x] STEP_CE: Standardized Transaction Handling Across ETL Processors (2023-XX-XX)
   - Fixed transaction handling in GO Terms, Pathways and Drug processors
-  - Standardized approach to batch operations across all processors
-  - Implemented consistent transaction boundary management
-  - Enhanced temporary table handling with proper ON COMMIT directives
-  - Improved error handling with appropriate logging
-  - Eliminated "relation does not exist" errors in all ETL modules
-  - Consistent use of transaction context managers for database operations
   - Added robust cleanup of temporary resources
+
+- [x] STEP_CF: ChEMBL Drug Integration (2023-XX-XX)
+  - Added support for ChEMBL drug database as an alternative to DrugCentral
+  - Enhanced drug information with clinical trials and publication data
+  - Added comprehensive pharmacological information including mechanism of action
+  - Implemented efficient caching and database optimization for large datasets
+  - Included more links to external resources for better cross-referencing
 
 - [x] STEP_CA: ETL Code Refactoring and Optimization
   - [x] Enhanced Logging System (2025-06-01)
@@ -543,6 +630,20 @@ Current development status and upcoming milestones:
   - Improved data integration coverage by 300-400%
   - Enhanced diagnostic tracking via detailed matching statistics
 
+- [x] STEP_DA: Patient Copy Functionality (2025-06-16)
+  - Created comprehensive patient database copy system for oncological analysis
+  - Implemented smart CSV validation with automatic column detection and interactive mapping
+  - Added safe database duplication with pg_dump/restore for efficiency
+  - Built robust fold-change update system with batch processing (1000 records per batch)
+  - Created comprehensive error handling with specific exception types (CSVValidationError, DatabaseCopyError, etc.)
+  - Implemented rich terminal interface with progress tracking and detailed feedback
+  - Added 26 comprehensive test cases covering all functionality and edge cases
+  - Created 5 realistic cancer patient example files (breast cancer subtypes, lung, colorectal)
+  - Built patient database management script for listing and deletion
+  - Added complete documentation and user guide
+  - Integrated with existing MEDIABASE architecture and logging systems
+  - Supports clinical workflow: patient data → database copy → analysis → LLM integration
+
 - [ ] STEP_EA: Add ETL for cancer/disease association
 - [ ] STEP_FA: AI Agent System Prompt Development
   - Create comprehensive context guide for natural language queries
@@ -591,13 +692,13 @@ The project uses a centralized DatabaseManager class that provides:
 To use the existing management script for backup and restore and stats, run the following commands:
 
 ```bash
-$ poetry run scripts/manage_db.py 
+$ poetry run scripts/manage_db.py
 ```
 
 1. Basic database operations:
    ```python
    from src.db.database import get_db_manager
-   
+
    # Initialize database manager
    db_manager = get_db_manager({
        'host': 'localhost',
@@ -611,9 +712,8 @@ $ poetry run scripts/manage_db.py
    db_manager.display_status()
    
    # Perform database operations
-   if db_manager.cursor:
-       db_manager.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
-       count = db_manager.cursor.fetchone()[0]
+   db_manager.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
+   count = db_manager.cursor.fetchone()[0]
    ```
 
 2. Schema management:
@@ -661,6 +761,8 @@ MB_PUBMED_API_URL=...           # PubMed E-utils API
 MB_PUBMED_API_KEY=...           # Your PubMed API key
 MB_PUBMED_EMAIL=...             # Your email for PubMed API
 MB_REACTOME_DOWNLOAD_URL=https://reactome.org/download/current/NCBI2Reactome_All_Levels.txt
+MB_CHEMBL_DB_URL=...            # ChEMBL database dump URL
+MB_CHEMBL_MAPPING_URL=...       # ChEMBL-UniProt mapping URL
 
 # Cache and Processing
 MB_CACHE_DIR=/tmp/mediabase/cache  # Cache directory
@@ -675,464 +777,60 @@ MB_JWT_SECRET=...                # JWT secret for tokens
 MB_ALLOWED_ORIGINS=...           # CORS allowed origins
 ```
 
-## Version History
+## Specialized Schema Support
 
-- v0.1.0: Initial MVP plan with public data sources
-- v0.1.1: Added publications, patient fold-change support, and ETL sequence
-- v0.1.2: Enhanced UniProt feature storage and molecular function arrays
-- v0.1.3: Improved GO term storage with dedicated arrays and indices
-- v0.1.4: Enhanced ID storage and source-specific references
-- v0.1.5: Enhanced source_references structure with proper defaults and data validation
-- Repository: [mediabase](https://github.com/itsatony/mediabase)
-
-## Data Flow and Dependencies
-
-```mermaid
-graph TD
-    A[Gencode GTF] --> B[Base Transcript Table]
-    B --> C[Gene Products]
-    C --> D[Product Classifications]
-    D --> E[Pathways/Processes]
-    E --> F[Drug Interactions]
-    G[GO Terms] --> E
-    H[DrugCentral] --> F
-    I[PubMed] --> J[Publications]
-    J --> F
-    K[Patient Data] --> L[Expression Levels]
-    L --> B
-```
-
-## Enhanced Database Schema v0.1.4
+The project includes specialized schema support for storing and querying ChEMBL data:
 
 ```sql
-CREATE TABLE cancer_transcript_base (
-    -- Core identifiers
-    transcript_id TEXT PRIMARY KEY,
-    gene_symbol TEXT,
-    gene_id TEXT,
-    
-    -- Genomic information
-    gene_type TEXT,
-    chromosome TEXT,
-    coordinates JSONB,  -- {start: int, end: int, strand: int}
-    
-    -- Classifications
-    product_type TEXT[], -- ['enzyme', 'kinase', 'transcription_factor', etc]
-    features JSONB DEFAULT '{}'::jsonb,
-    
-    -- GO terms and functions
-    go_terms JSONB,    -- {go_id: {term: "", evidence: "", aspect: ""}}
-    molecular_functions TEXT[] DEFAULT '{}',  -- Array of molecular function terms
-    cellular_location TEXT[] DEFAULT '{}',    -- Array of cellular locations
-    
-    -- Pathways and interactions
-    pathways TEXT[],   -- array of pathway identifiers
-    drugs JSONB,       -- {drug_id: {name: "", mechanism: "", evidence: ""}}
-    drug_scores JSONB, -- {drug_id: score}
-    
-    -- Literature
-    publications JSONB, -- [{pmid: "", year: "", type: "", relevance: ""}]
-    
-    -- Expression data
-    expression_fold_change FLOAT DEFAULT 1.0,  -- Patient-specific
-    expression_freq JSONB DEFAULT '{"high": [], "low": []}',
-    cancer_types TEXT[] DEFAULT '{}',
-
-    -- Alternative IDs
-    alt_transcript_ids JSONB DEFAULT '{}'::jsonb,  -- {source: id}
-    alt_gene_ids JSONB DEFAULT '{}'::jsonb,        -- {source: id}
-    uniprot_ids TEXT[] DEFAULT '{}',
-    ncbi_ids TEXT[] DEFAULT '{}',
-    refseq_ids TEXT[] DEFAULT '{}',
-
-    -- Source-specific references
-    source_references JSONB DEFAULT '{
-        "go_terms": [],
-        "uniprot": [],
-        "drugs": [],
-        "pathways": []
-    }'::jsonb
+CREATE TABLE chembl_temp.drugs (
+    chembl_id TEXT PRIMARY KEY,
+    name TEXT,
+    synonyms TEXT[],
+    max_phase FLOAT,
+    drug_type TEXT,
+    molecular_weight FLOAT,
+    atc_codes TEXT[],
+    structure_info JSONB,
+    properties JSONB,
+    external_links JSONB
 );
 
--- Indices
-CREATE INDEX idx_gene_symbol ON cancer_transcript_base(gene_symbol);
-CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id);
-CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs);
-CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
-CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
-CREATE INDEX idx_features ON cancer_transcript_base USING GIN(features);
-CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions);
-CREATE INDEX idx_cellular_location ON cancer_transcript_base USING GIN(cellular_location);
-CREATE INDEX idx_alt_transcript_ids ON cancer_transcript_base USING GIN(alt_transcript_ids);
-CREATE INDEX idx_alt_gene_ids ON cancer_transcript_base USING GIN(alt_gene_ids);
-CREATE INDEX idx_uniprot_ids ON cancer_transcript_base USING GIN(uniprot_ids);
-CREATE INDEX idx_ncbi_ids ON cancer_transcript_base USING GIN(ncbi_ids);
-CREATE INDEX idx_refseq_ids ON cancer_transcript_base USING GIN(refseq_ids);
-CREATE INDEX idx_source_references ON cancer_transcript_base USING GIN(source_references);
+CREATE TABLE chembl_temp.drug_targets (
+    id SERIAL PRIMARY KEY,
+    chembl_id TEXT,
+    target_id TEXT,
+    target_type TEXT,
+    target_name TEXT,
+    gene_symbol TEXT,
+    uniprot_id TEXT,
+    action_type TEXT,
+    mechanism_of_action TEXT,
+    binding_site TEXT,
+    confidence_score INTEGER,
+    UNIQUE (chembl_id, target_id, gene_symbol, uniprot_id)
+);
+
+CREATE TABLE chembl_temp.drug_indications (
+    id SERIAL PRIMARY KEY,
+    chembl_id TEXT,
+    indication TEXT,
+    max_phase_for_ind FLOAT,
+    mesh_id TEXT,
+    efo_id TEXT
+);
+
+CREATE TABLE chembl_temp.drug_publications (
+    id SERIAL PRIMARY KEY,
+    chembl_id TEXT,
+    doc_id TEXT,
+    pubmed_id TEXT,
+    doi TEXT,
+    title TEXT,
+    year INTEGER,
+    journal TEXT,
+    authors TEXT
+);
 ```
-
-## Gene Product Types
-
-The system uses a comprehensive classification system for gene products based on molecular function and biological role:
-
-### Primary Classifications
-
-- transcription_factor
-- kinase
-- phosphatase
-- protease
-- ion_channel
-- receptor
-- transporter
-- enzyme
-- chaperone
-- structural_protein
-- signaling_molecule
-- hormone
-- growth_factor
-- cytokine
-- antibody
-- storage_protein
-- motor_protein
-- adhesion_molecule
-- cell_surface_protein
-- extracellular_matrix
-- dna_binding
-- rna_binding
-- metal_binding
-- lipid_binding
-- carrier_protein
-- regulatory_protein
-
-### Functional Modifiers (can be combined with primary types)
-
-- membrane_associated
-- secreted
-- nuclear
-- mitochondrial
-- cytoplasmic
-- vesicular
-- catalytic
-- regulatory
-- scaffold
-- adapter
-
-## Enhanced Database Schema v0.1.2
-
-## ETL Pipeline Implementation
-
-### 1. Base Transcript Setup
-
-```python
-import gtfparse
-import pandas as pd
-
-def load_gencode_gtf(file_path):
-    df = gtfparse.read_gtf(file_path)
-    transcripts = df[df['feature'] == 'transcript']
-    return transcripts[['transcript_id', 'gene_id', 'gene_name', 'gene_type']]
-
-def create_base_entries(conn, transcripts_df):
-    # Implementation of base table population
-    pass
-```
-
-### 2. Product Classification
-
-```python
-def classify_gene_products(conn):
-    """
-    Adds product classifications based on GO terms and UniProt features
-    """
-    sql = """
-    UPDATE cancer_transcript_base
-    SET product_type = array_append(product_type, 'kinase')
-    WHERE gene_symbol IN (
-        SELECT DISTINCT gene_symbol 
-        FROM cancer_transcript_base 
-        WHERE go_terms ? 'GO:0016301'  -- kinase activity
-    );
-    """
-    # Additional classification logic
-```
-
-### 3. Pipeline Orchestration
-
-```python
-class CancerBaseETL:
-    def __init__(self, db_params):
-        self.conn = psycopg2.connect(**db_params)
-    
-    def run_pipeline(self):
-        self.load_transcripts()
-        self.classify_products()
-        self.add_pathways()
-        self.add_drugs()
-        self.add_publications()
-        self.validate()
-```
-
-## LLM-Agent Query Examples
-
-### Example 1: Patient-Specific Drug Recommendations
-
-```sql
--- Query: "For my patient's upregulated genes, what drugs might be relevant?"
-WITH upregulated_genes AS (
-    SELECT gene_symbol, expression_fold_change, drugs
-    FROM cancer_transcript_base
-    WHERE expression_fold_change > 2.0
-),
-drug_candidates AS (
-    SELECT 
-        gene_symbol,
-        expression_fold_change,
-        jsonb_object_keys(drugs) as drug_id,
-        drugs->jsonb_object_keys(drugs)::text as drug_info
-    FROM upregulated_genes
-    WHERE drugs != '{}'::jsonb
-)
-SELECT 
-    drug_id,
-    array_agg(gene_symbol) as target_genes,
-    avg(expression_fold_change) as avg_expression_change
-FROM drug_candidates
-GROUP BY drug_id
-ORDER BY avg_expression_change DESC
-LIMIT 10;
-```
-
-### Example 2: Pathway Analysis
-
-```sql
--- Query: "Which pathways are most affected in my patient's sample?"
-WITH affected_pathways AS (
-    SELECT 
-        unnest(pathways) as pathway,
-        expression_fold_change
-    FROM cancer_transcript_base
-    WHERE expression_fold_change != 1.0
-)
-SELECT 
-    pathway,
-    count(*) as gene_count,
-    avg(expression_fold_change) as avg_change,
-    array_agg(gene_symbol) as genes
-FROM affected_pathways
-GROUP BY pathway
-HAVING count(*) > 3
-ORDER BY abs(avg_change) DESC
-LIMIT 10;
-```
-
-### Example 3: Complex Treatment Insight
-
-```sql
--- Query: "Find drugs that target the most disrupted pathways 
---         and have supporting recent publications"
-WITH disrupted_pathways AS (
-    -- First find significantly changed pathways
-    SELECT unnest(pathways) as pathway_id
-    FROM cancer_transcript_base
-    WHERE expression_fold_change > 2.0
-    GROUP BY pathway_id
-    HAVING count(*) > 5
-),
-relevant_drugs AS (
-    -- Find drugs targeting these pathways
-    SELECT DISTINCT 
-        d.key as drug_id,
-        d.value->>'name' as drug_name,
-        t.publications
-    FROM cancer_transcript_base t,
-    jsonb_each(t.drugs) d
-    WHERE EXISTS (
-        SELECT 1 FROM disrupted_pathways dp
-        WHERE dp.pathway_id = ANY(t.pathways)
-    )
-)
-SELECT 
-    drug_id,
-    drug_name,
-    count(DISTINCT p->>'pmid') as recent_publications
-FROM relevant_drugs,
-jsonb_array_elements(publications) p
-WHERE (p->>'year')::int >= 2022
-GROUP BY drug_id, drug_name
-HAVING count(DISTINCT p->>'pmid') > 2
-ORDER BY recent_publications DESC;
-```
-
-## Advanced Usage Patterns
-
-### Pattern 1: Multi-Level Drug Discovery
-
-This pattern combines direct drug targets with second-degree pathway interactions:
-```sql
-WITH target_genes AS (
-    SELECT gene_symbol, pathways
-    FROM cancer_transcript_base
-    WHERE expression_fold_change > 2.0
-),
-pathway_genes AS (
-    SELECT DISTINCT t2.gene_symbol
-    FROM target_genes t1
-    JOIN cancer_transcript_base t2
-    ON t1.pathways && t2.pathways
-),
-drug_candidates AS (
-    SELECT 
-        t.gene_symbol as target,
-        d.key as drug_id,
-        d.value as drug_info
-    FROM pathway_genes t,
-    jsonb_each(drugs) d
-)
-SELECT 
-    drug_id,
-    count(DISTINCT target) as affected_targets,
-    array_agg(DISTINCT target) as target_list
-FROM drug_candidates
-GROUP BY drug_id
-ORDER BY affected_targets DESC;
-```
-
-### Pattern 2: Mechanistic Insight Query
-
-```sql
--- Find molecular mechanisms potentially explaining expression changes
-WITH changed_genes AS (
-    SELECT 
-        gene_symbol,
-        product_type,
-        expression_fold_change
-    FROM cancer_transcript_base
-    WHERE abs(expression_fold_change - 1.0) > 1.0
-),
-mechanism_analysis AS (
-    SELECT 
-        unnest(product_type) as mechanism,
-        CASE 
-            WHEN expression_fold_change > 1.0 THEN 'up'
-            ELSE 'down'
-        END as direction,
-        count(*) as gene_count
-    FROM changed_genes
-    GROUP BY mechanism, direction
-)
-SELECT 
-    mechanism,
-    sum(CASE WHEN direction = 'up' THEN gene_count ELSE 0 END) as upregulated,
-    sum(CASE WHEN direction = 'down' THEN gene_count ELSE 0 END) as downregulated
-FROM mechanism_analysis
-GROUP BY mechanism
-HAVING sum(gene_count) > 5
-ORDER BY sum(gene_count) DESC;
-```
-
-## Known Limitations and Mitigations
-
-1. Expression Fold-Change Sensitivity
-   - Issue: Single fold-change value may oversimplify
-   - Mitigation: Use confidence intervals in future versions
-
-2. Drug-Target Confidence
-   - Issue: Varying levels of evidence
-   - Mitigation: Include evidence scores in drug JSONB
-
-3. Pathway Completeness
-   - Issue: Missing pathway relationships
-   - Mitigation: Regular updates from multiple sources
-
-## Future Query Optimizations
-
-1. Materialized views for common pathway analyses
-2. Pre-computed drug rankings
-3. Patient cohort comparison views
-
-## Project Structure
-
-```tree
-/home/itsatony/code/mediabase
-├── config
-│   ├── database.yml
-│   ├── __init__.py
-│   ├── logging.yml
-│   └── settings.py
-├── docs
-│   ├── api.md
-│   ├── architecture.md
-│   ├── deployment.md
-│   ├── __init__.py
-│   └── postgres_setup_guide.md
-├── __init__.py
-├── LICENSE
-├── notebooks
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_query_examples.ipynb
-│   └── __init__.py
-├── poetry.lock
-├── pyproject.toml
-├── pytest.ini
-├── README.md
-├── scripts
-│   ├── download_uniprot_data.py
-│   ├── __init__.py
-│   ├── manage_db.py
-│   ├── run_drug_integration.py
-│   ├── run_etl.py
-│   ├── run_go_enrichment.py
-│   ├── run_pathway_enrichment.py
-│   └── run_product_classification.py
-├── src
-│   ├── api
-│   │   ├── __init__.py
-│   │   └── queries.py
-│   ├── db
-│   │   ├── adapters.py
-│   │   ├── connection.py
-│   │   ├── __init__.py
-│   │   ├── migrations
-│   │   │   └── __init__.py
-│   │   └── schema.py
-│   ├── etl
-│   │   ├── drugs.py
-│   │   ├── go_terms.py
-│   │   ├── __init__.py
-│   │   ├── pathways.py
-│   │   ├── products.py
-│   │   ├── publications.py
-│   │   └── transcript.py
-│   ├── __init__.py
-│   └── utils
-│       ├── __init__.py
-│       ├── logging.py
-│       └── validation.py
-└── tests
-    ├── conftest.py
-    ├── etl
-    │   ├── test_drugs.py
-    │   ├── test_go_terms.py
-    │   ├── test_integration_products.py
-    │   ├── test_products.py
-    │   └── test_transcript.py
-    ├── __init__.py
-    ├── test_api
-    │   ├── __init__.py
-    │   └── test_basic.py
-    ├── test_db
-    │   ├── __init__.py
-    │   └── test_basic.py
-    ├── test_etl
-    │   ├── __init__.py
-    │   └── test_basic.py
-    └── utils
-        └── test_validation.py
-```
-
-## LLM-Agent Integration
-
-The database is optimized for LLM-agent queries. Example usage patterns and common queries are documented in `notebooks/02_query_examples.ipynb`.
 
 ## Contributing
 
@@ -1145,189 +843,3 @@ The database is optimized for LLM-agent queries. Example usage patterns and comm
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-
-## Data Collection for AI Agent Prompt
-
-The following SQL queries can be used to collect unique values and statistics for the AI agent context:
-
-### Gene Types and Classifications
-```sql
--- Get all unique gene types with counts
-SELECT 
-    gene_type,
-    COUNT(*) as count
-FROM cancer_transcript_base
-GROUP BY gene_type
-ORDER BY count DESC;
-
--- Get unique product classifications
-SELECT 
-    DISTINCT unnest(product_type) as classification,
-    COUNT(*) as count
-FROM cancer_transcript_base
-GROUP BY classification
-ORDER BY count DESC;
-```
-
-### Pathway Information
-```sql
--- Get unique pathways and their frequency
-WITH pathway_counts AS (
-    SELECT 
-        unnest(pathways) as pathway,
-        COUNT(*) as gene_count
-    FROM cancer_transcript_base
-    GROUP BY pathway
-)
-SELECT 
-    pathway,
-    gene_count,
-    REGEXP_REPLACE(pathway, '.*\[(.*)\]', '\1') as pathway_id
-FROM pathway_counts
-ORDER BY gene_count DESC;
-```
-
-### Drug Related Information
-```sql
--- Get unique drug mechanisms and actions
-WITH drug_info AS (
-    SELECT 
-        d.key as drug_id,
-        d.value->>'mechanism' as mechanism,
-        d.value->>'action_type' as action_type
-    FROM cancer_transcript_base,
-    jsonb_each(d.value) d
-    WHERE drugs IS NOT NULL
-)
-SELECT 
-    DISTINCT mechanism,
-    action_type,
-    COUNT(*) as count
-FROM drug_info
-GROUP BY mechanism, action_type
-ORDER BY count DESC;
-
--- Get drug evidence types
-SELECT DISTINCT 
-    d.value->'evidence'->>'type' as evidence_type,
-    COUNT(*) as count
-FROM cancer_transcript_base,
-jsonb_each(drugs) d
-WHERE drugs IS NOT NULL
-GROUP BY evidence_type
-ORDER BY count DESC;
-```
-
-### GO Terms and Functions
-```sql
--- Get molecular functions distribution
-SELECT 
-    unnest(molecular_functions) as function,
-    COUNT(*) as count
-FROM cancer_transcript_base
-WHERE molecular_functions IS NOT NULL
-GROUP BY function
-ORDER BY count DESC;
-
--- Get cellular locations
-SELECT 
-    unnest(cellular_location) as location,
-    COUNT(*) as count
-FROM cancer_transcript_base
-WHERE cellular_location IS NOT NULL
-GROUP BY location
-ORDER BY count DESC;
-
--- Get GO term aspects and their frequency
-SELECT 
-    value->>'aspect' as aspect,
-    COUNT(*) as count
-FROM cancer_transcript_base,
-jsonb_each(go_terms) t
-WHERE go_terms IS NOT NULL
-GROUP BY aspect
-ORDER BY count DESC;
-```
-
-### Expression Statistics
-```sql
--- Get expression fold change distribution
-SELECT 
-    CASE 
-        WHEN expression_fold_change > 2 THEN 'high'
-        WHEN expression_fold_change < 0.5 THEN 'low'
-        ELSE 'normal'
-    END as expression_level,
-    COUNT(*) as count
-FROM cancer_transcript_base
-GROUP BY expression_level
-ORDER BY count DESC;
-
--- Get cancer types distribution
-SELECT 
-    unnest(cancer_types) as cancer_type,
-    COUNT(*) as count
-FROM cancer_transcript_base
-WHERE cancer_types IS NOT NULL
-GROUP BY cancer_type
-ORDER BY count DESC;
-```
-
-These queries will provide comprehensive data for building the AI agent's context understanding. Next steps:
-
-1. Run these queries against production data
-2. Document and categorize all unique values
-3. Create mappings between technical and colloquial terms
-4. Build German-English terminology mappings
-5. Document common query patterns
-6. Create example queries for each data category
-7. Build comprehensive prompt template
-
-## Current Example of a DB entry
-
-For reference of the enrichment success of the current ETL pipeline, here are examples of a database entry in json and csv formats:
-
-```json
-{
-  "transcript_id": "ENST00000503052.3",
-  "gene_symbol": "ENSG00000251161",
-  "gene_id": "ENSG00000251161.5",
-  "gene_type": "lncRNA",
-  "chromosome": "chr15",
-  "coordinates": {
-    "end": 40910337,
-    "start": 40906811,
-    "strand": 1
-  },
-  "product_type": [],
-  "go_terms": {},
-  "pathways": [],
-  "drugs": {},
-  "expression_fold_change": 1,
-  "expression_freq": {
-    "low": [],
-    "high": []
-  },
-  "cancer_types": [],
-  "features": {},
-  "molecular_functions": [],
-  "cellular_location": [],
-  "drug_scores": {},
-  "alt_transcript_ids": {
-    "CCDS": "",
-    "HAVANA": "OTTHUMT00000418857.2"
-  },
-  "alt_gene_ids": {
-    "HGNC": "",
-    "HAVANA": "OTTHUMG00000172510.3"
-  },
-  "uniprot_ids": [],
-  "ncbi_ids": [],
-  "refseq_ids": [],
-  "source_references": {
-    "drugs": [],
-    "uniprot": [],
-    "go_terms": [],
-    "pathways": []
-  }
-}

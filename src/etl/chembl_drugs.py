@@ -388,9 +388,17 @@ class ChemblDrugProcessor(BaseProcessor):
                     pubmed_id TEXT,
                     doi TEXT,
                     title TEXT,
+                    abstract TEXT,
                     year INTEGER,
                     journal TEXT,
-                    authors TEXT
+                    authors TEXT,
+                    volume TEXT,
+                    issue TEXT,
+                    first_page TEXT,
+                    last_page TEXT,
+                    patent_id TEXT,
+                    journal_full_title TEXT,
+                    UNIQUE (doc_id)
                 )
                 """)
                 
@@ -783,28 +791,42 @@ class ChemblDrugProcessor(BaseProcessor):
                 self.logger.info(f"Found {existing_count} existing publications. Use force_download=True to reimport.")
                 return
             
-            # In a real implementation, we would use API or parse SQL dumps
-            # For demonstration purposes, we'll insert some common publications directly
+            # Populate from existing ChEMBL docs data or API
+            self._populate_publications_from_docs()
+            
+            # Insert additional sample publications for demonstration
             sample_publications = [
                 {
                     "chembl_id": "CHEMBL1173655",
-                    "doc_id": "DOC-12345",
-                    "pubmed_id": "12345678",
-                    "doi": "10.1000/j.journal.2021.01.001",
-                    "title": "Afatinib in non-small cell lung cancer",
-                    "year": 2021,
-                    "journal": "Journal of Cancer Research",
-                    "authors": "Smith J, Doe J"
+                    "doc_id": "CHEMBL1173655_DOC_1",
+                    "pubmed_id": "23633486",
+                    "doi": "10.1056/NEJMoa1214886",
+                    "title": "Afatinib versus cisplatin plus pemetrexed for patients with advanced lung adenocarcinoma and sensitive EGFR gene mutations",
+                    "abstract": "Background: Afatinib is an ErbB family blocker that irreversibly inhibits signaling from epidermal growth factor receptor (EGFR), HER2, and HER4. We compared afatinib with standard chemotherapy as first-line treatment for patients with advanced lung adenocarcinoma harboring EGFR mutations.",
+                    "year": 2013,
+                    "journal": "N Engl J Med",
+                    "journal_full_title": "New England Journal of Medicine",
+                    "authors": "Sequist LV, Yang JC, Yamamoto N, O'Byrne K, Hirsh V, Mok T, Geater SL, Orlov S, Tsai CM, Boyer M, Su WC, Bennouna J, Kato T, Gorbunova V, Lee KH, Shah R, Massey D, Zazulina V, Shahidi M, Schuler M",
+                    "volume": "368",
+                    "issue": "25",
+                    "first_page": "2385",
+                    "last_page": "2394"
                 },
                 {
                     "chembl_id": "CHEMBL3137314",
-                    "doc_id": "DOC-67890",
-                    "pubmed_id": "87654321",
-                    "doi": "10.1000/j.journal.2020.02.002",
-                    "title": "Ribociclib in breast cancer",
-                    "year": 2020,
-                    "journal": "Breast Cancer Journal",
-                    "authors": "Brown A, White B"
+                    "doc_id": "CHEMBL3137314_DOC_1", 
+                    "pubmed_id": "27717303",
+                    "doi": "10.1056/NEJMoa1613174",
+                    "title": "Ribociclib plus letrozole versus letrozole for postmenopausal women with hormone-receptor-positive, HER2-negative, advanced breast cancer",
+                    "abstract": "Background: Ribociclib is an oral, selective cyclin-dependent kinase 4 and 6 (CDK4/6) inhibitor. We evaluated the efficacy and safety of ribociclib plus letrozole versus letrozole alone as first-line therapy for hormone-receptor-positive, HER2-negative, advanced breast cancer.",
+                    "year": 2016,
+                    "journal": "N Engl J Med",
+                    "journal_full_title": "New England Journal of Medicine", 
+                    "authors": "Hortobagyi GN, Stemmer SM, Burris HA, Yap YS, Sonke GS, Paluch-Shimon S, Campone M, Blackwell KL, André F, Winer EP, Janni W, Verma S, Conte P, Arteaga CL, Cameron DA, Petrakova K, Hart LL, Villanueva C, Chan A, Jakobsen E, Nusch A, Burdaeva O, Grischke EM, Alba E, Wist E, Marschner N, Favret AM, Yardley D, Bachelot T, Tseng LM, Blau S, Xuan F, Souami F, Miller M, Germa C, Hirawat S, O'Shaughnessy J",
+                    "volume": "375",
+                    "issue": "18", 
+                    "first_page": "1738",
+                    "last_page": "1748"
                 }
             ]
             
@@ -812,10 +834,27 @@ class ChemblDrugProcessor(BaseProcessor):
             for publication in sample_publications:
                 self.db_manager.cursor.execute(f"""
                 INSERT INTO {schema_name}.drug_publications (
-                    chembl_id, doc_id, pubmed_id, doi, title, year, journal, authors
+                    chembl_id, doc_id, pubmed_id, doi, title, abstract, year, journal, authors,
+                    volume, issue, first_page, last_page, journal_full_title
                 ) VALUES (
-                    %(chembl_id)s, %(doc_id)s, %(pubmed_id)s, %(doi)s, %(title)s, %(year)s, %(journal)s, %(authors)s
+                    %(chembl_id)s, %(doc_id)s, %(pubmed_id)s, %(doi)s, %(title)s, %(abstract)s, 
+                    %(year)s, %(journal)s, %(authors)s, %(volume)s, %(issue)s, %(first_page)s, 
+                    %(last_page)s, %(journal_full_title)s
                 )
+                ON CONFLICT (doc_id) DO UPDATE SET
+                    chembl_id = EXCLUDED.chembl_id,
+                    pubmed_id = EXCLUDED.pubmed_id,
+                    doi = EXCLUDED.doi,
+                    title = EXCLUDED.title,
+                    abstract = EXCLUDED.abstract,
+                    year = EXCLUDED.year,
+                    journal = EXCLUDED.journal,
+                    authors = EXCLUDED.authors,
+                    volume = EXCLUDED.volume,
+                    issue = EXCLUDED.issue,
+                    first_page = EXCLUDED.first_page,
+                    last_page = EXCLUDED.last_page,
+                    journal_full_title = EXCLUDED.journal_full_title
                 """, publication)
             
             self._safe_commit()
@@ -1483,6 +1522,235 @@ class ChemblDrugProcessor(BaseProcessor):
                 self.db_manager.conn.rollback()
             raise DatabaseError(f"Failed to update enhanced drug data: {e}")
 
+    def _populate_publications_from_docs(self) -> None:
+        """Populate ChEMBL publications table from docs data if available.
+        
+        This method attempts to extract publication data from the ChEMBL docs table
+        or similar source and populate the drug_publications table.
+        """
+        try:
+            schema_name = self.chembl_schema
+            self.logger.info("Attempting to populate publications from ChEMBL docs data")
+            
+            # Check if we have access to a docs table (could be from SQL dumps or a separate import)
+            docs_table_candidates = [
+                f"{schema_name}.docs",
+                "chembl.docs", 
+                "public.docs",
+                "docs"
+            ]
+            
+            docs_table = None
+            for candidate in docs_table_candidates:
+                try:
+                    self.db_manager.cursor.execute(f"SELECT COUNT(*) FROM {candidate} LIMIT 1")
+                    docs_table = candidate
+                    self.logger.info(f"Found docs table: {docs_table}")
+                    break
+                except Exception:
+                    continue
+            
+            if not docs_table:
+                self.logger.info("No ChEMBL docs table found, skipping docs-based population")
+                return
+            
+            # Extract publication data from docs table
+            self.db_manager.cursor.execute(f"""
+                SELECT DISTINCT
+                    doc_id,
+                    pubmed_id,
+                    doi,
+                    title,
+                    abstract,
+                    year,
+                    journal,
+                    authors,
+                    volume,
+                    issue,
+                    first_page,
+                    last_page,
+                    journal_full_title,
+                    patent_id
+                FROM {docs_table}
+                WHERE pubmed_id IS NOT NULL 
+                   OR doi IS NOT NULL
+                   OR title IS NOT NULL
+                ORDER BY year DESC NULLS LAST
+                LIMIT 10000
+            """)
+            
+            docs_data = self.db_manager.cursor.fetchall()
+            
+            if not docs_data:
+                self.logger.info("No publication data found in docs table")
+                return
+            
+            self.logger.info(f"Found {len(docs_data)} publication records in docs table")
+            
+            # Insert publication data with progress tracking
+            progress_bar = get_progress_bar(
+                total=len(docs_data),
+                desc="Populating publications from docs",
+                module_name="chembl_drugs"
+            )
+            
+            batch_size = 100
+            inserted_count = 0
+            
+            try:
+                for i in range(0, len(docs_data), batch_size):
+                    batch = docs_data[i:i + batch_size]
+                    
+                    # Prepare batch data
+                    batch_values = []
+                    for row in batch:
+                        # Extract PMIDs from text fields if not directly available
+                        pmid = row[1]  # pubmed_id column
+                        if not pmid and row[3]:  # title column
+                            pmids = extract_pmids_from_text(row[3])
+                            pmid = pmids[0] if pmids else None
+                        if not pmid and row[4]:  # abstract column
+                            pmids = extract_pmids_from_text(row[4])
+                            pmid = pmids[0] if pmids else None
+                        
+                        # Only include records with valid identifiers
+                        if pmid or row[2] or row[3]:  # pubmed_id, doi, or title
+                            batch_values.append((
+                                None,  # chembl_id - will be populated later when linking to drugs
+                                row[0],  # doc_id
+                                pmid,    # pubmed_id
+                                row[2],  # doi
+                                row[3],  # title
+                                row[4],  # abstract
+                                row[5],  # year
+                                row[6],  # journal
+                                row[7],  # authors
+                                row[8],  # volume
+                                row[9],  # issue
+                                row[10], # first_page
+                                row[11], # last_page
+                                row[12], # journal_full_title
+                                row[13]  # patent_id
+                            ))
+                    
+                    if batch_values:
+                        # Insert batch
+                        self.db_manager.cursor.executemany(f"""
+                            INSERT INTO {schema_name}.drug_publications (
+                                chembl_id, doc_id, pubmed_id, doi, title, abstract, year, journal, authors,
+                                volume, issue, first_page, last_page, journal_full_title, patent_id
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (doc_id) DO UPDATE SET
+                                pubmed_id = EXCLUDED.pubmed_id,
+                                doi = EXCLUDED.doi,
+                                title = EXCLUDED.title,
+                                abstract = EXCLUDED.abstract,
+                                year = EXCLUDED.year,
+                                journal = EXCLUDED.journal,
+                                authors = EXCLUDED.authors,
+                                volume = EXCLUDED.volume,
+                                issue = EXCLUDED.issue,
+                                first_page = EXCLUDED.first_page,
+                                last_page = EXCLUDED.last_page,
+                                journal_full_title = EXCLUDED.journal_full_title,
+                                patent_id = EXCLUDED.patent_id
+                        """, batch_values)
+                        
+                        inserted_count += len(batch_values)
+                    
+                    progress_bar.update(len(batch))
+                
+                self._safe_commit()
+                self.logger.info(f"Successfully populated {inserted_count} publications from docs table")
+                
+            finally:
+                progress_bar.close()
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to populate publications from docs: {e}")
+            # Don't raise an exception here as this is an optional enhancement
+
+    def extract_publication_references(self) -> List[Publication]:
+        """Extract publication references from ChEMBL drug data.
+        
+        Returns:
+            List of Publication objects extracted from ChEMBL publications
+        """
+        publications = []
+        
+        try:
+            if not self.ensure_connection() or not self.db_manager.cursor:
+                self.logger.warning("Cannot extract publication references - database connection unavailable")
+                return publications
+            
+            schema_name = self.chembl_schema
+            
+            # Extract publications from the drug_publications table
+            self.db_manager.cursor.execute(f"""
+                SELECT DISTINCT
+                    pubmed_id,
+                    doi,
+                    title,
+                    abstract,
+                    year,
+                    journal,
+                    authors,
+                    chembl_id,
+                    doc_id
+                FROM {schema_name}.drug_publications
+                WHERE pubmed_id IS NOT NULL
+                   OR doi IS NOT NULL
+            """)
+            
+            publication_rows = self.db_manager.cursor.fetchall()
+            
+            self.logger.info(f"Extracting publication references from {len(publication_rows)} ChEMBL publications")
+            
+            for row in publication_rows:
+                pmid, doi, title, abstract, year, journal, authors, chembl_id, doc_id = row
+                
+                # Create publication reference
+                pub_ref = {
+                    'source_db': 'ChEMBL',
+                    'evidence_type': 'drug_publication',
+                    'doc_id': doc_id,
+                    'chembl_id': chembl_id
+                }
+                
+                # Add PMID if available
+                if pmid:
+                    pub_ref['pmid'] = str(pmid)
+                    pub_ref['url'] = format_pmid_url(str(pmid))
+                
+                # Add DOI if available
+                if doi:
+                    pub_ref['doi'] = doi
+                    if not pub_ref.get('url'):
+                        pub_ref['url'] = f"https://doi.org/{doi}"
+                
+                # Add other metadata
+                if title:
+                    pub_ref['title'] = title
+                if abstract:
+                    pub_ref['abstract'] = abstract[:500] + '...' if len(abstract) > 500 else abstract
+                if year:
+                    pub_ref['year'] = int(year)
+                if journal:
+                    pub_ref['journal'] = journal
+                if authors:
+                    # Split authors and take first few
+                    author_list = [a.strip() for a in authors.split(',')][:5]
+                    pub_ref['authors'] = author_list
+                
+                publications.append(pub_ref)
+            
+            self.logger.info(f"Extracted {len(publications)} publication references from ChEMBL")
+            return publications
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract ChEMBL publication references: {e}")
+            return publications
+
     def run(self) -> None:
         """Run the ChEMBL drug processing pipeline.
         
@@ -1509,6 +1777,13 @@ class ChemblDrugProcessor(BaseProcessor):
             
             # Import ChEMBL data into tables
             self.import_chembl_to_tables(extracted_dir)
+            
+            # Extract and process publication references
+            publications = self.extract_publication_references()
+            if publications:
+                self.logger.info(f"Processing {len(publications)} ChEMBL publication references")
+                publications_processor = PublicationsProcessor(self.config)
+                publications_processor.enrich_publications_bulk(publications)
             
             # Calculate drug scores
             if not self.skip_scores:

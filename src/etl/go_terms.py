@@ -307,11 +307,17 @@ class GOTermProcessor(BaseProcessor):
                     if db_gene not in gene_go_terms:
                         gene_go_terms[db_gene] = {}
                     
+                    # Extract PMID from evidence code if present
+                    pmid = None
+                    if evidence.startswith('PMID:'):
+                        pmid = evidence.replace('PMID:', '').strip()
+                    
                     # Store GO term with safe type construction
                     gene_go_terms[db_gene][go_id] = {
                         'term': term_name,
                         'evidence': evidence,
-                        'aspect': self._convert_aspect(aspect)
+                        'aspect': self._convert_aspect(aspect),
+                        'pmid': pmid  # Add PMID if found
                     }
             
             # Display statistics and samples
@@ -421,7 +427,7 @@ class GOTermProcessor(BaseProcessor):
         return list(molecular_functions), list(cellular_locations)
     
     def extract_publication_references(self, go_terms: Dict[str, GOTerm]) -> List[Publication]:
-        """Extract publication references from GO terms.
+        """Extract publication references from GO terms with evidence codes.
         
         Args:
             go_terms: Dictionary of GO terms with evidence codes
@@ -430,20 +436,40 @@ class GOTermProcessor(BaseProcessor):
             List of publication references
         """
         publications: List[Publication] = []
+        pmids_found = 0
         
         for go_id, term_data in go_terms.items():
-            # Extract PMID from evidence code or reference text
-            evidence_text = f"{term_data.get('evidence', '')} {term_data.get('reference', '')}"
-            pmids = extract_pmids_from_text(evidence_text)
-            
-            for pmid in pmids:
+            # Direct PMID extraction from stored pmid field
+            pmid = term_data.get('pmid')
+            if pmid and pmid.strip():
                 publication = PublicationsProcessor.create_publication_reference(
-                    pmid=pmid,
-                    evidence_type=term_data.get('evidence', 'unknown'),
+                    pmid=pmid.strip(),
+                    evidence_type='experimental',  # PMID evidence is experimental
                     source_db="GO",
                     url=f"http://amigo.geneontology.org/amigo/term/{go_id}"
                 )
                 publications.append(publication)
+                pmids_found += 1
+            
+            # Also check evidence text for any missed PMIDs
+            evidence_text = term_data.get('evidence', '')
+            if evidence_text and 'PMID:' in evidence_text:
+                pmids = extract_pmids_from_text(evidence_text)
+                for extracted_pmid in pmids:
+                    # Avoid duplicates
+                    if extracted_pmid != pmid:
+                        publication = PublicationsProcessor.create_publication_reference(
+                            pmid=extracted_pmid,
+                            evidence_type='experimental',
+                            source_db="GO",
+                            url=f"http://amigo.geneontology.org/amigo/term/{go_id}"
+                        )
+                        publications.append(publication)
+                        pmids_found += 1
+        
+        # Log PMID extraction statistics for monitoring
+        if pmids_found > 0:
+            self.logger.debug(f"Extracted {pmids_found} PMIDs from {len(go_terms)} GO terms")
         
         return publications
     

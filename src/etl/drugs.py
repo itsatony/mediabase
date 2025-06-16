@@ -19,7 +19,7 @@ from rich.table import Table
 # Local imports
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
 from .publications import Publication, PublicationsProcessor
-from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url, merge_publication_references
+from ..utils.publication_utils import extract_pmids_from_text, extract_pmids_from_urls, format_pmid_url, merge_publication_references
 from ..utils.pandas_helpers import (
     safe_assign, 
     safe_batch_assign, 
@@ -208,9 +208,14 @@ class DrugProcessor(BaseProcessor):
             # Map evidence score
             elif col_clean == 'ACT_VALUE':
                 column_mapping['evidence_score'] = col
-            # Map references
+            # Map reference sources (database names)
             elif col_clean == 'ACT_SOURCE':
                 column_mapping['references'] = col
+            # Map reference URLs (actual PMIDs)
+            elif col_clean == 'ACT_SOURCE_URL':
+                column_mapping['act_source_url'] = col
+            elif col_clean == 'MOA_SOURCE_URL':
+                column_mapping['moa_source_url'] = col
             # Map mechanism (if available)
             elif col_clean == 'MOA':
                 column_mapping['mechanism'] = col
@@ -525,7 +530,11 @@ class DrugProcessor(BaseProcessor):
                     #     ref_ids = row.get('reference_ids', [])
                     #     self.logger.info(f"  Reference IDs: {ref_ids}")
                     
-                    # Process references
+                    # Enhanced reference processing with URL support
+                    pmids_from_refs = []
+                    pmids_from_urls = []
+                    
+                    # Extract PMIDs from reference_ids (old method)
                     if row.get('reference_ids'):
                         for ref_id in row.get('reference_ids', []):
                             if ref_id and isinstance(ref_id, str):
@@ -541,16 +550,35 @@ class DrugProcessor(BaseProcessor):
                                     if debug_this_gene:
                                         self.logger.info(f"  Skipping non-PMID reference: '{ref_id}'")
                                     continue
-                                    
-                                # Drug-specific reference
-                                references.append({
-                                    'pmid': ref_id,
-                                    'year': None,  # Would need PubMed lookup
-                                    'evidence_type': row.get('evidence_type', 'experimental'),
-                                    'citation_count': None,
-                                    'source_db': 'DrugCentral',
-                                    'drug_id': row.get('drug_id', '')
-                                })
+                                
+                                pmids_from_refs.append(ref_id)
+                    
+                    # Extract PMIDs from URL columns (new method)
+                    act_source_url = row.get('act_source_url', '')
+                    moa_source_url = row.get('moa_source_url', '')
+                    
+                    if act_source_url or moa_source_url:
+                        url_pmids = extract_pmids_from_urls(act_source_url, moa_source_url)
+                        pmids_from_urls.extend(url_pmids)
+                        
+                        if debug_this_gene:
+                            self.logger.info(f"  ACT_SOURCE_URL: '{act_source_url}'")
+                            self.logger.info(f"  MOA_SOURCE_URL: '{moa_source_url}'")
+                            self.logger.info(f"  PMIDs from URLs: {url_pmids}")
+                    
+                    # Combine all PMIDs and create references
+                    all_pmids = list(set(pmids_from_refs + pmids_from_urls))
+                    
+                    for pmid in all_pmids:
+                        references.append({
+                            'pmid': pmid,
+                            'year': None,  # Would need PubMed lookup
+                            'evidence_type': row.get('evidence_type', 'experimental'),
+                            'citation_count': None,
+                            'source_db': 'DrugCentral',
+                            'drug_id': row.get('drug_id', ''),
+                            'extraction_method': 'url' if pmid in pmids_from_urls else 'reference_id'
+                        })
                 
                 # Debug the final references for selected genes
                 if debug_this_gene:

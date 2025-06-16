@@ -22,6 +22,8 @@ from rich.table import Table
 
 # Local imports
 from .base_processor import BaseProcessor, DownloadError, ProcessingError, DatabaseError
+from .publications import Publication, PublicationsProcessor
+from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 from ..utils.logging import get_progress_bar
 
 # Constants
@@ -829,6 +831,77 @@ class PharmGKBAnnotationsProcessor(BaseProcessor):
         else:
             return 'research_only'
 
+    def extract_publication_references(self, gene_annotation_mapping: Dict[str, List[Dict[str, Any]]], 
+                                     variant_mapping: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> List[Publication]:
+        """Extract publication references from PharmGKB data.
+        
+        Args:
+            gene_annotation_mapping: Dictionary mapping gene symbols to clinical annotations
+            variant_mapping: Optional dictionary mapping gene symbols to variant annotations
+            
+        Returns:
+            List of Publication objects extracted from PharmGKB data
+        """
+        publications = []
+        processed_pmids = set()
+        
+        self.logger.info("Extracting publication references from PharmGKB data")
+        
+        # Extract PMIDs from clinical annotations
+        for gene_symbol, annotations in gene_annotation_mapping.items():
+            for annotation in annotations:
+                # Look for PMIDs in various fields
+                pmid_sources = [
+                    annotation.get('url', ''),
+                    str(annotation.get('pmid_count', '')),
+                    str(annotation.get('evidence_count', ''))
+                ]
+                
+                for source_text in pmid_sources:
+                    if source_text:
+                        pmids = extract_pmids_from_text(str(source_text))
+                        for pmid in pmids:
+                            if pmid and pmid not in processed_pmids:
+                                publications.append({
+                                    'pmid': pmid,
+                                    'evidence_type': 'clinical_annotation',
+                                    'source_db': 'PharmGKB',
+                                    'gene_symbol': gene_symbol,
+                                    'annotation_id': annotation.get('annotation_id', ''),
+                                    'phenotype_category': annotation.get('phenotype_category', ''),
+                                    'evidence_level': annotation.get('evidence_level', ''),
+                                    'drug': annotation.get('drug', ''),
+                                    'url': format_pmid_url(pmid)
+                                })
+                                processed_pmids.add(pmid)
+        
+        # Extract PMIDs from variant annotations
+        if variant_mapping:
+            for gene_symbol, variants in variant_mapping.items():
+                for variant in variants:
+                    pmid = variant.get('pmid', '')
+                    if pmid and pmid.strip() and pmid not in processed_pmids:
+                        # Clean PMID if it has prefix
+                        clean_pmid = pmid.replace('PMID:', '').strip()
+                        if clean_pmid.isdigit():
+                            publications.append({
+                                'pmid': clean_pmid,
+                                'evidence_type': 'variant_annotation',
+                                'source_db': 'PharmGKB',
+                                'gene_symbol': gene_symbol,
+                                'variant_id': variant.get('variant_identifier', ''),
+                                'variant_type': variant.get('variant_type', ''),
+                                'phenotype_category': variant.get('phenotype_category', ''),
+                                'significance': variant.get('significance', ''),
+                                'drugs': variant.get('drugs', []),
+                                'clinical_actionability': variant.get('clinical_actionability', ''),
+                                'url': format_pmid_url(clean_pmid)
+                            })
+                            processed_pmids.add(clean_pmid)
+        
+        self.logger.info(f"Extracted {len(publications)} publication references from PharmGKB data")
+        return publications
+
     def update_transcript_pharmgkb_data(self, 
                                       gene_annotation_mapping: Dict[str, List[Dict[str, Any]]],
                                       vip_mapping: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1290,6 +1363,14 @@ class PharmGKBAnnotationsProcessor(BaseProcessor):
             pathway_mapping = None
             if pathways_dir:
                 pathway_mapping = self.process_pharmgkb_pathways(pathways_dir)
+            
+            # Extract publication references
+            publications = self.extract_publication_references(gene_annotation_mapping, variant_mapping)
+            
+            # Process publications using the publications processor
+            if publications:
+                publications_processor = PublicationsProcessor(self.config)
+                publications_processor.enrich_publications_bulk(publications)
             
             # Update transcript records
             self.update_transcript_pharmgkb_data(gene_annotation_mapping, vip_mapping, pathway_mapping, variant_mapping)

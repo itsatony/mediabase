@@ -853,32 +853,64 @@ Expected results:
 - **UBE2I**: 3.78-fold (UPREGULATED - SUMO conjugation)
 - **DMD**: 5.23-fold (UPREGULATED - Structural protein)
 
-### Automated Analysis Pipeline
+### Automated SOTA Analysis Pipeline
 
-For clinical workflow efficiency, the SOTA queries should be run automatically after patient database creation:
+For comprehensive clinical insights, MEDIABASE includes an automated analysis script that runs all SOTA queries and generates integrated reports for oncologists and LLM investigation:
 
 ```bash
-# Run complete oncological analysis for a patient
-poetry run python scripts/run_patient_analysis.py --patient-id PATIENT123
+# Run complete SOTA analysis on main database
+poetry run python scripts/run_sota_analysis.py --output reports/sota_analysis --format both
 
-# Run specific analysis modules
-poetry run python scripts/run_patient_analysis.py --patient-id PATIENT123 --analysis oncogenes,targets,pathways
+# Analyze specific patient database
+poetry run python scripts/run_sota_analysis.py --patient-db mediabase_patient_PATIENT123 --output reports/patient_PATIENT123
 
-# Generate clinical report
-poetry run python scripts/run_patient_analysis.py --patient-id PATIENT123 --generate-report
+# Generate JSON report for LLM processing
+poetry run python scripts/run_sota_analysis.py --format json --output reports/sota_analysis_json
 ```
 
-**Automated Analysis Includes**:
-1. **Oncogene/Tumor Suppressor Analysis** - Identifies critical cancer gene dysregulation
-2. **Therapeutic Target Prioritization** - Ranks druggable targets by clinical relevance  
-3. **Pathway-Based Strategy** - Identifies dysregulated pathways for combination therapy
-4. **Clinical Report Generation** - Produces oncologist-ready summary with recommendations
+**Six Comprehensive SOTA Analysis Modules**:
 
-**Integration with LLM Systems**:
-- Query results formatted for LLM input
-- Natural language summaries generated
-- Clinical decision support integration
-- Interactive analysis with follow-up queries
+1. **Drug-Gene Interaction Analysis** - Identifies therapeutic targeting opportunities with drug scores and mechanisms
+2. **Pathway Enrichment Analysis** - Maps biological process perturbations and pathway co-occurrence networks  
+3. **Functional Classification Analysis** - Analyzes molecular function distributions and cellular locations
+4. **Chromosomal Distribution Analysis** - Identifies positional clustering patterns and chromosomal hotspots
+5. **Multi-modal Integration Analysis** - Cross-domain associations between drugs, pathways, and functions
+6. **Clinical Biomarker Discovery** - Potential diagnostic/prognostic markers with clinical utility scores
+
+**Generated Report Includes**:
+- **Executive Summary** with key findings and clinical priorities
+- **Therapeutic Opportunities** ranked by clinical relevance and druggability
+- **Cross-domain Association Networks** for systems-level understanding
+- **Clinical Summaries** with specific recommendations for each analysis domain
+- **Biomarker Candidates** prioritized for clinical validation
+
+**Example Analysis Results**:
+```json
+{
+  "drug_gene_interactions": {
+    "high_score_targets": 2,
+    "top_drug_targets": [
+      {
+        "gene_symbol": "CTSL",
+        "score": 156.7,
+        "mechanism": "irreversible inhibitor",
+        "clinical_summary": "Highest therapeutic potential for precision medicine"
+      }
+    ]
+  },
+  "executive_summary": {
+    "key_findings": ["2 high-priority drug targets identified"],
+    "therapeutic_opportunities": ["Precision medicine targeting"],
+    "recommended_actions": ["Initiate clinical validation studies"]
+  }
+}
+```
+
+**Integration with Clinical Workflow**:
+- JSON output optimized for LLM processing and clinical decision support
+- Human-readable text reports for oncologist review
+- Cross-referencing with existing SOTA queries for comprehensive analysis
+- Automated identification of high-priority genes requiring immediate attention
 
 ### Query Validation
 

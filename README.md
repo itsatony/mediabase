@@ -99,10 +99,10 @@ MEDIABASE integrates various biological databases to provide a unified interface
    ```bash
    # Set up test environment variables
    export MB_POSTGRES_HOST=localhost
-   export MB_POSTGRES_PORT=5432
+   export MB_POSTGRES_PORT=5435
    export MB_POSTGRES_NAME=mediabase_test
-   export MB_POSTGRES_USER=postgres
-   export MB_POSTGRES_PASSWORD=postgres
+   export MB_POSTGRES_USER=mbase_user
+   export MB_POSTGRES_PASSWORD=mbase_secret
    
    # Initialize test database
    poetry run python scripts/manage_db.py --non-interactive
@@ -277,22 +277,22 @@ Your CSV file must contain at least two columns:
 
 ```csv
 transcript_id,cancer_fold,gene_symbol,p_value,tissue_type
-ENST00000269571,8.45,ERBB2,0.000001,tumor
-ENST00000484667,6.78,GRB7,0.000012,tumor
-ENST00000355349,5.23,PGAP3,0.000045,tumor
-ENST00000269305,0.23,ESR1,0.001234,tumor
-ENST00000231449,0.18,PGR,0.002345,tumor
+ENST00000343150.10,8.45,CTSL,0.000001,tumor
+ENST00000546211.6,6.78,SKP2,0.000012,tumor
+ENST00000357033.9,5.23,DMD,0.000045,tumor
+ENST00000675596.1,4.89,CEP41,0.000078,tumor
+ENST00000570164.5,4.67,RUSF1,0.000123,tumor
 ```
 
 ### Example Patient Data Files
 
 The `examples/` directory contains realistic patient data files for different cancer types:
 
-- `breast_cancer_her2_positive.csv` - HER2-positive breast cancer (55 transcripts)
-- `breast_cancer_triple_negative.csv` - Triple-negative breast cancer (55 transcripts) 
+- `breast_cancer_her2_positive.csv` - HER2-positive breast cancer (57 transcripts) 
+- `breast_cancer_triple_negative.csv` - Triple-negative breast cancer (57 transcripts)
 - `breast_cancer_luminal_a.csv` - Luminal A breast cancer (55 transcripts)
 - `lung_adenocarcinoma_egfr_mutant.csv` - EGFR-mutant lung adenocarcinoma (55 transcripts)
-- `colorectal_adenocarcinoma_microsatellite_stable.csv` - Microsatellite stable colorectal cancer (55 transcripts)
+- `colorectal_adenocarcinoma_microsatellite_stable.csv` - Microsatellite stable colorectal cancer (63 transcripts)
 
 ### Clinical Workflow
 
@@ -309,6 +309,180 @@ The `examples/` directory contains realistic patient data files for different ca
 - **Batch Processing**: Efficient updates for large datasets (1000 records per batch)
 - **Comprehensive Logging**: Detailed progress tracking and error reporting
 - **Rich Terminal Interface**: User-friendly CLI with progress bars and statistics
+
+## Database Schema and Structure
+
+MEDIABASE uses a comprehensive PostgreSQL schema designed for cancer transcriptomics analysis. The main table `cancer_transcript_base` integrates data from multiple biological databases into a unified structure.
+
+### Current Schema Version: v0.1.6
+
+The database schema follows a versioned approach with automated migrations. The current version includes comprehensive support for:
+
+- Gene transcript information from GENCODE
+- Protein product classification from UniProt  
+- GO terms for functional analysis
+- Pathway data from Reactome
+- Drug interactions from DrugCentral and ChEMBL
+- Scientific literature references from PubMed
+- Cross-database identifier mappings
+
+### Core Table: cancer_transcript_base
+
+The main table contains 25 columns covering all aspects of transcript annotation:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `transcript_id` | TEXT (Primary Key) | Ensembl transcript identifier (e.g., ENST00000566587.6) |
+| `gene_symbol` | TEXT | Human-readable gene symbol (e.g., UBE2I) |
+| `gene_id` | TEXT | Ensembl gene identifier |
+| `gene_type` | TEXT | Gene biotype (protein_coding, lncRNA, etc.) |
+| `chromosome` | TEXT | Chromosome location |
+| `coordinates` | JSONB | Genomic coordinates (start, end, strand) |
+| `product_type` | TEXT[] | Protein product classifications |
+| `go_terms` | JSONB | Gene Ontology term annotations |
+| `pathways` | TEXT[] | Reactome pathway memberships |
+| `drugs` | JSONB | Drug interaction data |
+| `expression_fold_change` | DOUBLE PRECISION | Patient-specific expression data (default: 1.0) |
+| `expression_freq` | JSONB | Expression frequency data |
+| `cancer_types` | TEXT[] | Associated cancer types |
+| `features` | JSONB | UniProt feature annotations |
+| `molecular_functions` | TEXT[] | Molecular function classifications |
+| `cellular_location` | TEXT[] | Subcellular localization data |
+| `drug_scores` | JSONB | Drug interaction confidence scores |
+| `alt_transcript_ids` | JSONB | Alternative transcript identifiers |
+| `alt_gene_ids` | JSONB | Alternative gene identifiers |
+| `uniprot_ids` | TEXT[] | UniProt protein identifiers |
+| `ncbi_ids` | TEXT[] | NCBI/Entrez gene identifiers |
+| `refseq_ids` | TEXT[] | RefSeq identifiers |
+| `pdb_ids` | TEXT[] | Protein Data Bank identifiers |
+| `source_references` | JSONB | Publication and evidence references |
+
+### Complete Example Record
+
+Here's a fully populated example record showing all data types and structures:
+
+```json
+{
+  "transcript_id": "ENST00000566587.6",
+  "gene_symbol": "UBE2I",
+  "gene_id": "ENSG00000103275",
+  "gene_type": "protein_coding",
+  "chromosome": "chr16",
+  "coordinates": {
+    "end": 1325354,
+    "start": 1309638,
+    "strand": 1
+  },
+  "product_type": ["cytoplasmic", "nuclear", "rna_binding"],
+  "pathways": [
+    "Nuclear Envelope (NE) Reassembly [Reactome:R-HSA-2995410]",
+    "SARS-CoV-2 Infection [Reactome:R-HSA-9694516]",
+    "Metabolism of steroids [Reactome:R-HSA-8957322]"
+  ],
+  "molecular_functions": [
+    "ATP binding",
+    "SUMO conjugating enzyme activity", 
+    "small protein activating enzyme binding"
+  ],
+  "cellular_location": [
+    "PML body",
+    "transferase complex", 
+    "nuclear envelope"
+  ],
+  "drugs": {
+    "4344": {
+      "name": "Drug compound 4344",
+      "score": 138.5,
+      "mechanism": "SUMO pathway modulator"
+    }
+  },
+  "drug_scores": {
+    "4344": 138.5
+  },
+  "uniprot_ids": ["P63279", "Q7KZS0", "A0AAA9YHQ4"],
+  "ncbi_ids": ["7329"],
+  "refseq_ids": [
+    "NP_003336.1",
+    "NP_919235.1", 
+    "NP_919236.1",
+    "XP_016879129.1"
+  ],
+  "alt_transcript_ids": {
+    "CCDS": "CCDS10433.1",
+    "HAVANA": "OTTHUMT00000431996.1"
+  },
+  "alt_gene_ids": {
+    "HGNC": "HGNC:12485",
+    "KEGG": "hsa:7329",
+    "OMIM": "601661",
+    "HAVANA": "OTTHUMG00000186701.4",
+    "Ensembl": "ENSG00000103275.22"
+  },
+  "go_terms": {
+    "GO:0005524": {
+      "term": "ATP binding",
+      "aspect": "molecular_function",
+      "evidence": "IEA"
+    },
+    "GO:0016925": {
+      "term": "protein sumoylation",
+      "aspect": "biological_process", 
+      "evidence": "TAS"
+    }
+  },
+  "source_references": {
+    "drugs": [],
+    "uniprot": [],
+    "go_terms": [],
+    "pathways": [
+      {
+        "pmid": "",
+        "source_db": "Reactome",
+        "evidence_type": "Reactome:R-HSA-2995410"
+      }
+    ],
+    "publications": []
+  }
+}
+```
+
+### Key Features for Oncological Analysis
+
+1. **Expression Integration**: The `expression_fold_change` column is updated with patient-specific data
+2. **Drug Discovery**: Comprehensive drug interaction data with confidence scores
+3. **Pathway Analysis**: Reactome pathway memberships for systems-level analysis  
+4. **Functional Classification**: GO terms and molecular function annotations
+5. **Cross-References**: Extensive identifier mapping for data integration
+6. **Evidence Tracking**: Source references with publication support
+
+### Database Indexes
+
+The schema includes optimized GIN and B-tree indexes for efficient querying:
+
+```sql
+-- Array and JSONB indexes for complex queries
+CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
+CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
+CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs);
+CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecular_functions);
+
+-- Standard indexes for common lookups
+CREATE INDEX idx_gene_symbol ON cancer_transcript_base(gene_symbol);
+CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id);
+
+-- Cross-reference indexes
+CREATE INDEX idx_uniprot_ids ON cancer_transcript_base USING GIN(uniprot_ids);
+CREATE INDEX idx_ncbi_ids ON cancer_transcript_base USING GIN(ncbi_ids);
+```
+
+### Patient-Specific Schema
+
+When creating patient databases, the schema is fully preserved with all indexes and constraints. Only the `expression_fold_change` values are updated with patient-specific transcriptome data, allowing for:
+
+- Comparative analysis against baseline expression (1.0)
+- Identification of significantly up/down-regulated genes
+- Pathway-level expression analysis
+- Drug target prioritization based on expression levels
 
 ## Query Examples and Analysis
 
@@ -663,18 +837,21 @@ LIMIT 20;
 ```bash
 # Test SOTA Query 1 - Oncogene Analysis
 poetry run psql -d mediabase_patient_BREAST_HER2_001 -c "
-SELECT gene_symbol, expression_fold_change, 
-       CASE WHEN gene_symbol = 'ERBB2' AND expression_fold_change > 1.5 
-            THEN 'ACTIVATED (Target for trastuzumab)' END as significance
+SELECT gene_symbol, expression_fold_change, product_type,
+       CASE WHEN expression_fold_change > 2.0 THEN 'UPREGULATED' 
+            WHEN expression_fold_change < 0.5 THEN 'DOWNREGULATED'
+            ELSE 'NORMAL' END as expression_status
 FROM cancer_transcript_base 
-WHERE gene_symbol IN ('ERBB2', 'ESR1', 'PGR') 
+WHERE gene_symbol IN ('CTSL', 'SKP2', 'DMD', 'HARS1', 'UBE2I') 
 ORDER BY expression_fold_change DESC;"
 ```
 
 Expected results:
-- **ERBB2**: 8.45-fold (ACTIVATED - Primary target)
-- **ESR1**: 0.23-fold (SUPPRESSED - Indicates hormone independence)  
-- **PGR**: 0.18-fold (SUPPRESSED - Confirms poor prognosis)
+- **CTSL**: 8.45-fold (UPREGULATED - Protease activity)
+- **HARS1**: 7.23-fold (UPREGULATED - tRNA synthetase activity)  
+- **SKP2**: 6.78-fold (UPREGULATED - Cell cycle regulation)
+- **UBE2I**: 3.78-fold (UPREGULATED - SUMO conjugation)
+- **DMD**: 5.23-fold (UPREGULATED - Structural protein)
 
 ### Automated Analysis Pipeline
 
@@ -1147,10 +1324,10 @@ The project uses environment variables for configuration. Copy `.env.example` to
 ```bash
 # Database Configuration
 MB_POSTGRES_HOST=localhost        # PostgreSQL host
-MB_POSTGRES_PORT=5432            # PostgreSQL port
-MB_POSTGRES_DB=mediabase         # Database name
-MB_POSTGRES_USER=postgres        # Database user
-MB_POSTGRES_PASSWORD=postgres    # Database password
+MB_POSTGRES_PORT=5435            # PostgreSQL port
+MB_POSTGRES_NAME=mbase           # Database name
+MB_POSTGRES_USER=mbase_user      # Database user
+MB_POSTGRES_PASSWORD=mbase_secret # Database password
 
 # API Configuration
 MB_API_HOST=0.0.0.0             # API server host

@@ -93,8 +93,8 @@ class TranscriptProcessor(BaseProcessor):
             self.logger.info(f"Parsing GTF file: {gtf_path}")
             df = gtfparse.read_gtf(gtf_path)
             
-            # Filter to transcript entries only
-            transcripts = df[df['feature'] == 'transcript'].copy()
+            # Filter to transcript entries only using polars filter method
+            transcripts = df.filter(df['feature'] == 'transcript').to_pandas()
             
             # Parse coordinates into structured format
             transcripts['coordinates'] = transcripts.apply(
@@ -106,8 +106,13 @@ class TranscriptProcessor(BaseProcessor):
                 axis=1
             )
             
-            # Normalize gene_id by stripping version number if present
+            # Store versioned IDs before normalizing for joining
+            transcripts['gene_id_versioned'] = transcripts['gene_id'].copy()
+            transcripts['transcript_id_versioned'] = transcripts['transcript_id'].copy()
+            
+            # Normalize gene_id and transcript_id by stripping version numbers for joining
             transcripts['gene_id'] = transcripts['gene_id'].str.split('.').str[0]
+            transcripts['transcript_id'] = transcripts['transcript_id'].str.split('.').str[0]
             
             # Initialize transcript type counter
             selected_transcript_types = {'protein_coding': 0}
@@ -193,21 +198,54 @@ class TranscriptProcessor(BaseProcessor):
                 # Build default JSONB fields
                 expression_freq = json.dumps({'high': [], 'low': []})
                 
-                # Extract alt_transcript_ids
+                # Enhanced ID extraction - Extract ALL available GTF attributes
                 alt_transcript_ids = {}
-                for attr in ['ccdsid', 'havana_transcript']:
-                    if attr in row and row[attr]:
-                        key = 'CCDS' if attr == 'ccdsid' else 'HAVANA'
-                        alt_transcript_ids[key] = row[attr]
-                
-                # Extract alt_gene_ids
                 alt_gene_ids = {}
-                for attr in ['havana_gene', 'hgnc_id']:
-                    if attr in row and row[attr]:
-                        key = 'HAVANA' if attr == 'havana_gene' else 'HGNC'
-                        alt_gene_ids[key] = row[attr]
+                transcript_metadata = {}
                 
-                # Add to batch
+                # Comprehensive GTF attribute mapping
+                transcript_id_attrs = {
+                    'ccdsid': 'CCDS',
+                    'havana_transcript': 'HAVANA', 
+                    'protein_id': 'RefSeq_protein',
+                    'transcript_name': 'transcript_name'
+                }
+                
+                gene_id_attrs = {
+                    'havana_gene': 'HAVANA',
+                    'hgnc_id': 'HGNC'
+                }
+                
+                quality_attrs = {
+                    'transcript_support_level': 'TSL',
+                    'gene_version': 'gene_version',
+                    'transcript_version': 'transcript_version',
+                    'level': 'annotation_level',
+                    'tag': 'annotation_tags'
+                }
+                
+                # Extract transcript IDs
+                for attr, key in transcript_id_attrs.items():
+                    if attr in row and row[attr] and str(row[attr]) != 'nan':
+                        alt_transcript_ids[key] = str(row[attr])
+                
+                # Extract gene IDs 
+                for attr, key in gene_id_attrs.items():
+                    if attr in row and row[attr] and str(row[attr]) != 'nan':
+                        alt_gene_ids[key] = str(row[attr])
+                
+                # Extract quality/annotation metadata
+                for attr, key in quality_attrs.items():
+                    if attr in row and row[attr] and str(row[attr]) != 'nan':
+                        transcript_metadata[key] = str(row[attr])
+                
+                # Add versioned IDs to metadata for reference
+                if 'gene_id_versioned' in row and str(row['gene_id_versioned']) != 'nan':
+                    transcript_metadata['gene_id_versioned'] = str(row['gene_id_versioned'])
+                if 'transcript_id_versioned' in row and str(row['transcript_id_versioned']) != 'nan':
+                    transcript_metadata['transcript_id_versioned'] = str(row['transcript_id_versioned'])
+                
+                # Add to batch with enhanced metadata
                 transcript_data.append((
                     transcript_id,
                     gene_name,
@@ -217,7 +255,8 @@ class TranscriptProcessor(BaseProcessor):
                     json.dumps(coordinates),
                     expression_freq,
                     json.dumps(alt_transcript_ids),
-                    json.dumps(alt_gene_ids)
+                    json.dumps(alt_gene_ids),
+                    json.dumps(transcript_metadata)  # Store quality/annotation data
                 ))
             
             # Use BaseProcessor execute_batch method
@@ -227,8 +266,8 @@ class TranscriptProcessor(BaseProcessor):
                 INSERT INTO cancer_transcript_base (
                     transcript_id, gene_symbol, gene_id, gene_type, 
                     chromosome, coordinates, expression_freq,
-                    alt_transcript_ids, alt_gene_ids
-                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
+                    alt_transcript_ids, alt_gene_ids, features
+                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
                 ON CONFLICT (transcript_id) DO UPDATE SET
                     gene_symbol = EXCLUDED.gene_symbol,
                     gene_id = EXCLUDED.gene_id,
@@ -236,7 +275,8 @@ class TranscriptProcessor(BaseProcessor):
                     chromosome = EXCLUDED.chromosome,
                     coordinates = EXCLUDED.coordinates,
                     alt_transcript_ids = EXCLUDED.alt_transcript_ids,
-                    alt_gene_ids = EXCLUDED.alt_gene_ids
+                    alt_gene_ids = EXCLUDED.alt_gene_ids,
+                    features = EXCLUDED.features
                 """, 
                 transcript_data
             )

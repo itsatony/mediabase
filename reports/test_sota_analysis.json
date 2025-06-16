@@ -1,0 +1,599 @@
+{
+  "analysis_metadata": {
+    "timestamp": "2025-06-16T12:56:27.031617",
+    "database": "mediabase",
+    "transcript_count": 3,
+    "analysis_version": "v1.0.0"
+  },
+  "drug_gene_interactions": {
+    "total_drug_interactions": 4,
+    "druggable_genes_count": 3,
+    "high_score_targets": 2,
+    "mechanism_distribution": {
+      "inhibitor": 1,
+      "competitive inhibitor": 1,
+      "irreversible inhibitor": 1,
+      "allosteric modulator": 1
+    },
+    "score_statistics": {
+      "mean": 115.675,
+      "median": 113.85,
+      "max": 156.7,
+      "min": 78.3
+    },
+    "top_drug_targets": [
+      {
+        "gene_symbol": "CTSL",
+        "transcript_id": "ENST00000343150.10",
+        "drug_id": "2341",
+        "drug_name": "Cathepsin L inhibitor CLI-23",
+        "score": 156.7,
+        "mechanism": "irreversible inhibitor",
+        "chromosome": "chr9"
+      },
+      {
+        "gene_symbol": "UBE2I",
+        "transcript_id": "ENST00000566587.6",
+        "drug_id": "4344",
+        "drug_name": "Drug compound 4344",
+        "score": 138.5,
+        "mechanism": "inhibitor",
+        "chromosome": "chr16"
+      }
+    ],
+    "clinical_summary": "Analysis identified 4 drug-gene interactions across multiple therapeutic modalities. Highest therapeutic potential: CTSL (score: 156.7). These interactions represent immediate opportunities for precision medicine approaches."
+  },
+  "pathway_enrichment": {
+    "total_pathways": 9,
+    "enriched_pathways": [
+      {
+        "pathway": "Nuclear Envelope Reassembly",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "UBE2I"
+        ]
+      },
+      {
+        "pathway": "SUMO modification",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "UBE2I"
+        ]
+      },
+      {
+        "pathway": "Cell cycle regulation",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "UBE2I"
+        ]
+      },
+      {
+        "pathway": "Glycosylation",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "SLC35A2"
+        ]
+      },
+      {
+        "pathway": "Galactose metabolism",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "SLC35A2"
+        ]
+      },
+      {
+        "pathway": "ER-Golgi transport",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "SLC35A2"
+        ]
+      },
+      {
+        "pathway": "Autophagy",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "CTSL"
+        ]
+      },
+      {
+        "pathway": "Lysosomal protein degradation",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "CTSL"
+        ]
+      },
+      {
+        "pathway": "Antigen processing",
+        "gene_count": 1,
+        "enrichment_score": 33.33333333333333,
+        "genes": [
+          "CTSL"
+        ]
+      }
+    ],
+    "pathway_cooccurrence_network": [],
+    "pathway_statistics": {
+      "mean_genes_per_pathway": 1,
+      "max_pathway_size": 1
+    },
+    "clinical_summary": "Primary pathway alteration: Nuclear Envelope Reassembly (1 genes, 33.3% enrichment). Pathway-targeted therapies should be prioritized for clinical intervention."
+  },
+  "functional_classification": {
+    "molecular_function_landscape": {
+      "total_functions": 7,
+      "top_functions": {
+        "ATP binding": 1,
+        "SUMO conjugating enzyme activity": 1,
+        "protein binding": 1,
+        "UDP-galactose transmembrane transporter activity": 1,
+        "carbohydrate transmembrane transporter activity": 1,
+        "cysteine-type endopeptidase activity": 1,
+        "peptidase activity": 1
+      },
+      "functional_profiles": [
+        {
+          "molecular_function": "ATP binding",
+          "gene_count": 1,
+          "primary_locations": {
+            "PML body": 1,
+            "transferase complex": 1,
+            "nuclear envelope": 1
+          },
+          "frequency_score": 33.33333333333333
+        },
+        {
+          "molecular_function": "SUMO conjugating enzyme activity",
+          "gene_count": 1,
+          "primary_locations": {
+            "PML body": 1,
+            "transferase complex": 1,
+            "nuclear envelope": 1
+          },
+          "frequency_score": 33.33333333333333
+        },
+        {
+          "molecular_function": "protein binding",
+          "gene_count": 1,
+          "primary_locations": {
+            "PML body": 1,
+            "transferase complex": 1,
+            "nuclear envelope": 1
+          },
+          "frequency_score": 33.33333333333333
+        },
+        {
+          "molecular_function": "UDP-galactose transmembrane transporter activity",
+          "gene_count": 1,
+          "primary_locations": {
+            "Golgi apparatus": 1,
+            "endoplasmic reticulum membrane": 1
+          },
+          "frequency_score": 33.33333333333333
+        },
+        {
+          "molecular_function": "carbohydrate transmembrane transporter activity",
+          "gene_count": 1,
+          "primary_locations": {
+            "Golgi apparatus": 1,
+            "endoplasmic reticulum membrane": 1
+          },
+          "frequency_score": 33.33333333333333
+        },
+        {
+          "molecular_function": "cysteine-type endopeptidase activity",
+          "gene_count": 1,
+          "primary_locations": {
+            "lysosome": 1,
+            "cytoplasm": 1,
+            "extracellular region": 1
+          },
+          "frequency_score": 33.33333333333333
+        },
+        {
+          "molecular_function": "peptidase activity",
+          "gene_count": 1,
+          "primary_locations": {
+            "lysosome": 1,
+            "cytoplasm": 1,
+            "extracellular region": 1
+          },
+          "frequency_score": 33.33333333333333
+        }
+      ]
+    },
+    "cellular_location_distribution": {
+      "PML body": 1,
+      "transferase complex": 1,
+      "nuclear envelope": 1,
+      "Golgi apparatus": 1,
+      "endoplasmic reticulum membrane": 1,
+      "lysosome": 1,
+      "cytoplasm": 1,
+      "extracellular region": 1
+    },
+    "product_type_classification": {
+      "cytoplasmic": 1,
+      "nuclear": 1,
+      "rna_binding": 1,
+      "transmembrane": 1,
+      "transporter": 1,
+      "hydrolase": 1,
+      "lysosomal": 1
+    },
+    "go_molecular_functions": {
+      "ATP binding": 1,
+      "SUMO conjugating enzyme activity": 1,
+      "UDP-galactose transmembrane transporter activity": 1,
+      "cysteine-type endopeptidase activity": 1
+    },
+    "clinical_summary": "Dominant functional alteration: ATP binding (1 genes affected). Functional targeting strategies should focus on this domain."
+  },
+  "chromosomal_distribution": {
+    "chromosomal_distribution": [
+      {
+        "chromosome": "chr16",
+        "gene_count": 1,
+        "drug_targets": 1,
+        "density_score": 33.33333333333333,
+        "position_range": {
+          "start": 1309638,
+          "end": 1309638,
+          "span": 0
+        }
+      },
+      {
+        "chromosome": "chrX",
+        "gene_count": 1,
+        "drug_targets": 1,
+        "density_score": 33.33333333333333,
+        "position_range": {
+          "start": 48394442,
+          "end": 48394442,
+          "span": 0
+        }
+      },
+      {
+        "chromosome": "chr9",
+        "gene_count": 1,
+        "drug_targets": 2,
+        "density_score": 33.33333333333333,
+        "position_range": {
+          "start": 87850654,
+          "end": 87850654,
+          "span": 0
+        }
+      }
+    ],
+    "hotspot_chromosomes": [
+      {
+        "chromosome": "chr16",
+        "gene_count": 1,
+        "drug_targets": 1,
+        "density_score": 33.33333333333333,
+        "position_range": {
+          "start": 1309638,
+          "end": 1309638,
+          "span": 0
+        }
+      },
+      {
+        "chromosome": "chrX",
+        "gene_count": 1,
+        "drug_targets": 1,
+        "density_score": 33.33333333333333,
+        "position_range": {
+          "start": 48394442,
+          "end": 48394442,
+          "span": 0
+        }
+      },
+      {
+        "chromosome": "chr9",
+        "gene_count": 1,
+        "drug_targets": 2,
+        "density_score": 33.33333333333333,
+        "position_range": {
+          "start": 87850654,
+          "end": 87850654,
+          "span": 0
+        }
+      }
+    ],
+    "drug_target_chromosomes": [
+      [
+        "chr9",
+        2
+      ],
+      [
+        "chr16",
+        1
+      ],
+      [
+        "chrX",
+        1
+      ]
+    ],
+    "distribution_statistics": {
+      "total_chromosomes": 3,
+      "mean_genes_per_chromosome": 1,
+      "hotspot_threshold": 33.33333333333333
+    },
+    "clinical_summary": "Primary chromosomal hotspot: chr16 (1 genes, 33.3% density). Cytogenetic analysis and chromosomal stability assessment recommended."
+  },
+  "multimodal_integration": {
+    "integrated_gene_profiles": [
+      {
+        "gene_symbol": "CTSL",
+        "transcript_id": "ENST00000343150.10",
+        "chromosome": "chr9",
+        "has_drugs": true,
+        "drug_count": 2,
+        "pathway_count": 3,
+        "function_count": 2,
+        "multimodal_score": 14
+      },
+      {
+        "gene_symbol": "UBE2I",
+        "transcript_id": "ENST00000566587.6",
+        "chromosome": "chr16",
+        "has_drugs": true,
+        "drug_count": 1,
+        "pathway_count": 3,
+        "function_count": 3,
+        "multimodal_score": 12
+      },
+      {
+        "gene_symbol": "SLC35A2",
+        "transcript_id": "ENST00000634461.1",
+        "chromosome": "chrX",
+        "has_drugs": true,
+        "drug_count": 1,
+        "pathway_count": 3,
+        "function_count": 2,
+        "multimodal_score": 11
+      }
+    ],
+    "multimodal_statistics": {
+      "mean_multimodal_score": 12.333333333333334,
+      "highly_integrated_genes": 3
+    },
+    "pathway_drug_associations": [
+      {
+        "pathway": "Nuclear Envelope Reassembly",
+        "drug_id": "4344",
+        "association_strength": 1
+      },
+      {
+        "pathway": "SUMO modification",
+        "drug_id": "4344",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Cell cycle regulation",
+        "drug_id": "4344",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Glycosylation",
+        "drug_id": "7892",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Galactose metabolism",
+        "drug_id": "7892",
+        "association_strength": 1
+      },
+      {
+        "pathway": "ER-Golgi transport",
+        "drug_id": "7892",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Autophagy",
+        "drug_id": "2341",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Autophagy",
+        "drug_id": "8934",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Lysosomal protein degradation",
+        "drug_id": "2341",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Lysosomal protein degradation",
+        "drug_id": "8934",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Antigen processing",
+        "drug_id": "2341",
+        "association_strength": 1
+      },
+      {
+        "pathway": "Antigen processing",
+        "drug_id": "8934",
+        "association_strength": 1
+      }
+    ],
+    "function_drug_associations": [
+      {
+        "molecular_function": "ATP binding",
+        "drug_id": "4344",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "SUMO conjugating enzyme activity",
+        "drug_id": "4344",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "protein binding",
+        "drug_id": "4344",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "UDP-galactose transmembrane transporter activity",
+        "drug_id": "7892",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "carbohydrate transmembrane transporter activity",
+        "drug_id": "7892",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "cysteine-type endopeptidase activity",
+        "drug_id": "2341",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "cysteine-type endopeptidase activity",
+        "drug_id": "8934",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "peptidase activity",
+        "drug_id": "2341",
+        "association_strength": 1
+      },
+      {
+        "molecular_function": "peptidase activity",
+        "drug_id": "8934",
+        "association_strength": 1
+      }
+    ],
+    "clinical_summary": "Most complex therapeutic target: CTSL (multimodal score: 14). Multi-target therapeutic strategies recommended for high-complexity genes."
+  },
+  "clinical_biomarkers": {
+    "biomarker_candidates": [
+      {
+        "gene_symbol": "CTSL",
+        "transcript_id": "ENST00000343150.10",
+        "biomarker_score": 107.68,
+        "characteristics": [
+          "drug_targetable",
+          "multi_pathway",
+          "autosomal"
+        ],
+        "chromosome": "chr9",
+        "drug_count": 2,
+        "pathway_count": 3,
+        "function_count": 2
+      },
+      {
+        "gene_symbol": "UBE2I",
+        "transcript_id": "ENST00000566587.6",
+        "biomarker_score": 105.4,
+        "characteristics": [
+          "drug_targetable",
+          "multi_pathway",
+          "multi_functional",
+          "autosomal"
+        ],
+        "chromosome": "chr16",
+        "drug_count": 1,
+        "pathway_count": 3,
+        "function_count": 3
+      },
+      {
+        "gene_symbol": "SLC35A2",
+        "transcript_id": "ENST00000634461.1",
+        "biomarker_score": 75.68,
+        "characteristics": [
+          "drug_targetable",
+          "multi_pathway"
+        ],
+        "chromosome": "chrX",
+        "drug_count": 1,
+        "pathway_count": 3,
+        "function_count": 2
+      }
+    ],
+    "biomarker_categories": {
+      "high_potential": 3,
+      "moderate_potential": 0,
+      "emerging_biomarkers": 0
+    },
+    "top_biomarkers": [
+      {
+        "gene_symbol": "CTSL",
+        "transcript_id": "ENST00000343150.10",
+        "biomarker_score": 107.68,
+        "characteristics": [
+          "drug_targetable",
+          "multi_pathway",
+          "autosomal"
+        ],
+        "chromosome": "chr9",
+        "drug_count": 2,
+        "pathway_count": 3,
+        "function_count": 2
+      },
+      {
+        "gene_symbol": "UBE2I",
+        "transcript_id": "ENST00000566587.6",
+        "biomarker_score": 105.4,
+        "characteristics": [
+          "drug_targetable",
+          "multi_pathway",
+          "multi_functional",
+          "autosomal"
+        ],
+        "chromosome": "chr16",
+        "drug_count": 1,
+        "pathway_count": 3,
+        "function_count": 3
+      },
+      {
+        "gene_symbol": "SLC35A2",
+        "transcript_id": "ENST00000634461.1",
+        "biomarker_score": 75.68,
+        "characteristics": [
+          "drug_targetable",
+          "multi_pathway"
+        ],
+        "chromosome": "chrX",
+        "drug_count": 1,
+        "pathway_count": 3,
+        "function_count": 2
+      }
+    ],
+    "biomarker_statistics": {
+      "mean_biomarker_score": 96.25333333333334,
+      "score_distribution": {
+        "high": 3,
+        "moderate": 0,
+        "emerging": 0
+      }
+    },
+    "clinical_summary": "Top biomarker candidate: CTSL (score: 107.7). Immediate clinical validation studies recommended for high-scoring candidates."
+  },
+  "executive_summary": {
+    "key_findings": [
+      "2 high-priority drug targets identified",
+      "9 altered pathways detected",
+      "3 high-potential biomarker candidates"
+    ],
+    "clinical_priorities": [
+      "Pathway-targeted therapeutic intervention"
+    ],
+    "therapeutic_opportunities": [
+      "Precision medicine targeting of high-score drug-gene interactions"
+    ],
+    "recommended_actions": [
+      "Initiate clinical validation studies for top biomarker candidates"
+    ]
+  }
+}

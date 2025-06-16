@@ -42,15 +42,29 @@ class IDEnrichmentProcessor(BaseProcessor):
         self.id_dir = self.cache_dir / 'id_mapping'
         self.id_dir.mkdir(exist_ok=True)
         
-        # Source URL for UniProt ID mapping
+        # Source URLs for comprehensive ID mapping
         self.uniprot_mapping_url = config.get(
             'uniprot_mapping_url',
             'https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/idmapping/by_organism/HUMAN_9606_idmapping.dat.gz'
         )
         
+        # PRIORITY 1: NCBI Gene2Ensembl - Authoritative gene ID mapping
+        self.gene2ensembl_url = config.get(
+            'gene2ensembl_url',
+            'https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene2ensembl.gz'
+        )
+        
+        # PRIORITY 2: HGNC Complete - Official gene symbols and aliases  
+        self.hgnc_url = config.get(
+            'hgnc_url',
+            'https://www.genenames.org/cgi-bin/download/custom?col=gd_hgnc_id&col=gd_app_sym&col=gd_aliases&col=gd_pub_ensembl_id&status=Approved&hgnc_dbtag=on&order_by=gd_app_sym_sort&format=text&submit=submit'
+        )
+        
         # Cache options
         self.filter_metadata: Dict[str, Any] = {
-            'uniprot': {'filtered': False, 'total': 0, 'human': 0}
+            'uniprot': {'filtered': False, 'total': 0, 'human': 0},
+            'gene2ensembl': {'processed': False, 'total': 0, 'human': 0},
+            'hgnc': {'processed': False, 'total': 0, 'aliases': 0}
         }
     
     def download_uniprot_mapping(self) -> Path:
@@ -628,20 +642,297 @@ class IDEnrichmentProcessor(BaseProcessor):
         except Exception as e:
             self.logger.warning(f"Failed to verify ID updates: {e}")
     
+    def download_gene2ensembl(self) -> Path:
+        """Download NCBI Gene2Ensembl mapping file with caching.
+        
+        Returns:
+            Path to the downloaded file
+            
+        Raises:
+            DownloadError: If download fails
+        """
+        try:
+            self.logger.info("Downloading NCBI Gene2Ensembl mapping file")
+            # Use the BaseProcessor download method
+            mapping_file = self.download_file(
+                url=self.gene2ensembl_url,
+                file_path=self.id_dir / "gene2ensembl.gz"
+            )
+            return mapping_file
+        except Exception as e:
+            raise DownloadError(f"Failed to download Gene2Ensembl mapping: {e}")
+    
+    def process_gene2ensembl(self, mapping_file: Path) -> Dict[str, Dict[str, str]]:
+        """Process NCBI Gene2Ensembl mapping for comprehensive ID mapping.
+        
+        Args:
+            mapping_file: Path to the Gene2Ensembl mapping file
+            
+        Returns:
+            Dictionary mapping Ensembl gene IDs to NCBI gene information
+            
+        Raises:
+            ProcessingError: If processing fails
+        """
+        try:
+            self.logger.info("Processing NCBI Gene2Ensembl mapping")
+            
+            gene_mapping = {}
+            total_entries = 0
+            human_entries = 0
+            
+            with gzip.open(mapping_file, 'rt') as f:
+                # Skip header
+                header = next(f)
+                self.logger.info(f"Gene2Ensembl header: {header.strip()}")
+                
+                for line in f:
+                    total_entries += 1
+                    parts = line.strip().split('\t')
+                    
+                    if len(parts) < 6:
+                        continue
+                        
+                    tax_id = parts[0]
+                    if tax_id != '9606':  # Human only
+                        continue
+                        
+                    human_entries += 1
+                    ncbi_gene_id = parts[1]
+                    ensembl_gene_id = parts[2] 
+                    rna_accession = parts[3] if parts[3] != '-' else None
+                    ensembl_transcript_id = parts[4] if parts[4] != '-' else None
+                    protein_accession = parts[5] if parts[5] != '-' else None
+                    ensembl_protein_id = parts[6] if len(parts) > 6 and parts[6] != '-' else None
+                    
+                    # Map by Ensembl gene ID (primary key in our system)
+                    if ensembl_gene_id and ensembl_gene_id != '-':
+                        gene_mapping[ensembl_gene_id] = {
+                            'ncbi_gene_id': ncbi_gene_id,
+                            'ensembl_transcript_id': ensembl_transcript_id,
+                            'rna_accession': rna_accession,
+                            'protein_accession': protein_accession,
+                            'ensembl_protein_id': ensembl_protein_id
+                        }
+            
+            # Update metadata
+            self.filter_metadata['gene2ensembl'] = {
+                'processed': True,
+                'total': total_entries,
+                'human': human_entries,
+                'mapped_genes': len(gene_mapping),
+                'process_date': datetime.now().isoformat()
+            }
+            
+            self.logger.info(
+                f"Gene2Ensembl mapping processed: {human_entries:,} human entries "
+                f"from {total_entries:,} total, resulting in {len(gene_mapping):,} gene mappings"
+            )
+            
+            return gene_mapping
+            
+        except Exception as e:
+            raise ProcessingError(f"Failed to process Gene2Ensembl mapping: {e}")
+    
+    def download_hgnc_complete(self) -> Path:
+        """Download HGNC complete dataset with caching.
+        
+        Returns:
+            Path to the downloaded file
+            
+        Raises:
+            DownloadError: If download fails
+        """
+        try:
+            self.logger.info("Downloading HGNC complete dataset")
+            # Use the BaseProcessor download method
+            hgnc_file = self.download_file(
+                url=self.hgnc_url,
+                file_path=self.id_dir / "hgnc_complete.txt"
+            )
+            return hgnc_file
+        except Exception as e:
+            raise DownloadError(f"Failed to download HGNC complete dataset: {e}")
+    
+    def process_hgnc_complete(self, hgnc_file: Path) -> Dict[str, str]:
+        """Process HGNC complete dataset for gene symbol resolution.
+        
+        Args:
+            hgnc_file: Path to the HGNC complete file
+            
+        Returns:
+            Dictionary mapping all gene symbols/aliases to official symbols
+            
+        Raises:
+            ProcessingError: If processing fails
+        """
+        try:
+            self.logger.info("Processing HGNC complete dataset")
+            
+            symbol_mapping = {}
+            total_genes = 0
+            total_aliases = 0
+            
+            with open(hgnc_file, 'r') as f:
+                header = next(f)
+                self.logger.info(f"HGNC header: {header.strip()}")
+                
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) < 4:
+                        continue
+                        
+                    hgnc_id = parts[0]
+                    official_symbol = parts[1]
+                    alias_symbols = parts[2] if parts[2] else ""
+                    ensembl_gene_id = parts[3] if parts[3] else ""
+                    
+                    total_genes += 1
+                    
+                    # Map official symbol to itself
+                    symbol_mapping[official_symbol] = official_symbol
+                    
+                    # Map all aliases to official symbol
+                    if alias_symbols:
+                        aliases = alias_symbols.split('|')
+                        for alias in aliases:
+                            alias = alias.strip()
+                            if alias and alias != official_symbol:
+                                symbol_mapping[alias] = official_symbol
+                                total_aliases += 1
+            
+            # Update metadata
+            self.filter_metadata['hgnc'] = {
+                'processed': True,
+                'total': total_genes,
+                'aliases': total_aliases,
+                'total_mappings': len(symbol_mapping),
+                'process_date': datetime.now().isoformat()
+            }
+            
+            self.logger.info(
+                f"HGNC dataset processed: {total_genes:,} official symbols, "
+                f"{total_aliases:,} aliases, {len(symbol_mapping):,} total mappings"
+            )
+            
+            return symbol_mapping
+            
+        except Exception as e:
+            raise ProcessingError(f"Failed to process HGNC complete dataset: {e}")
+    
+    def create_comprehensive_mapping(self) -> Dict[str, Dict[str, List[str]]]:
+        """Create comprehensive ID mapping by combining all sources.
+        
+        Returns:
+            Dictionary mapping gene symbols to comprehensive ID information
+            
+        Raises:
+            ProcessingError: If comprehensive mapping creation fails
+        """
+        try:
+            self.logger.info("Creating comprehensive ID mapping from all sources")
+            
+            # Download and process all sources
+            self.logger.info("Phase 1: Downloading all ID mapping sources")
+            
+            # 1. NCBI Gene2Ensembl (authoritative)
+            gene2ensembl_file = self.download_gene2ensembl()
+            gene2ensembl_mapping = self.process_gene2ensembl(gene2ensembl_file)
+            
+            # 2. HGNC Complete (gene symbol resolution)
+            hgnc_file = self.download_hgnc_complete()
+            hgnc_symbol_mapping = self.process_hgnc_complete(hgnc_file)
+            
+            # 3. UniProt (protein-centric IDs)
+            uniprot_file = self.download_uniprot_mapping()
+            uniprot_gene_mapping = self.process_uniprot_mapping(uniprot_file)
+            
+            self.logger.info("Phase 2: Integrating all ID mapping sources")
+            
+            # Create comprehensive mapping by gene symbol
+            comprehensive_mapping: DefaultDict[str, Dict[str, List[str]]] = defaultdict(
+                lambda: defaultdict(list)
+            )
+            
+            # Start with database gene symbols
+            if not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
+                
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol, gene_id 
+                FROM cancer_transcript_base 
+                WHERE gene_symbol IS NOT NULL AND gene_id IS NOT NULL
+            """)
+            
+            db_genes = self.db_manager.cursor.fetchall()
+            self.logger.info(f"Found {len(db_genes):,} unique genes in database")
+            
+            # Integrate data for each database gene
+            integration_stats = {
+                'total_genes': len(db_genes),
+                'gene2ensembl_matches': 0,
+                'hgnc_symbol_resolved': 0,
+                'uniprot_matches': 0,
+                'comprehensive_records': 0
+            }
+            
+            for gene_symbol, ensembl_gene_id in db_genes:
+                # Resolve gene symbol using HGNC if needed
+                resolved_symbol = hgnc_symbol_mapping.get(gene_symbol, gene_symbol)
+                if resolved_symbol != gene_symbol:
+                    integration_stats['hgnc_symbol_resolved'] += 1
+                
+                # Add Gene2Ensembl data
+                if ensembl_gene_id in gene2ensembl_mapping:
+                    gene2ensembl_data = gene2ensembl_mapping[ensembl_gene_id]
+                    comprehensive_mapping[gene_symbol]['ncbi_gene_id'].append(gene2ensembl_data['ncbi_gene_id'])
+                    if gene2ensembl_data['ensembl_transcript_id']:
+                        comprehensive_mapping[gene_symbol]['ensembl_transcript_id'].append(gene2ensembl_data['ensembl_transcript_id'])
+                    if gene2ensembl_data['rna_accession']:
+                        comprehensive_mapping[gene_symbol]['refseq_mrna_id'].append(gene2ensembl_data['rna_accession'])
+                    if gene2ensembl_data['protein_accession']:
+                        comprehensive_mapping[gene_symbol]['refseq_protein_id'].append(gene2ensembl_data['protein_accession'])
+                    integration_stats['gene2ensembl_matches'] += 1
+                
+                # Add UniProt data (use resolved symbol)
+                if resolved_symbol in uniprot_gene_mapping:
+                    uniprot_data = uniprot_gene_mapping[resolved_symbol]
+                    for id_type, id_list in uniprot_data.items():
+                        comprehensive_mapping[gene_symbol][id_type].extend(id_list)
+                    integration_stats['uniprot_matches'] += 1
+                
+                # Count comprehensive records (those with multiple ID types)
+                if len(comprehensive_mapping[gene_symbol]) >= 2:
+                    integration_stats['comprehensive_records'] += 1
+            
+            # Convert to regular dict and log statistics
+            final_mapping = {k: dict(v) for k, v in comprehensive_mapping.items()}
+            
+            self.logger.info(f"Comprehensive ID mapping integration statistics:")
+            for stat_name, count in integration_stats.items():
+                percentage = (count / integration_stats['total_genes']) * 100 if integration_stats['total_genes'] > 0 else 0
+                self.logger.info(f"  - {stat_name}: {count:,} ({percentage:.1f}%)")
+            
+            return final_mapping
+            
+        except Exception as e:
+            raise ProcessingError(f"Failed to create comprehensive mapping: {e}")
+
     def run(self) -> None:
-        """Run the complete ID enrichment pipeline using only UniProt mapping data.
+        """Run the comprehensive ID enrichment pipeline using multiple authoritative sources.
         
         Steps:
-        1. Download UniProt mapping file
-        2. Filter to ensure human-only entries
-        3. Process mapping to get comprehensive ID mappings
-        4. Update transcript records with all available IDs
+        1. Download and process NCBI Gene2Ensembl mapping (authoritative)
+        2. Download and process HGNC complete dataset (gene symbol resolution)
+        3. Download and process UniProt mapping (protein-centric IDs)
+        4. Create comprehensive mapping by integrating all sources
+        5. Update transcript records with comprehensive ID information
         
         Raises:
             Various ETLError subclasses based on failure point
         """
         try:
-            self.logger.info("Starting ID enrichment pipeline using UniProt mapping")
+            self.logger.info("Starting comprehensive ID enrichment pipeline")
             
             # Add diagnostic query to count transcripts before processing
             if not self.ensure_connection() or not self.db_manager.cursor:
@@ -672,16 +963,13 @@ class IDEnrichmentProcessor(BaseProcessor):
             if not self.ensure_schema_version('v0.1.4'):
                 raise DatabaseError("Incompatible database schema version")
             
-            # Download UniProt mapping file
-            uniprot_file = self.download_uniprot_mapping()
+            # Create comprehensive mapping from all sources
+            comprehensive_mapping = self.create_comprehensive_mapping()
             
-            # Process UniProt mapping to get comprehensive ID mappings
-            gene_mapping = self.process_uniprot_mapping(uniprot_file)
+            # Update transcript records with comprehensive ID information
+            self.update_transcript_ids(comprehensive_mapping)
             
-            # Update transcript records with all available IDs
-            self.update_transcript_ids(gene_mapping)
-            
-            self.logger.info("ID enrichment with UniProt mapping data completed successfully")
+            self.logger.info("Comprehensive ID enrichment completed successfully")
             
         except Exception as e:
             self.logger.error(f"ID enrichment failed: {e}")

@@ -355,7 +355,7 @@ def main() -> int:  # Change return type to int for clarity
     parser.add_argument(
         "--modules",
         nargs="+",
-        choices=['transcripts', 'products', 'go_terms', 'pathways', 'drugs', 'publications'],
+        choices=['transcripts', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs', 'chembl_drugs', 'publications'],
         help="Specific modules to run"
     )
     parser.add_argument(
@@ -399,12 +399,12 @@ def main() -> int:  # Change return type to int for clarity
     if args.rate_limit:
         config['rate_limit'] = args.rate_limit
 
-    # Add ChEMBL-specific configurations
-    if args.use_chembl:
+    # Add ChEMBL-specific configurations if available
+    if hasattr(args, 'use_chembl') and args.use_chembl:
         config['use_chembl'] = True
-        config['chembl_max_phase'] = args.chembl_max_phase
-        config['chembl_schema'] = args.chembl_schema
-        config['use_temp_schema'] = not args.no_chembl_temp_schema
+        config['chembl_max_phase'] = getattr(args, 'chembl_max_phase', 0)
+        config['chembl_schema'] = getattr(args, 'chembl_schema', 'chembl_temp')
+        config['use_temp_schema'] = not getattr(args, 'no_chembl_temp_schema', False)
 
     try:
         # Make sure any previous progress bars are completed

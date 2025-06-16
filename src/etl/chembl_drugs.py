@@ -79,6 +79,12 @@ class ChemblDrugProcessor(BaseProcessor):
         self.extracted_dir = self.chembl_dir / 'extracted'
         self.processed_dir = self.chembl_dir / 'processed'
         
+        # Enhanced ChEMBL API configuration for clinical data
+        self.chembl_api_base = config.get('chembl_api_base', 'https://www.ebi.ac.uk/chembl/api/data')
+        self.api_rate_limit = config.get('api_rate_limit', 0.2)  # 5 requests per second
+        self.include_clinical_phases = config.get('include_clinical_phases', True)
+        self.include_mechanisms = config.get('include_mechanisms', True)
+        
         # Create directories
         self.extracted_dir.mkdir(exist_ok=True)
         self.processed_dir.mkdir(exist_ok=True)
@@ -1255,6 +1261,228 @@ class ChemblDrugProcessor(BaseProcessor):
             self.logger.error(f"Failed to fetch count from {table_ref}: {e}")
             return 0
 
+    def query_chembl_api(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Query ChEMBL API with rate limiting.
+        
+        Args:
+            endpoint: API endpoint (e.g., 'target', 'molecule')
+            params: Query parameters
+            
+        Returns:
+            API response as dictionary
+            
+        Raises:
+            DownloadError: If API request fails
+        """
+        import time
+        
+        url = f"{self.chembl_api_base}/{endpoint}"
+        
+        try:
+            # Rate limiting
+            time.sleep(self.api_rate_limit)
+            
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            
+            return response.json()
+            
+        except Exception as e:
+            raise DownloadError(f"ChEMBL API request failed for {endpoint}: {e}")
+    
+    def get_clinical_phase_data(self, gene_symbol: str) -> List[Dict[str, Any]]:
+        """Get clinical phase data for a gene from ChEMBL API.
+        
+        Args:
+            gene_symbol: Gene symbol to search
+            
+        Returns:
+            List of drug records with clinical phase information
+        """
+        try:
+            # Search for targets by gene symbol
+            target_response = self.query_chembl_api('target', {
+                'target_synonym': gene_symbol,
+                'format': 'json',
+                'limit': 20
+            })
+            
+            clinical_drugs = []
+            
+            for target in target_response.get('targets', []):
+                target_chembl_id = target.get('target_chembl_id')
+                if not target_chembl_id:
+                    continue
+                
+                # Get activities for this target
+                activity_response = self.query_chembl_api('activity', {
+                    'target_chembl_id': target_chembl_id,
+                    'format': 'json',
+                    'limit': 50
+                })
+                
+                for activity in activity_response.get('activities', []):
+                    molecule_chembl_id = activity.get('molecule_chembl_id')
+                    if not molecule_chembl_id:
+                        continue
+                    
+                    # Get molecule details including clinical phase
+                    molecule_response = self.query_chembl_api('molecule', {
+                        'molecule_chembl_id': molecule_chembl_id,
+                        'format': 'json'
+                    })
+                    
+                    for molecule in molecule_response.get('molecules', []):
+                        max_phase = molecule.get('max_phase')
+                        if max_phase is not None and max_phase >= self.max_phase_cutoff:
+                            
+                            drug_record = {
+                                'molecule_chembl_id': molecule_chembl_id,
+                                'pref_name': molecule.get('pref_name', ''),
+                                'max_phase': max_phase,
+                                'therapeutic_flag': molecule.get('therapeutic_flag', False),
+                                'target_chembl_id': target_chembl_id,
+                                'target_pref_name': target.get('pref_name', ''),
+                                'activity_type': activity.get('standard_type', ''),
+                                'activity_value': activity.get('standard_value'),
+                                'activity_units': activity.get('standard_units', '')
+                            }
+                            
+                            # Get mechanism of action if available
+                            if self.include_mechanisms:
+                                moa_response = self.query_chembl_api('mechanism', {
+                                    'molecule_chembl_id': molecule_chembl_id,
+                                    'format': 'json'
+                                })
+                                
+                                mechanisms = []
+                                for moa in moa_response.get('mechanisms', []):
+                                    mechanisms.append({
+                                        'mechanism_of_action': moa.get('mechanism_of_action', ''),
+                                        'action_type': moa.get('action_type', ''),
+                                        'target_chembl_id': moa.get('target_chembl_id', '')
+                                    })
+                                
+                                drug_record['mechanisms'] = mechanisms
+                            
+                            clinical_drugs.append(drug_record)
+            
+            self.logger.debug(f"Found {len(clinical_drugs)} clinical drug records for {gene_symbol}")
+            return clinical_drugs
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to get clinical phase data for {gene_symbol}: {e}")
+            return []
+    
+    def enhance_existing_drug_data(self) -> None:
+        """Enhance existing drug data with clinical phases and mechanisms from ChEMBL API.
+        
+        This method queries the ChEMBL API to enrich drug records with:
+        - Clinical trial phases
+        - Mechanisms of action
+        - Therapeutic flags
+        - Activity data
+        """
+        try:
+            self.logger.info("Enhancing drug data with clinical phases and mechanisms")
+            
+            if not self.ensure_connection():
+                raise DatabaseError("Database connection failed")
+            
+            # Get all genes with existing drug data
+            self.db_manager.cursor.execute("""
+                SELECT DISTINCT gene_symbol 
+                FROM cancer_transcript_base 
+                WHERE drugs IS NOT NULL 
+                  AND drugs != '{}'::jsonb
+                ORDER BY gene_symbol
+            """)
+            
+            genes_with_drugs = [row[0] for row in self.db_manager.cursor.fetchall()]
+            self.logger.info(f"Found {len(genes_with_drugs)} genes with existing drug data")
+            
+            # Process genes in batches with progress tracking
+            enhanced_drugs = {}
+            
+            progress_bar = get_progress_bar(
+                total=len(genes_with_drugs),
+                desc="Enhancing drug data with clinical info",
+                module_name="chembl_drugs"
+            )
+            
+            try:
+                for gene_symbol in genes_with_drugs:
+                    clinical_data = self.get_clinical_phase_data(gene_symbol)
+                    
+                    if clinical_data:
+                        # Convert to format compatible with existing schema
+                        enhanced_drug_records = {}
+                        
+                        for drug in clinical_data:
+                            drug_id = drug['molecule_chembl_id']
+                            enhanced_drug_records[drug_id] = {
+                                'name': drug['pref_name'],
+                                'score': drug.get('activity_value', 0),
+                                'mechanism': drug.get('mechanisms', [{}])[0].get('mechanism_of_action', ''),
+                                'max_phase': drug['max_phase'],
+                                'therapeutic_flag': drug['therapeutic_flag'],
+                                'activity_type': drug['activity_type'],
+                                'activity_units': drug.get('activity_units', ''),
+                                'target_name': drug['target_pref_name']
+                            }
+                        
+                        if enhanced_drug_records:
+                            enhanced_drugs[gene_symbol] = enhanced_drug_records
+                    
+                    progress_bar.update(1)
+                    
+            finally:
+                progress_bar.close()
+            
+            # Update database with enhanced drug data
+            if enhanced_drugs:
+                self._update_enhanced_drug_data(enhanced_drugs)
+                
+            self.logger.info(f"Enhanced drug data for {len(enhanced_drugs)} genes")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to enhance drug data: {e}")
+            raise ProcessingError(f"Drug data enhancement failed: {e}")
+    
+    def _update_enhanced_drug_data(self, enhanced_drugs: Dict[str, Dict[str, Any]]) -> None:
+        """Update database with enhanced drug data.
+        
+        Args:
+            enhanced_drugs: Dictionary mapping gene symbols to enhanced drug records
+        """
+        try:
+            self.logger.info(f"Updating database with enhanced drug data for {len(enhanced_drugs)} genes")
+            
+            updates = []
+            for gene_symbol, drug_records in enhanced_drugs.items():
+                updates.append((json.dumps(drug_records), gene_symbol))
+            
+            # Update in batches
+            batch_size = 100
+            for i in range(0, len(updates), batch_size):
+                batch = updates[i:i + batch_size]
+                
+                self.db_manager.cursor.executemany("""
+                    UPDATE cancer_transcript_base 
+                    SET drugs = %s::jsonb
+                    WHERE gene_symbol = %s
+                """, batch)
+                
+                if self.db_manager.conn:
+                    self.db_manager.conn.commit()
+            
+            self.logger.info("Enhanced drug data updates completed")
+            
+        except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
+            raise DatabaseError(f"Failed to update enhanced drug data: {e}")
+
     def run(self) -> None:
         """Run the ChEMBL drug processing pipeline.
         
@@ -1286,10 +1514,15 @@ class ChemblDrugProcessor(BaseProcessor):
             if not self.skip_scores:
                 self.calculate_drug_scores()
             
+            # Enhance with clinical phase data and mechanisms from ChEMBL API
+            if self.include_clinical_phases or self.include_mechanisms:
+                self.logger.info("Enhancing drug data with clinical phases and mechanisms")
+                self.enhance_existing_drug_data()
+            
             # Verify results
             self._verify_integration_results()
             
-            self.logger.info("ChEMBL drug processing completed successfully")
+            self.logger.info("ChEMBL drug processing completed successfully with clinical enhancements")
             
         except Exception as e:
             self.logger.error(f"ChEMBL drug processing failed: {e}")

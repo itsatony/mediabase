@@ -75,7 +75,7 @@ This approach enables MEDIABASE to:
     poetry install
     
     # Activate the poetry environment
-    poetry shell
+    poetry env activate
     ```
 
 3. Configure the environment:
@@ -107,7 +107,7 @@ This approach enables MEDIABASE to:
 
 1. Ensure the virtual environment is activated:
    ```bash
-   poetry shell
+   poetry env activate
    ```
 
 2. Run tests:
@@ -594,7 +594,7 @@ The `examples/` directory contains realistic patient data files for different ca
 
 MEDIABASE uses a comprehensive PostgreSQL schema designed for cancer transcriptomics analysis. The main table `cancer_transcript_base` integrates data from multiple biological databases into a unified structure.
 
-### Current Schema Version: v0.1.7 (Enhanced with Publication System)
+### Current Schema Version: v0.1.9 (Enhanced with PharmGKB Variant Annotations)
 
 The database schema follows a versioned approach with automated migrations. The current version includes comprehensive support for:
 
@@ -604,6 +604,7 @@ The database schema follows a versioned approach with automated migrations. The 
 - Pathway data from Reactome **with publication reference extraction**
 - Drug interactions from DrugCentral, ChEMBL, and Drug Repurposing Hub **with enhanced PMID extraction**
 - Pharmacogenomic annotations and drug-specific pathways from PharmGKB **with clinical literature integration**
+- **PharmGKB variant annotations for pharmacogenomic analysis** *(NEW in v0.1.9)*
 - **Clinical trial data from ClinicalTrials.gov with publication extraction and metadata**
 - Evidence-based scoring system with multi-dimensional confidence metrics
 - **Advanced publication quality scoring system with impact analysis and relevance assessment**
@@ -613,7 +614,7 @@ The database schema follows a versioned approach with automated migrations. The 
 
 ### Core Table: cancer_transcript_base
 
-The main table contains 27 columns covering all aspects of transcript annotation including **comprehensive publication integration**:
+The main table contains 29 columns covering all aspects of transcript annotation including **comprehensive publication integration** and **pharmacogenomic variant annotations**:
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -628,6 +629,7 @@ The main table contains 27 columns covering all aspects of transcript annotation
 | `pathways` | TEXT[] | Reactome pathway memberships |
 | `drugs` | JSONB | Drug interaction data from multiple sources |
 | `pharmgkb_pathways` | JSONB | PharmGKB drug-specific metabolic pathways |
+| `pharmgkb_variants` | JSONB | **NEW v0.1.9**: PharmGKB variant annotations for pharmacogenomic analysis |
 | `expression_fold_change` | DOUBLE PRECISION | Patient-specific expression data (default: 1.0) |
 | `expression_freq` | JSONB | Expression frequency data |
 | `cancer_types` | TEXT[] | Associated cancer types |
@@ -641,8 +643,9 @@ The main table contains 27 columns covering all aspects of transcript annotation
 | `ncbi_ids` | TEXT[] | NCBI/Entrez gene identifiers |
 | `refseq_ids` | TEXT[] | RefSeq identifiers |
 | `pdb_ids` | TEXT[] | Protein Data Bank identifiers |
-| `clinical_trials` | JSONB | **NEW**: Clinical trial data from ClinicalTrials.gov with trial metadata, phases, and publication references |
-| `source_references` | JSONB | **ENHANCED**: Comprehensive publication and evidence references with quality scoring, extracted from all data sources |
+| `evidence_quality_metrics` | JSONB | **NEW v0.1.8**: Evidence quality assessment with confidence metrics |
+| `clinical_trials` | JSONB | Clinical trial data from ClinicalTrials.gov with trial metadata, phases, and publication references |
+| `source_references` | JSONB | **ENHANCED**: Comprehensive publication and evidence references with quality scoring, extracted from all data sources including pharmgkb_variants |
 
 ### Complete Example Record
 
@@ -843,7 +846,48 @@ Here's a fully populated example record showing all data types and structures:
         "quality_indicators": ["high_impact_journal", "recent", "highly_cited"],
         "impact_factor": 28.2
       }
+    ],
+    "pharmgkb_variants": [
+      {
+        "pmid": "34567891",
+        "source_db": "PharmGKB", 
+        "evidence_type": "variant_annotation",
+        "variant_id": "rs123456789",
+        "clinical_significance": "High"
+      }
     ]
+  },
+  "pharmgkb_variants": {
+    "summary": {
+      "total_variants": 3,
+      "high_significance": 1,
+      "moderate_significance": 2,
+      "drugs_with_variants": ["warfarin", "clopidogrel"]
+    },
+    "variants": [
+      {
+        "variant_id": "rs123456789",
+        "gene_symbol": "UBE2I",
+        "clinical_significance": "High",
+        "evidence_level": "1A",
+        "drugs": ["compound_4344"],
+        "phenotype": "efficacy",
+        "population": "European",
+        "allele_frequency": 0.15,
+        "variant_type": "SNP",
+        "hgvs_notation": "c.123A>G"
+      }
+    ],
+    "last_updated": "2024-06-16T20:45:00.000Z",
+    "source": "PharmGKB"
+  },
+  "evidence_quality_metrics": {
+    "overall_confidence": 0.78,
+    "evidence_count": 15,
+    "source_diversity": 6,
+    "clinical_evidence_ratio": 0.4,
+    "publication_support_ratio": 0.85,
+    "last_assessment": "2024-06-16T20:45:00.000Z"
   }
 }
 ```
@@ -862,6 +906,15 @@ Here's a fully populated example record showing all data types and structures:
    - **Journal impact factors** and quality tier classification
    - **Clinical trial integration** with trial metadata and phases
 7. **🧪 Clinical Trial Integration**: Comprehensive trial data from ClinicalTrials.gov with phases, status, and publication references
+8. **🧬 Pharmacogenomic Variant Analysis** *(NEW v0.1.9)*: PharmGKB variant annotations with:
+   - **Genetic variant data** with clinical significance scoring
+   - **Drug-variant associations** for personalized medicine
+   - **Population-specific allele frequencies** and variant types
+   - **Evidence-based clinical annotations** with confidence levels
+9. **📊 Evidence Quality Assessment** *(NEW v0.1.8)*: Multi-dimensional quality metrics including:
+   - **Overall confidence scoring** based on evidence strength
+   - **Source diversity analysis** across databases
+   - **Clinical evidence ratios** and publication support metrics
 
 ### Database Indexes
 
@@ -878,6 +931,9 @@ CREATE INDEX idx_molecular_functions ON cancer_transcript_base USING GIN(molecul
 CREATE INDEX idx_source_references ON cancer_transcript_base USING GIN(source_references);
 CREATE INDEX idx_clinical_trials ON cancer_transcript_base USING GIN(clinical_trials);
 
+-- NEW v0.1.9: PharmGKB variant indexes for pharmacogenomic queries
+CREATE INDEX idx_pharmgkb_variants_jsonb ON cancer_transcript_base USING GIN(pharmgkb_variants);
+
 -- Standard indexes for common lookups
 CREATE INDEX idx_gene_symbol ON cancer_transcript_base(gene_symbol);
 CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id);
@@ -889,6 +945,7 @@ CREATE INDEX idx_ncbi_ids ON cancer_transcript_base USING GIN(ncbi_ids);
 -- NEW: Publication-specific indexes for literature queries
 CREATE INDEX idx_pmid_extraction ON cancer_transcript_base USING GIN((source_references->'publications'));
 CREATE INDEX idx_clinical_trial_pmids ON cancer_transcript_base USING GIN((source_references->'clinical_trials'));
+CREATE INDEX idx_pharmgkb_variant_pmids ON cancer_transcript_base USING GIN((source_references->'pharmgkb_variants'));
 ```
 
 ### Patient-Specific Schema
@@ -1201,6 +1258,84 @@ ORDER BY convergence_score DESC, evidence_source_count DESC, ABS(expression_fold
 LIMIT 20;
 ```
 
+#### Query 8: "What pharmacogenomic variants should I consider for drug therapy?" *(NEW v0.1.9)*
+
+**Clinical Question**: Identify genetic variants that may affect drug metabolism, efficacy, or toxicity, enabling personalized dosing and drug selection.
+
+```sql
+-- Pharmacogenomic variant analysis for personalized drug therapy
+SELECT 
+    gene_symbol,
+    expression_fold_change,
+    variant_data->>'variant_id' as variant_id,
+    variant_data->>'clinical_significance' as clinical_significance,
+    variant_data->>'evidence_level' as evidence_level,
+    variant_data->>'phenotype' as phenotype,
+    variant_data->>'population' as population,
+    (variant_data->>'allele_frequency')::float as allele_frequency,
+    variant_data->>'drugs' as affected_drugs,
+    variant_data->>'hgvs_notation' as hgvs_notation,
+    
+    -- Clinical recommendations based on variants and expression
+    CASE 
+        WHEN variant_data->>'clinical_significance' = 'High' AND expression_fold_change > 1.5 
+        THEN 'CRITICAL: Consider dose reduction or alternative therapy'
+        WHEN variant_data->>'clinical_significance' = 'High' AND expression_fold_change < 0.7
+        THEN 'CRITICAL: May require dose increase or enhanced monitoring'
+        WHEN variant_data->>'clinical_significance' = 'High'
+        THEN 'HIGH PRIORITY: Pharmacogenomic testing recommended'
+        WHEN variant_data->>'clinical_significance' = 'Moderate'
+        THEN 'MODERATE: Monitor drug response closely'
+        ELSE 'LOW: Standard dosing likely appropriate'
+    END as clinical_recommendation,
+    
+    -- Calculate pharmacogenomic risk score
+    (CASE 
+        WHEN variant_data->>'clinical_significance' = 'High' THEN 5
+        WHEN variant_data->>'clinical_significance' = 'Moderate' THEN 3
+        ELSE 1
+    END +
+    CASE 
+        WHEN variant_data->>'evidence_level' = '1A' THEN 3
+        WHEN variant_data->>'evidence_level' = '1B' THEN 2
+        ELSE 1
+    END +
+    CASE 
+        WHEN ABS(expression_fold_change - 1.0) > 1.0 THEN 2
+        WHEN ABS(expression_fold_change - 1.0) > 0.5 THEN 1
+        ELSE 0
+    END) as pharmacogenomic_risk_score,
+    
+    -- Supporting evidence
+    (SELECT COUNT(*) 
+     FROM jsonb_array_elements(COALESCE(source_references->'pharmgkb_variants', '[]'::jsonb))) as supporting_publications
+
+FROM cancer_transcript_base,
+     jsonb_array_elements(pharmgkb_variants->'variants') as variant_data
+WHERE pharmgkb_variants IS NOT NULL 
+    AND pharmgkb_variants != '{}'::jsonb
+    AND variant_data->>'clinical_significance' IS NOT NULL
+ORDER BY 
+    pharmacogenomic_risk_score DESC,
+    variant_data->>'clinical_significance' DESC,
+    ABS(expression_fold_change - 1.0) DESC
+LIMIT 15;
+```
+
+**Expected Results** (example output):
+```
+gene_symbol | variant_id   | clinical_significance | phenotype | clinical_recommendation
+CYP2D6      | rs16947      | High                  | efficacy  | CRITICAL: Consider dose reduction
+DPYD        | rs3918290    | High                  | toxicity  | CRITICAL: May require dose increase  
+TPMT        | rs1142345    | High                  | toxicity  | HIGH PRIORITY: Pharmacogenomic testing recommended
+```
+
+**Clinical Actions**:
+- **CYP2D6 variants**: Adjust antidepressant, antipsychotic, or opioid dosing
+- **DPYD variants**: Essential screening before 5-fluorouracil chemotherapy
+- **TPMT variants**: Modify thiopurine dosing (azathioprine, mercaptopurine)
+- **SLCO1B1 variants**: Adjust statin therapy to prevent myopathy
+
 ### Standard Oncological Analysis (SOTA) Queries
 
 These queries should be run automatically for every new patient database to provide comprehensive oncological insights.
@@ -1453,6 +1588,106 @@ Expected results:
 - **UBE2I**: 3.78-fold (UPREGULATED - SUMO conjugation)
 - **DMD**: 5.23-fold (UPREGULATED - Structural protein)
 
+#### SOTA Query 4: Pharmacogenomic Variant Analysis *(NEW v0.1.9)*
+
+**Clinical Rationale**: Identifies genetic variants that affect drug response, enabling personalized medicine and optimizing therapeutic efficacy while minimizing adverse effects.
+
+```sql
+-- Comprehensive pharmacogenomic variant analysis for personalized medicine
+WITH variant_drug_associations AS (
+    SELECT 
+        gene_symbol,
+        expression_fold_change,
+        pharmgkb_variants,
+        (pharmgkb_variants->>'total_variants')::integer as total_variants,
+        (pharmgkb_variants->>'high_significance')::integer as high_significance_variants,
+        (pharmgkb_variants->>'moderate_significance')::integer as moderate_significance_variants,
+        pharmgkb_variants->'drugs_with_variants' as variant_associated_drugs,
+        drugs,
+        drug_scores,
+        source_references->'pharmgkb_variants' as variant_evidence
+    FROM cancer_transcript_base
+    WHERE pharmgkb_variants IS NOT NULL 
+    AND pharmgkb_variants != '{}'::jsonb
+    AND total_variants > 0
+),
+prioritized_variants AS (
+    SELECT 
+        gene_symbol,
+        expression_fold_change,
+        total_variants,
+        high_significance_variants,
+        moderate_significance_variants,
+        variant_associated_drugs,
+        -- Calculate pharmacogenomic priority score
+        (CASE 
+            WHEN high_significance_variants > 0 THEN 5
+            WHEN moderate_significance_variants > 0 THEN 3
+            ELSE 1
+        END +
+        CASE 
+            WHEN expression_fold_change > 2.0 THEN 3  -- High expression
+            WHEN expression_fold_change > 1.5 THEN 2  -- Moderate expression
+            WHEN expression_fold_change < 0.5 THEN 2  -- Low expression (important for loss-of-function)
+            ELSE 1
+        END +
+        CASE 
+            WHEN jsonb_array_length(variant_associated_drugs) > 2 THEN 3  -- Multiple drug associations
+            WHEN jsonb_array_length(variant_associated_drugs) > 0 THEN 2  -- Some drug associations
+            ELSE 0
+        END) as pharmacogenomic_priority_score,
+        
+        CASE 
+            WHEN high_significance_variants > 0 THEN 'HIGH_IMPACT'
+            WHEN moderate_significance_variants > 0 THEN 'MODERATE_IMPACT' 
+            ELSE 'LOW_IMPACT'
+        END as clinical_impact,
+        
+        CASE 
+            WHEN high_significance_variants > 0 AND expression_fold_change > 1.5 
+            THEN 'CRITICAL - Dosage adjustment likely required'
+            WHEN high_significance_variants > 0 AND expression_fold_change < 0.7
+            THEN 'CRITICAL - Alternative therapy recommended'
+            WHEN moderate_significance_variants > 0 AND expression_fold_change != 1.0
+            THEN 'MODERATE - Monitor drug response closely'
+            ELSE 'LOW - Standard therapy likely appropriate'
+        END as therapeutic_recommendation,
+        
+        variant_evidence
+    FROM variant_drug_associations
+)
+SELECT 
+    gene_symbol,
+    ROUND(expression_fold_change, 2) as fold_change,
+    clinical_impact,
+    high_significance_variants,
+    moderate_significance_variants,
+    total_variants,
+    variant_associated_drugs as drugs_affected,
+    therapeutic_recommendation,
+    pharmacogenomic_priority_score,
+    CASE 
+        WHEN jsonb_array_length(variant_evidence) > 0 THEN 'Strong literature support'
+        ELSE 'Limited literature support'
+    END as evidence_strength
+FROM prioritized_variants
+ORDER BY pharmacogenomic_priority_score DESC, high_significance_variants DESC, expression_fold_change DESC
+LIMIT 15;
+```
+
+**Clinical Interpretation**:
+- **HIGH_IMPACT variants**: Require immediate consideration for drug dosing or selection
+- **Expression + High significance**: Critical for personalizing drug therapy
+- **Multiple drug associations**: Genes affecting response to multiple medications
+- **CRITICAL recommendations**: Immediate clinical action required
+- **Evidence strength**: Quality of supporting literature for variant-drug associations
+
+**Example Clinical Actions**:
+- **CYP2D6 variants**: Adjust antidepressant or opioid dosing
+- **DPYD variants**: Screen before fluoropyrimidine chemotherapy
+- **TPMT variants**: Modify thiopurine dosing to prevent toxicity
+- **SLCO1B1 variants**: Adjust statin therapy to prevent myopathy
+
 ### Automated SOTA Analysis Pipeline
 
 For comprehensive clinical insights, MEDIABASE includes an automated analysis script that runs all SOTA queries and generates integrated reports for oncologists and LLM investigation:
@@ -1468,14 +1703,15 @@ poetry run python scripts/run_sota_analysis.py --patient-db mediabase_patient_PA
 poetry run python scripts/run_sota_analysis.py --format json --output reports/sota_analysis_json
 ```
 
-**Six Comprehensive SOTA Analysis Modules**:
+**Seven Comprehensive SOTA Analysis Modules**:
 
 1. **Drug-Gene Interaction Analysis** - Identifies therapeutic targeting opportunities with drug scores and mechanisms
 2. **Pathway Enrichment Analysis** - Maps biological process perturbations and pathway co-occurrence networks  
 3. **Functional Classification Analysis** - Analyzes molecular function distributions and cellular locations
-4. **Chromosomal Distribution Analysis** - Identifies positional clustering patterns and chromosomal hotspots
-5. **Multi-modal Integration Analysis** - Cross-domain associations between drugs, pathways, and functions
-6. **Clinical Biomarker Discovery** - Potential diagnostic/prognostic markers with clinical utility scores
+4. **Pharmacogenomic Variant Analysis** - *(NEW v0.1.9)* Personalized medicine based on genetic variants affecting drug response
+5. **Chromosomal Distribution Analysis** - Identifies positional clustering patterns and chromosomal hotspots
+6. **Multi-modal Integration Analysis** - Cross-domain associations between drugs, pathways, and functions
+7. **Clinical Biomarker Discovery** - Potential diagnostic/prognostic markers with clinical utility scores
 
 **Generated Report Includes**:
 - **Executive Summary** with key findings and clinical priorities
@@ -2040,9 +2276,17 @@ CREATE TABLE chembl_temp.drug_publications (
     pubmed_id TEXT,
     doi TEXT,
     title TEXT,
+    abstract TEXT,
     year INTEGER,
     journal TEXT,
-    authors TEXT
+    authors TEXT,
+    volume TEXT,
+    issue TEXT,
+    first_page TEXT,
+    last_page TEXT,
+    patent_id TEXT,
+    journal_full_title TEXT,
+    UNIQUE (doc_id)
 );
 ```
 

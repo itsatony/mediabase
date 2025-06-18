@@ -93,11 +93,11 @@ class TranscriptProcessor(BaseProcessor):
             self.logger.info(f"Parsing GTF file: {gtf_path}")
             df = gtfparse.read_gtf(gtf_path)
             
-            # Filter to transcript entries only using polars filter method
-            transcripts = df.filter(df['feature'] == 'transcript').to_pandas()
+            # Filter to transcript entries only and make an explicit copy
+            transcripts = df[df['feature'] == 'transcript'].copy()
             
             # Parse coordinates into structured format
-            transcripts['coordinates'] = transcripts.apply(
+            transcripts.loc[:, 'coordinates'] = transcripts.apply(
                 lambda row: {
                     'start': int(row['start']),
                     'end': int(row['end']),
@@ -107,12 +107,12 @@ class TranscriptProcessor(BaseProcessor):
             )
             
             # Store versioned IDs before normalizing for joining
-            transcripts['gene_id_versioned'] = transcripts['gene_id'].copy()
-            transcripts['transcript_id_versioned'] = transcripts['transcript_id'].copy()
+            transcripts.loc[:, 'gene_id_versioned'] = transcripts['gene_id'].copy()
+            transcripts.loc[:, 'transcript_id_versioned'] = transcripts['transcript_id'].copy()
             
             # Normalize gene_id and transcript_id by stripping version numbers for joining
-            transcripts['gene_id'] = transcripts['gene_id'].str.split('.').str[0]
-            transcripts['transcript_id'] = transcripts['transcript_id'].str.split('.').str[0]
+            transcripts.loc[:, 'gene_id'] = transcripts['gene_id'].str.split('.').str[0]
+            transcripts.loc[:, 'transcript_id'] = transcripts['transcript_id'].str.split('.').str[0]
             
             # Initialize transcript type counter
             selected_transcript_types = {'protein_coding': 0}

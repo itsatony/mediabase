@@ -1554,30 +1554,48 @@ class ChemblDrugProcessor(BaseProcessor):
                 self.logger.info("No ChEMBL docs table found, skipping docs-based population")
                 return
             
-            # Extract publication data from docs table
+            # First, check what columns are available in the docs table
             self.db_manager.cursor.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = '{docs_table.split('.')[-1]}' 
+                AND table_schema = '{docs_table.split('.')[0] if '.' in docs_table else 'public'}'
+            """)
+            
+            available_columns = [row[0] for row in self.db_manager.cursor.fetchall()]
+            self.logger.info(f"Available columns in {docs_table}: {available_columns}")
+            
+            # Define required and optional columns
+            required_columns = ['doc_id']
+            important_columns = ['pubmed_id', 'doi', 'title', 'year', 'journal', 'authors']
+            optional_columns = ['abstract', 'volume', 'issue', 'first_page', 'last_page', 'journal_full_title', 'patent_id']
+            
+            # Build SELECT clause with available columns
+            select_columns = []
+            column_mapping = {}  # Maps column name to index in result
+            
+            for col in required_columns + important_columns + optional_columns:
+                if col in available_columns:
+                    select_columns.append(col)
+                    column_mapping[col] = len(select_columns) - 1
+                else:
+                    select_columns.append(f"NULL as {col}")
+                    column_mapping[col] = len(select_columns) - 1
+            
+            # Extract publication data from docs table with dynamic columns
+            query = f"""
                 SELECT DISTINCT
-                    doc_id,
-                    pubmed_id,
-                    doi,
-                    title,
-                    abstract,
-                    year,
-                    journal,
-                    authors,
-                    volume,
-                    issue,
-                    first_page,
-                    last_page,
-                    journal_full_title,
-                    patent_id
+                    {', '.join(select_columns)}
                 FROM {docs_table}
                 WHERE pubmed_id IS NOT NULL 
                    OR doi IS NOT NULL
                    OR title IS NOT NULL
                 ORDER BY year DESC NULLS LAST
                 LIMIT 10000
-            """)
+            """
+            
+            self.logger.info(f"Executing flexible query with {len(select_columns)} columns")
+            self.db_manager.cursor.execute(query)
             
             docs_data = self.db_manager.cursor.fetchall()
             
@@ -1604,33 +1622,38 @@ class ChemblDrugProcessor(BaseProcessor):
                     # Prepare batch data
                     batch_values = []
                     for row in batch:
+                        # Use column mapping to extract data safely
+                        pmid = row[column_mapping['pubmed_id']] if column_mapping['pubmed_id'] < len(row) else None
+                        title = row[column_mapping['title']] if column_mapping['title'] < len(row) else None
+                        abstract = row[column_mapping['abstract']] if column_mapping['abstract'] < len(row) else None
+                        doi = row[column_mapping['doi']] if column_mapping['doi'] < len(row) else None
+                        
                         # Extract PMIDs from text fields if not directly available
-                        pmid = row[1]  # pubmed_id column
-                        if not pmid and row[3]:  # title column
-                            pmids = extract_pmids_from_text(row[3])
+                        if not pmid and title:
+                            pmids = extract_pmids_from_text(title)
                             pmid = pmids[0] if pmids else None
-                        if not pmid and row[4]:  # abstract column
-                            pmids = extract_pmids_from_text(row[4])
+                        if not pmid and abstract:
+                            pmids = extract_pmids_from_text(abstract)
                             pmid = pmids[0] if pmids else None
                         
                         # Only include records with valid identifiers
-                        if pmid or row[2] or row[3]:  # pubmed_id, doi, or title
+                        if pmid or doi or title:
                             batch_values.append((
                                 None,  # chembl_id - will be populated later when linking to drugs
-                                row[0],  # doc_id
-                                pmid,    # pubmed_id
-                                row[2],  # doi
-                                row[3],  # title
-                                row[4],  # abstract
-                                row[5],  # year
-                                row[6],  # journal
-                                row[7],  # authors
-                                row[8],  # volume
-                                row[9],  # issue
-                                row[10], # first_page
-                                row[11], # last_page
-                                row[12], # journal_full_title
-                                row[13]  # patent_id
+                                row[column_mapping['doc_id']],
+                                pmid,
+                                doi,
+                                title,
+                                abstract,
+                                row[column_mapping['year']] if column_mapping['year'] < len(row) else None,
+                                row[column_mapping['journal']] if column_mapping['journal'] < len(row) else None,
+                                row[column_mapping['authors']] if column_mapping['authors'] < len(row) else None,
+                                row[column_mapping['volume']] if column_mapping['volume'] < len(row) else None,
+                                row[column_mapping['issue']] if column_mapping['issue'] < len(row) else None,
+                                row[column_mapping['first_page']] if column_mapping['first_page'] < len(row) else None,
+                                row[column_mapping['last_page']] if column_mapping['last_page'] < len(row) else None,
+                                row[column_mapping['journal_full_title']] if column_mapping['journal_full_title'] < len(row) else None,
+                                row[column_mapping['patent_id']] if column_mapping['patent_id'] < len(row) else None
                             ))
                     
                     if batch_values:
@@ -1685,29 +1708,61 @@ class ChemblDrugProcessor(BaseProcessor):
             
             schema_name = self.chembl_schema
             
-            # Extract publications from the drug_publications table
+            # First, check what columns are available in the drug_publications table
             self.db_manager.cursor.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'drug_publications' 
+                AND table_schema = '{schema_name}'
+            """)
+            
+            available_columns = [row[0] for row in self.db_manager.cursor.fetchall()]
+            self.logger.info(f"Available columns in {schema_name}.drug_publications: {available_columns}")
+            
+            # Define required and optional columns
+            required_columns = ['doc_id']
+            important_columns = ['pubmed_id', 'doi', 'title', 'year', 'journal', 'authors', 'chembl_id']
+            optional_columns = ['abstract', 'volume', 'issue', 'first_page', 'last_page', 'journal_full_title', 'patent_id']
+            
+            # Build SELECT clause with available columns
+            select_columns = []
+            column_mapping = {}  # Maps column name to index in result
+            
+            for col in required_columns + important_columns + optional_columns:
+                if col in available_columns:
+                    select_columns.append(col)
+                    column_mapping[col] = len(select_columns) - 1
+                else:
+                    select_columns.append(f"NULL as {col}")
+                    column_mapping[col] = len(select_columns) - 1
+            
+            # Extract publications from the drug_publications table with dynamic columns
+            query = f"""
                 SELECT DISTINCT
-                    pubmed_id,
-                    doi,
-                    title,
-                    abstract,
-                    year,
-                    journal,
-                    authors,
-                    chembl_id,
-                    doc_id
+                    {', '.join(select_columns)}
                 FROM {schema_name}.drug_publications
                 WHERE pubmed_id IS NOT NULL
                    OR doi IS NOT NULL
-            """)
+            """
+            
+            self.logger.info(f"Executing flexible publication extraction query with {len(select_columns)} columns")
+            self.db_manager.cursor.execute(query)
             
             publication_rows = self.db_manager.cursor.fetchall()
             
             self.logger.info(f"Extracting publication references from {len(publication_rows)} ChEMBL publications")
             
             for row in publication_rows:
-                pmid, doi, title, abstract, year, journal, authors, chembl_id, doc_id = row
+                # Use column mapping to extract data safely
+                pmid = row[column_mapping['pubmed_id']] if column_mapping['pubmed_id'] < len(row) else None
+                doi = row[column_mapping['doi']] if column_mapping['doi'] < len(row) else None
+                title = row[column_mapping['title']] if column_mapping['title'] < len(row) else None
+                abstract = row[column_mapping['abstract']] if column_mapping['abstract'] < len(row) else None
+                year = row[column_mapping['year']] if column_mapping['year'] < len(row) else None
+                journal = row[column_mapping['journal']] if column_mapping['journal'] < len(row) else None
+                authors = row[column_mapping['authors']] if column_mapping['authors'] < len(row) else None
+                chembl_id = row[column_mapping['chembl_id']] if column_mapping['chembl_id'] < len(row) else None
+                doc_id = row[column_mapping['doc_id']] if column_mapping['doc_id'] < len(row) else None
                 
                 # Create publication reference
                 pub_ref = {

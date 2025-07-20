@@ -1,0 +1,16 @@
+symbol,log2FoldChange,padj,baseMean,tissue_type
+TP53,1.234,0.001,1250.45,tumor
+BRCA1,-0.789,0.023,890.12,tumor
+EGFR,2.567,0.000,2340.78,tumor
+MYC,0.456,0.045,567.23,tumor
+PTEN,-1.234,0.012,1890.56,tumor
+RB1,-0.678,0.067,345.67,tumor
+APC,1.890,0.002,1456.89,tumor
+CDKN2A,-0.234,0.089,234.56,tumor
+PIK3CA,0.789,0.003,987.65,tumor
+KRAS,1.456,0.156,1567.89,tumor
+BRAF,0.345,0.078,456.78,tumor
+NRAS,-0.567,0.234,789.01,tumor
+ATM,0.234,0.012,2345.67,tumor
+CHEK2,-0.890,0.045,1234.56,tumor
+MLH1,0.678,0.067,567.89,tumor

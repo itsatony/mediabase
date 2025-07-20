@@ -521,7 +521,7 @@ This enhancement transforms MEDIABASE into a **literature-driven cancer research
 
 ## Patient Copy Functionality
 
-MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis. **NEW in v0.2.0**: Native DESeq2 format support with automatic gene symbol mapping and log2 fold change conversion.
+MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis. **NEW in v0.2.0**: Native DESeq2 format support with automatic gene symbol mapping, log2 fold change conversion, and flexible transcript ID matching (handles versioned/unversioned Ensembl IDs).
 
 ### Quick Start
 
@@ -553,6 +553,8 @@ Your CSV file must contain at least two columns:
 
 1. **Transcript ID**: Ensembl transcript identifiers (e.g., `ENST00000123456`)
    - Accepted column names: `transcript_id`, `transcript`, `id`, `gene_id`, `ensembl_id`
+   - **NEW**: Flexible ID matching supports both versioned (`ENST00000123456.1`) and unversioned (`ENST00000123456`) formats
+   - Automatically handles version mismatches between CSV and database
 
 2. **Cancer Fold-Change**: Numeric expression fold-change values
    - Accepted column names: `cancer_fold`, `fold_change`, `expression_fold_change`, `fold`, `fc`
@@ -570,20 +572,31 @@ Automatic detection and processing of DESeq2 output files:
 
 ### Example CSV Formats
 
-#### Standard Format
+See complete examples in the `examples/` directory:
+
+#### Standard Format (`examples/patient_data_example.csv`)
 ```csv
 transcript_id,cancer_fold,gene_symbol,p_value,tissue_type
-ENST00000343150.10,8.45,CTSL,0.000001,tumor
-ENST00000546211.6,6.78,SKP2,0.000012,tumor
-ENST00000357033.9,5.23,DMD,0.000045,tumor
+ENST00000456328,2.45,DDX11L1,0.001,tumor
+ENST00000450305,0.67,WASH7P,0.023,tumor
+ENST00000488147,1.89,MIR6859-1,0.045,tumor
 ```
 
-#### DESeq2 Format 🧬 **NEW**
+#### Versioned Transcript IDs (`examples/versioned_transcript_example.csv`)
 ```csv
-SYMBOL,baseMean,log2FoldChange,lfcSE,stat,pvalue,padj
-BRCA1,240.0033086,0.607602249,0.335758132,1.80964269,0.070351215,0.203820552
-TP53,51.74567233,-2.61508112,1.446814346,-1.807475249,0.07068821,0.204308384
-EGFR,1850.465789,-1.047249687,0.416750258,-2.512895114,0.011974493,0.052658351
+transcript_id,cancer_fold,gene_symbol,p_value,tissue_type
+ENST00000456328.2,2.45,DDX11L1,0.001,tumor
+ENST00000450305.1,0.67,WASH7P,0.023,tumor
+ENST00000488147.3,1.89,MIR6859-1,0.045,tumor
+```
+*Flexible matching automatically handles version differences*
+
+#### DESeq2 Format (`examples/deseq2_example.csv`) 🧬 **NEW**
+```csv
+symbol,log2FoldChange,padj,baseMean,tissue_type
+TP53,1.234,0.001,1250.45,tumor
+BRCA1,-0.789,0.023,890.12,tumor
+EGFR,2.567,0.000,2340.78,tumor
 ```
 *Automatic processing: Gene symbols mapped to transcript IDs, log2 values converted to linear fold changes*
 

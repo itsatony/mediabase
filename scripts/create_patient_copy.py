@@ -326,20 +326,51 @@ class PatientDatabaseCreator:
             self.console.print(f"[yellow]⚠ Skipped {self.stats['invalid_transcripts']} invalid entries[/yellow]")
     
     def _process_standard_data(self, valid_data: pd.DataFrame, transcript_col: str, fold_col: str) -> None:
-        """Process standard format data (transcript_id, fold_change).
+        """Process standard format data (transcript_id, fold_change) with flexible ID matching.
         
         Args:
             valid_data: DataFrame with valid data rows
             transcript_col: Column name containing transcript IDs
             fold_col: Column name containing fold-change values
         """
-        self.transcript_updates = dict(zip(
-            valid_data[transcript_col].astype(str),
-            pd.to_numeric(valid_data[fold_col])
-        ))
+        self.console.print("[blue]🧬 Processing standard transcript data with flexible ID matching...[/blue]")
         
+        # Get available transcript IDs from database for matching
+        database_transcript_ids = self._get_database_transcript_ids()
+        
+        transcript_updates = {}
+        unmatched_ids = []
+        
+        for idx, (transcript_id, fold_change) in zip(valid_data.index, zip(valid_data[transcript_col], valid_data[fold_col])):
+            transcript_id = str(transcript_id).strip()
+            
+            # Try flexible matching
+            matched_id = self._match_transcript_id_flexibly(transcript_id, database_transcript_ids)
+            
+            if matched_id:
+                transcript_updates[matched_id] = float(pd.to_numeric(fold_change))
+            else:
+                unmatched_ids.append(transcript_id)
+        
+        self.transcript_updates = transcript_updates
+        
+        # Update statistics
         self.stats["valid_transcripts"] = len(self.transcript_updates)
-        self.stats["invalid_transcripts"] = len(self.csv_data) - len(valid_data)
+        csv_data_length = len(self.csv_data) if self.csv_data is not None else len(valid_data)
+        self.stats["invalid_transcripts"] = csv_data_length - len(valid_data) + len(unmatched_ids)
+        self.stats["unmatched_ids"] = len(unmatched_ids)
+        self.stats["matching_success_rate"] = (len(self.transcript_updates) / len(valid_data)) * 100
+        
+        self.console.print(f"[blue]📊 Standard Processing Results:[/blue]")
+        self.console.print(f"  Transcript IDs processed: {len(valid_data)}")
+        self.console.print(f"  Successfully matched: {len(self.transcript_updates)}")
+        self.console.print(f"  Unmatched IDs: {len(unmatched_ids)}")
+        self.console.print(f"  Matching success rate: {self.stats['matching_success_rate']:.1f}%")
+        
+        if unmatched_ids and len(unmatched_ids) <= 10:
+            self.console.print(f"[yellow]Unmatched IDs: {', '.join(unmatched_ids[:10])}[/yellow]")
+        elif len(unmatched_ids) > 10:
+            self.console.print(f"[yellow]First 10 unmatched IDs: {', '.join(unmatched_ids[:10])}... (+{len(unmatched_ids)-10} more)[/yellow]")
         
     def _process_deseq2_data(self, valid_data: pd.DataFrame, symbol_col: str, log2_col: str) -> None:
         """Process DESeq2 format data (SYMBOL, log2FoldChange).
@@ -392,6 +423,87 @@ class PatientDatabaseCreator:
         elif len(unmapped_symbols) > 10:
             self.console.print(f"[yellow]First 10 unmapped symbols: {', '.join(unmapped_symbols[:10])}... (+{len(unmapped_symbols)-10} more)[/yellow]")
     
+    def _normalize_transcript_id(self, transcript_id: str) -> str:
+        """Normalize transcript ID by removing version suffix if present.
+        
+        Args:
+            transcript_id: Original transcript ID (e.g., 'ENST00000456328.1')
+            
+        Returns:
+            Normalized transcript ID (e.g., 'ENST00000456328')
+        """
+        if not transcript_id:
+            return transcript_id
+            
+        # Remove version suffix (everything after the last dot)
+        if '.' in transcript_id and transcript_id.split('.')[-1].isdigit():
+            return transcript_id.rsplit('.', 1)[0]
+        
+        return transcript_id
+    
+    def _match_transcript_id_flexibly(self, input_id: str, database_ids: Set[str]) -> Optional[str]:
+        """Flexibly match transcript ID against database, handling versioned/unversioned formats.
+        
+        Args:
+            input_id: Transcript ID from CSV (may be versioned or unversioned)
+            database_ids: Set of transcript IDs from database
+            
+        Returns:
+            Matching database transcript ID or None if no match found
+        """
+        if not input_id:
+            return None
+            
+        # First try exact match
+        if input_id in database_ids:
+            return input_id
+            
+        # Try normalized version (remove version suffix)
+        normalized_input = self._normalize_transcript_id(input_id)
+        if normalized_input in database_ids:
+            return normalized_input
+            
+        # Try adding common version suffixes if input has none
+        if '.' not in input_id:
+            for version in ['1', '2', '3', '4', '5']:
+                versioned_id = f"{input_id}.{version}"
+                if versioned_id in database_ids:
+                    return versioned_id
+        
+        # Try matching any database ID that starts with normalized input
+        for db_id in database_ids:
+            if self._normalize_transcript_id(db_id) == normalized_input:
+                return db_id
+                
+        return None
+
+    def _get_database_transcript_ids(self) -> Set[str]:
+        """Get set of all transcript IDs from database for flexible matching.
+        
+        Returns:
+            Set of transcript IDs from database
+        """
+        try:
+            # Connect to source database
+            db_manager = get_db_manager(self.source_db_config)
+            
+            if not db_manager.ensure_connection():
+                raise CSVValidationError("Failed to connect to source database")
+            
+            # Query for all transcript IDs
+            cursor = db_manager.cursor
+            cursor.execute("SELECT DISTINCT transcript_id FROM cancer_transcript_base WHERE transcript_id IS NOT NULL")
+            
+            transcript_ids = {row[0] for row in cursor.fetchall()}
+            return transcript_ids
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: Could not load transcript IDs for flexible matching: {e}[/yellow]")
+            return set()
+        finally:
+            if 'db_manager' in locals():
+                db_manager.close()
+
     def _load_gene_symbol_mapping(self) -> None:
         """Load gene symbol to transcript ID mapping from database.
         

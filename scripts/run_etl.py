@@ -7,6 +7,10 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add project root to Python path
 src_path = Path(__file__).resolve().parent.parent
@@ -22,7 +26,7 @@ logger = setup_logging(
 )
 
 # Now import other modules
-from src.db.database import get_db_manager
+from src.db.database import get_db_manager, LATEST_SCHEMA_VERSION
 from src.etl.transcript import TranscriptProcessor
 from src.etl.products import ProductProcessor
 from src.etl.go_terms import GOTermProcessor
@@ -98,17 +102,17 @@ def run_module(
                 logger.error("Schema validation failed after reset")
                 return False
                 
-            logger.info("Database reset complete with schema v0.1.6 applied")
+            logger.info(f"Database reset complete with schema {LATEST_SCHEMA_VERSION} applied")
         else:
             # Check and upgrade schema if needed
             db = get_db_manager(config['db'])
             current_version = db.get_current_version()
-            if current_version and current_version < 'v0.1.6':
-                logger.info(f"Upgrading database schema from {current_version} to v0.1.6")
-                if not db.migrate_to_version('v0.1.6'):
+            if current_version and current_version < LATEST_SCHEMA_VERSION:
+                logger.info(f"Upgrading database schema from {current_version} to {LATEST_SCHEMA_VERSION}")
+                if not db.migrate_to_version(LATEST_SCHEMA_VERSION):
                     logger.error("Schema migration failed")
                     return False
-                logger.info("Schema successfully upgraded to v0.1.6")
+                logger.info(f"Schema successfully upgraded to {LATEST_SCHEMA_VERSION}")
 
         # Construct the processor for the requested module
         processor = None
@@ -221,7 +225,7 @@ def run_pipeline(
                 logger.error("Schema validation failed after reset")
                 return
                 
-            logger.info("Database has been reset and schema v0.1.6 applied")
+            logger.info(f"Database has been reset and schema {LATEST_SCHEMA_VERSION} applied")
         
         # Process each module in sequence
         for i, module in enumerate(modules_to_run):
@@ -444,7 +448,7 @@ def main() -> int:  # Change return type to int for clarity
                     logger.error("Schema validation failed after reset")
                     return 1
                     
-                logger.info("Database reset complete with schema v0.1.6 properly applied")
+                logger.info(f"Database reset complete with schema {LATEST_SCHEMA_VERSION} properly applied")
             except Exception as e:
                 logger.error(f"Database reset error: {e}")
                 return 1

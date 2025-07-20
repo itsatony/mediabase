@@ -88,7 +88,7 @@ poetry run python scripts/manage_db.py --non-interactive
 poetry run python scripts/run_etl.py
 
 # Run specific modules
-poetry run python scripts/run_etl.py --module transcript,products
+poetry run python scripts/run_etl.py --modules transcripts,products
 
 # Limit processing for testing
 poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100

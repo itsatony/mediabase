@@ -156,7 +156,7 @@ After completing the setup, you can:
    poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100
    
    # Only process specific modules
-   poetry run python scripts/run_etl.py --module transcript,products
+   poetry run python scripts/run_etl.py --modules transcripts,products
    
    # Run with more verbose output
    poetry run python scripts/run_etl.py --log-level DEBUG
@@ -167,9 +167,11 @@ After completing the setup, you can:
    poetry run python -m src.api.server
    ```
 
-4. Explore example notebooks:
+4. Explore data using Jupyter Lab (notebooks are work-in-progress):
    ```bash
-   poetry run jupyter lab notebooks/01_data_exploration.ipynb
+   # Start Jupyter Lab for data exploration
+   poetry run jupyter lab
+   # Note: Example notebooks are currently under development
    ```
 
 ## ETL Processor Modules
@@ -180,7 +182,7 @@ The core module that loads gene transcript data from Gencode GTF files into the 
 
 ```bash
 # Run only transcript processing
-poetry run python scripts/run_etl.py --module transcript
+poetry run python scripts/run_etl.py --modules transcripts
 ```
 
 Options:

@@ -102,10 +102,10 @@ def test_database_update(mock_uniprot_data, monkeypatch):
     # Setup test database configuration
     db_config = {
         'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),
         'dbname': os.getenv('MB_POSTGRES_NAME', 'mbase'),
-        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
-        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
+        'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
     }
 
     monkeypatch.setenv('MB_CACHE_DIR', str(mock_uniprot_data))

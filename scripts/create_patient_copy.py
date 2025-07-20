@@ -236,6 +236,9 @@ class PatientDatabaseCreator:
             "cancer_fold": deseq2_indicators["log2_fold_change"]  # Will be converted from log2
         }
         
+        # Set the log2 fold column for later use
+        self.log2_fold_column = deseq2_indicators["log2_fold_change"]
+        
         self.console.print(f"[blue]📊 DESeq2 Mapping:[/blue]")
         self.console.print(f"  Gene Symbol: {deseq2_indicators['symbol']}")
         self.console.print(f"  Log2 Fold Change: {deseq2_indicators['log2_fold_change']}")
@@ -372,7 +375,9 @@ class PatientDatabaseCreator:
         
         # Update statistics
         self.stats["valid_transcripts"] = len(self.transcript_updates)
-        self.stats["invalid_transcripts"] = len(self.csv_data) - len(valid_data) + len(unmapped_symbols)
+        # Handle case where csv_data might be None in tests
+        csv_data_length = len(self.csv_data) if self.csv_data is not None else len(valid_data)
+        self.stats["invalid_transcripts"] = csv_data_length - len(valid_data) + len(unmapped_symbols)
         self.stats["unmapped_symbols"] = len(unmapped_symbols)
         self.stats["mapping_success_rate"] = (len(self.transcript_updates) / len(valid_data)) * 100
         

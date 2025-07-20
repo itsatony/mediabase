@@ -54,6 +54,11 @@ poetry run pytest -m integration
 
 # Run unit tests only  
 poetry run pytest -m unit
+
+# Test specific functionality (NEW in v0.2.0)
+poetry run pytest tests/test_deseq2_core_functionality.py -v
+poetry run pytest tests/test_patient_workflow_integration.py -v
+poetry run pytest tests/test_api_server.py -v
 ```
 
 ### Code Quality
@@ -95,6 +100,30 @@ poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100
 
 # Run with debug output
 poetry run python scripts/run_etl.py --log-level DEBUG
+```
+
+### API Server (NEW in v0.2.0)
+```bash
+# Start API server
+poetry run python -m src.api.server
+
+# API endpoints available at:
+# - http://localhost:8000/docs (Interactive docs)
+# - http://localhost:8000/api/v1/transcripts (Search endpoint)
+# - http://localhost:8000/health (Health check)
+```
+
+### Patient Copy with DESeq2 Support (Enhanced in v0.2.0)
+```bash
+# Process DESeq2 format files automatically
+poetry run python scripts/create_patient_copy.py \
+    --patient-id PATIENT123 \
+    --csv-file deseq2_results.csv
+
+# System automatically detects:
+# - SYMBOL column → gene symbol mapping
+# - log2FoldChange column → linear conversion
+# - Provides mapping success rate statistics
 ```
 
 ## Architecture

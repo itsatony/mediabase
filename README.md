@@ -521,7 +521,7 @@ This enhancement transforms MEDIABASE into a **literature-driven cancer research
 
 ## Patient Copy Functionality
 
-MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis.
+MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis. **NEW in v0.2.0**: Native DESeq2 format support with automatic gene symbol mapping and log2 fold change conversion.
 
 ### Quick Start
 
@@ -546,6 +546,9 @@ poetry run python scripts/manage_patient_databases.py --delete PATIENT123
 
 ### CSV Data Requirements
 
+MEDIABASE supports multiple input formats for maximum compatibility with bioinformatics workflows:
+
+#### Standard Format
 Your CSV file must contain at least two columns:
 
 1. **Transcript ID**: Ensembl transcript identifiers (e.g., `ENST00000123456`)
@@ -555,16 +558,34 @@ Your CSV file must contain at least two columns:
    - Accepted column names: `cancer_fold`, `fold_change`, `expression_fold_change`, `fold`, `fc`
    - Supports positive, negative, and scientific notation values
 
-### Example CSV Format
+#### DESeq2 Format Support 🧬 **NEW in v0.2.0**
+Automatic detection and processing of DESeq2 output files:
 
+1. **Gene Symbol**: Gene names for database lookup
+   - Accepted column names: `SYMBOL`, `symbol`, `gene_symbol`, `gene_name`
+
+2. **Log2 Fold Change**: Automatically converted to linear fold change
+   - Accepted column names: `log2FoldChange`, `log2foldchange`, `logfc`, `log2fc`
+   - Automatic conversion: `linear_fold = 2^(log2_value)`
+
+### Example CSV Formats
+
+#### Standard Format
 ```csv
 transcript_id,cancer_fold,gene_symbol,p_value,tissue_type
 ENST00000343150.10,8.45,CTSL,0.000001,tumor
 ENST00000546211.6,6.78,SKP2,0.000012,tumor
 ENST00000357033.9,5.23,DMD,0.000045,tumor
-ENST00000675596.1,4.89,CEP41,0.000078,tumor
-ENST00000570164.5,4.67,RUSF1,0.000123,tumor
 ```
+
+#### DESeq2 Format 🧬 **NEW**
+```csv
+SYMBOL,baseMean,log2FoldChange,lfcSE,stat,pvalue,padj
+BRCA1,240.0033086,0.607602249,0.335758132,1.80964269,0.070351215,0.203820552
+TP53,51.74567233,-2.61508112,1.446814346,-1.807475249,0.07068821,0.204308384
+EGFR,1850.465789,-1.047249687,0.416750258,-2.512895114,0.011974493,0.052658351
+```
+*Automatic processing: Gene symbols mapped to transcript IDs, log2 values converted to linear fold changes*
 
 ### Example Patient Data Files
 
@@ -591,6 +612,71 @@ The `examples/` directory contains realistic patient data files for different ca
 - **Batch Processing**: Efficient updates for large datasets (1000 records per batch)
 - **Comprehensive Logging**: Detailed progress tracking and error reporting
 - **Rich Terminal Interface**: User-friendly CLI with progress bars and statistics
+
+## RESTful API Server 🚀 **NEW in v0.2.0**
+
+MEDIABASE includes a production-ready FastAPI server providing programmatic access to cancer transcriptome data with advanced filtering and search capabilities.
+
+### Quick Start
+
+```bash
+# Start the API server
+poetry run python -m src.api.server
+
+# Server will be available at:
+# - API endpoints: http://localhost:8000/api/v1/
+# - Interactive docs: http://localhost:8000/docs  
+# - ReDoc documentation: http://localhost:8000/redoc
+```
+
+### Core Endpoints
+
+#### Health Check
+```bash
+curl http://localhost:8000/health
+```
+
+#### Search Transcripts
+```bash
+# Search by gene symbols
+curl -X POST "http://localhost:8000/api/v1/transcripts" \
+  -H "Content-Type: application/json" \
+  -d '{"gene_symbols": ["BRCA1", "TP53"]}'
+
+# Filter by fold change range
+curl -X POST "http://localhost:8000/api/v1/transcripts" \
+  -H "Content-Type: application/json" \
+  -d '{"fold_change_min": 2.0, "has_drugs": true}'
+```
+
+#### Database Statistics
+```bash
+curl http://localhost:8000/api/v1/stats
+```
+
+### Advanced Features
+
+- **Pydantic Models**: Type-safe request/response validation
+- **Query Filtering**: Fold change ranges, drug/pathway presence filters
+- **Pagination**: Efficient handling of large result sets (up to 10,000 results)
+- **CORS Support**: Configurable cross-origin resource sharing
+- **OpenAPI Documentation**: Auto-generated interactive API docs
+
+### Clinical Integration
+
+The API is designed for clinical and research workflows:
+
+```bash
+# Find overexpressed genes with drug targets
+curl -X POST "http://localhost:8000/api/v1/transcripts" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fold_change_min": 2.0,
+    "has_drugs": true,
+    "has_pathways": true,
+    "limit": 50
+  }'
+```
 
 ## Database Schema and Structure
 

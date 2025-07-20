@@ -44,8 +44,14 @@ from src.utils.logging import setup_logging, get_progress_bar
 # Constants
 REQUIRED_CSV_COLUMNS = {"transcript_id", "cancer_fold"}
 ALTERNATIVE_COLUMN_NAMES = {
-    "transcript_id": ["transcript_id", "transcript", "id", "gene_id", "ensembl_id"],
-    "cancer_fold": ["cancer_fold", "fold_change", "expression_fold_change", "fold", "fc"]
+    "transcript_id": ["transcript_id", "transcript", "id", "gene_id", "ensembl_id", "symbol"],
+    "cancer_fold": ["cancer_fold", "fold_change", "expression_fold_change", "fold", "fc", "log2foldchange", "logfc"]
+}
+
+# DESeq2 specific mappings
+DESEQ2_FORMAT_INDICATORS = {
+    "symbol": ["symbol", "gene_symbol", "gene_name"],
+    "log2_fold_change": ["log2foldchange", "log2fc", "logfc", "lfc"]
 }
 PATIENT_DB_PREFIX = "mediabase_patient_"
 BATCH_SIZE = 1000
@@ -90,6 +96,9 @@ class PatientDatabaseCreator:
         self.csv_data: Optional[pd.DataFrame] = None
         self.column_mapping: Dict[str, str] = {}
         self.transcript_updates: Dict[str, float] = {}
+        self.gene_symbol_mapping: Dict[str, str] = {}  # gene_symbol -> transcript_id
+        self.is_deseq2_format: bool = False
+        self.log2_fold_column: Optional[str] = None
         
         # Statistics
         self.stats = {
@@ -154,7 +163,7 @@ class PatientDatabaseCreator:
         self.console.print(self.csv_data.head().to_string())
     
     def _find_column_mapping(self, available_columns: Set[str]) -> Dict[str, str]:
-        """Attempt to automatically find column mapping.
+        """Attempt to automatically find column mapping with DESeq2 format detection.
         
         Args:
             available_columns: Set of available column names
@@ -164,17 +173,75 @@ class PatientDatabaseCreator:
         """
         mapping = {}
         
-        for required_col, alternatives in ALTERNATIVE_COLUMN_NAMES.items():
-            for alt_name in alternatives:
-                if alt_name.lower() in [col.lower() for col in available_columns]:
-                    # Find exact match (case-insensitive)
-                    for col in available_columns:
-                        if col.lower() == alt_name.lower():
-                            mapping[required_col] = col
-                            break
-                    break
+        # Check for DESeq2 format indicators
+        deseq2_indicators = self._detect_deseq2_format(available_columns)
+        if deseq2_indicators:
+            self.is_deseq2_format = True
+            self.console.print("[green]🧬 Detected DESeq2 format! Applying specialized mapping...[/green]")
+            mapping = self._map_deseq2_columns(available_columns, deseq2_indicators)
+        else:
+            # Standard column mapping
+            for required_col, alternatives in ALTERNATIVE_COLUMN_NAMES.items():
+                for alt_name in alternatives:
+                    if alt_name.lower() in [col.lower() for col in available_columns]:
+                        # Find exact match (case-insensitive)
+                        for col in available_columns:
+                            if col.lower() == alt_name.lower():
+                                mapping[required_col] = col
+                                break
+                        break
         
         return mapping if len(mapping) == len(REQUIRED_CSV_COLUMNS) else {}
+    
+    def _detect_deseq2_format(self, available_columns: Set[str]) -> Dict[str, str]:
+        """Detect if CSV is in DESeq2 format and find key columns.
+        
+        Args:
+            available_columns: Set of available column names
+            
+        Returns:
+            Dictionary mapping DESeq2 column types to actual column names
+        """
+        deseq2_mapping = {}
+        available_lower = {col.lower(): col for col in available_columns}
+        
+        # Check for gene symbol column
+        for symbol_variant in DESEQ2_FORMAT_INDICATORS["symbol"]:
+            if symbol_variant.lower() in available_lower:
+                deseq2_mapping["symbol"] = available_lower[symbol_variant.lower()]
+                break
+        
+        # Check for log2 fold change column  
+        for log2_variant in DESEQ2_FORMAT_INDICATORS["log2_fold_change"]:
+            if log2_variant.lower() in available_lower:
+                deseq2_mapping["log2_fold_change"] = available_lower[log2_variant.lower()]
+                self.log2_fold_column = available_lower[log2_variant.lower()]
+                break
+        
+        # Must have both key columns to be considered DESeq2 format
+        return deseq2_mapping if len(deseq2_mapping) == 2 else {}
+    
+    def _map_deseq2_columns(self, available_columns: Set[str], deseq2_indicators: Dict[str, str]) -> Dict[str, str]:
+        """Map DESeq2 format columns to required format.
+        
+        Args:
+            available_columns: Set of available column names
+            deseq2_indicators: Dictionary of detected DESeq2 columns
+            
+        Returns:
+            Dictionary mapping required columns to actual column names
+        """
+        mapping = {
+            "transcript_id": deseq2_indicators["symbol"],  # Will be converted via gene symbol lookup
+            "cancer_fold": deseq2_indicators["log2_fold_change"]  # Will be converted from log2
+        }
+        
+        self.console.print(f"[blue]📊 DESeq2 Mapping:[/blue]")
+        self.console.print(f"  Gene Symbol: {deseq2_indicators['symbol']}")
+        self.console.print(f"  Log2 Fold Change: {deseq2_indicators['log2_fold_change']}")
+        self.console.print(f"[yellow]Note: Gene symbols will be mapped to transcript IDs, log2 values converted to linear fold change[/yellow]")
+        
+        return mapping
     
     def _interactive_column_mapping(self, available_columns: Set[str]) -> None:
         """Interactive column mapping when automatic detection fails.
@@ -214,7 +281,7 @@ class PatientDatabaseCreator:
         return descriptions.get(column, "Unknown column")
     
     def _validate_mapped_columns(self) -> None:
-        """Validate the data in mapped columns.
+        """Validate the data in mapped columns with DESeq2 format support.
         
         Raises:
             CSVValidationError: If data validation fails
@@ -243,8 +310,26 @@ class PatientDatabaseCreator:
         except Exception as e:
             raise CSVValidationError(f"Failed to validate fold-change values: {e}")
         
-        # Create transcript updates dictionary
+        # Process data based on format
         valid_data = self.csv_data.dropna(subset=[transcript_col, fold_col])
+        
+        if self.is_deseq2_format:
+            self._process_deseq2_data(valid_data, transcript_col, fold_col)
+        else:
+            self._process_standard_data(valid_data, transcript_col, fold_col)
+        
+        self.console.print(f"[green]✓ Processed {self.stats['valid_transcripts']} transcript entries[/green]")
+        if self.stats["invalid_transcripts"] > 0:
+            self.console.print(f"[yellow]⚠ Skipped {self.stats['invalid_transcripts']} invalid entries[/yellow]")
+    
+    def _process_standard_data(self, valid_data: pd.DataFrame, transcript_col: str, fold_col: str) -> None:
+        """Process standard format data (transcript_id, fold_change).
+        
+        Args:
+            valid_data: DataFrame with valid data rows
+            transcript_col: Column name containing transcript IDs
+            fold_col: Column name containing fold-change values
+        """
         self.transcript_updates = dict(zip(
             valid_data[transcript_col].astype(str),
             pd.to_numeric(valid_data[fold_col])
@@ -253,9 +338,92 @@ class PatientDatabaseCreator:
         self.stats["valid_transcripts"] = len(self.transcript_updates)
         self.stats["invalid_transcripts"] = len(self.csv_data) - len(valid_data)
         
-        self.console.print(f"[green]✓ Validated {self.stats['valid_transcripts']} transcript entries[/green]")
-        if self.stats["invalid_transcripts"] > 0:
-            self.console.print(f"[yellow]⚠ Skipped {self.stats['invalid_transcripts']} invalid entries[/yellow]")
+    def _process_deseq2_data(self, valid_data: pd.DataFrame, symbol_col: str, log2_col: str) -> None:
+        """Process DESeq2 format data (SYMBOL, log2FoldChange).
+        
+        Args:
+            valid_data: DataFrame with valid data rows
+            symbol_col: Column name containing gene symbols
+            log2_col: Column name containing log2 fold-change values
+        """
+        self.console.print("[blue]🧬 Processing DESeq2 data...[/blue]")
+        
+        # Load gene symbol to transcript ID mapping
+        self._load_gene_symbol_mapping()
+        
+        # Convert log2 fold changes to linear fold changes
+        log2_values = pd.to_numeric(valid_data[log2_col])
+        linear_fold_changes = 2 ** log2_values  # Convert log2 to linear
+        
+        # Map gene symbols to transcript IDs
+        transcript_updates = {}
+        unmapped_symbols = []
+        
+        for idx, (symbol, fold_change) in zip(valid_data.index, zip(valid_data[symbol_col], linear_fold_changes)):
+            symbol = str(symbol).strip()
+            
+            if symbol in self.gene_symbol_mapping:
+                transcript_id = self.gene_symbol_mapping[symbol]
+                transcript_updates[transcript_id] = float(fold_change)
+            else:
+                unmapped_symbols.append(symbol)
+        
+        self.transcript_updates = transcript_updates
+        
+        # Update statistics
+        self.stats["valid_transcripts"] = len(self.transcript_updates)
+        self.stats["invalid_transcripts"] = len(self.csv_data) - len(valid_data) + len(unmapped_symbols)
+        self.stats["unmapped_symbols"] = len(unmapped_symbols)
+        self.stats["mapping_success_rate"] = (len(self.transcript_updates) / len(valid_data)) * 100
+        
+        self.console.print(f"[blue]📊 DESeq2 Processing Results:[/blue]")
+        self.console.print(f"  Symbols processed: {len(valid_data)}")
+        self.console.print(f"  Successfully mapped: {len(self.transcript_updates)}")
+        self.console.print(f"  Unmapped symbols: {len(unmapped_symbols)}")
+        self.console.print(f"  Mapping success rate: {self.stats['mapping_success_rate']:.1f}%")
+        
+        if unmapped_symbols and len(unmapped_symbols) <= 10:
+            self.console.print(f"[yellow]Unmapped symbols: {', '.join(unmapped_symbols[:10])}[/yellow]")
+        elif len(unmapped_symbols) > 10:
+            self.console.print(f"[yellow]First 10 unmapped symbols: {', '.join(unmapped_symbols[:10])}... (+{len(unmapped_symbols)-10} more)[/yellow]")
+    
+    def _load_gene_symbol_mapping(self) -> None:
+        """Load gene symbol to transcript ID mapping from database.
+        
+        Raises:
+            CSVValidationError: If mapping cannot be loaded
+        """
+        try:
+            self.console.print("[blue]Loading gene symbol mappings from database...[/blue]")
+            
+            # Connect to source database
+            db_manager = get_db_manager(self.source_db_config)
+            
+            if not db_manager.ensure_connection():
+                raise CSVValidationError("Failed to connect to source database")
+            
+            # Query for gene symbol mappings
+            cursor = db_manager.cursor
+            cursor.execute("""
+                SELECT DISTINCT gene_symbol, transcript_id 
+                FROM cancer_transcript_base 
+                WHERE gene_symbol IS NOT NULL 
+                AND gene_symbol != ''
+                AND transcript_id IS NOT NULL
+            """)
+            
+            # Build mapping dictionary
+            for gene_symbol, transcript_id in cursor.fetchall():
+                if gene_symbol not in self.gene_symbol_mapping:
+                    self.gene_symbol_mapping[gene_symbol] = transcript_id
+            
+            self.console.print(f"[green]✓ Loaded {len(self.gene_symbol_mapping)} gene symbol mappings[/green]")
+            
+        except Exception as e:
+            raise CSVValidationError(f"Failed to load gene symbol mappings: {e}")
+        finally:
+            if 'db_manager' in locals():
+                db_manager.close()
     
     def create_patient_database(self) -> None:
         """Create patient-specific database copy.

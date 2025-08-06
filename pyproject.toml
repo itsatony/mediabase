@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cancer-transcriptome-base"
-version = "0.2.0"
+version = "0.2.1"
 description = "A comprehensive database system for cancer transcriptome analysis with LLM-agent assistance"
 authors = ["Your Name <toni.wagner@vaudience.ai>"]
 readme = "README.md"

@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import networkx as nx
 from src.etl.go_terms import GOTermProcessor
-from src.utils.db import get_db_connection  # Assuming get_db_connection is defined in src.utils.db
+from src.db.database import get_db_manager
 
 @pytest.fixture
 def test_config():

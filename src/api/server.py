@@ -69,7 +69,7 @@ class HealthResponse(BaseModel):
 app = FastAPI(
     title="MEDIABASE API",
     description="Cancer Transcriptome Database API with drug interactions and pathway annotations",
-    version="0.2.0",
+    version="0.2.1",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -110,7 +110,7 @@ async def health_check(db: DatabaseManager = Depends(get_database)):
     """Health check endpoint."""
     return HealthResponse(
         status="healthy",
-        version="0.2.0",
+        version="0.2.1",
         database_connected=True
     )
 

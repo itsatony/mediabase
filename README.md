@@ -521,7 +521,7 @@ This enhancement transforms MEDIABASE into a **literature-driven cancer research
 
 ## Patient Copy Functionality
 
-MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis. **NEW in v0.2.0**: Native DESeq2 format support with automatic gene symbol mapping, log2 fold change conversion, and flexible transcript ID matching (handles versioned/unversioned Ensembl IDs).
+MEDIABASE includes advanced functionality to create patient-specific database copies with custom transcriptome data for oncological analysis. **NEW in v0.2.1**: Enhanced with flexible transcript ID matching (handles versioned/unversioned Ensembl IDs), plus v0.2.0 native DESeq2 format support with automatic gene symbol mapping and log2 fold change conversion.
 
 ### Quick Start
 
@@ -560,7 +560,7 @@ Your CSV file must contain at least two columns:
    - Accepted column names: `cancer_fold`, `fold_change`, `expression_fold_change`, `fold`, `fc`
    - Supports positive, negative, and scientific notation values
 
-#### DESeq2 Format Support 🧬 **NEW in v0.2.0**
+#### DESeq2 Format Support 🧬 **v0.2.0**
 Automatic detection and processing of DESeq2 output files:
 
 1. **Gene Symbol**: Gene names for database lookup
@@ -591,7 +591,7 @@ ENST00000488147.3,1.89,MIR6859-1,0.045,tumor
 ```
 *Flexible matching automatically handles version differences*
 
-#### DESeq2 Format (`examples/deseq2_example.csv`) 🧬 **NEW**
+#### DESeq2 Format (`examples/deseq2_example.csv`) 🧬 **v0.2.0**
 ```csv
 symbol,log2FoldChange,padj,baseMean,tissue_type
 TP53,1.234,0.001,1250.45,tumor
@@ -2194,6 +2194,11 @@ Current development status and upcoming milestones:
   - Added complete documentation and user guide
   - Integrated with existing MEDIABASE architecture and logging systems
   - Supports clinical workflow: patient data → database copy → analysis → LLM integration
+  - **v0.2.1 Enhancement**: Added flexible transcript ID matching (versioned/unversioned Ensembl IDs)
+    - Handles version mismatches between CSV and database (ENST00000123456.1 ↔ ENST00000123456)
+    - Smart fallback matching with automatic normalization and version detection
+    - Created comprehensive test suite for transcript ID matching logic
+    - Updated example CSV files with realistic Ensembl transcript IDs
 
 - [ ] STEP_EA: Add ETL for cancer/disease association
 - [ ] STEP_FA: AI Agent System Prompt Development

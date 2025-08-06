@@ -6,7 +6,7 @@ from pathlib import Path
 import gzip
 import json
 from src.etl.products import ProductClassifier
-from src.db.connection import get_db_connection  # Fixed import path
+from src.db.database import get_db_manager
 
 @pytest.fixture
 def mock_uniprot_data(tmp_path):

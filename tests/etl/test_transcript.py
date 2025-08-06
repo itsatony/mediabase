@@ -1,6 +1,8 @@
 """Test suite for transcript processing with new schema support."""
 
 import pytest
+import os
+from pathlib import Path
 from unittest.mock import Mock, patch
 from src.etl.transcript import TranscriptProcessor
 import pandas as pd

@@ -755,25 +755,58 @@ class ProductProcessor(BaseProcessor):
                         """)
                         
                         # Insert batch into temp table, using matched gene symbols
-                        batch_data = []
+                        # Use a dictionary to deduplicate genes and merge their data
+                        gene_data = {}
                         for gene, types, pubs in batch:
                             # Use matched gene symbol if available
                             db_gene = matched_genes.get(gene, gene)
                             if db_gene:
-                                batch_data.append((db_gene, types, json.dumps(pubs)))
+                                if db_gene in gene_data:
+                                    # Merge product types and publications for duplicate genes
+                                    existing_types, existing_pubs = gene_data[db_gene]
+                                    merged_types = list(set(existing_types + types))  # Deduplicate types
+                                    merged_pubs = existing_pubs + pubs  # Combine publications
+                                    gene_data[db_gene] = (merged_types, merged_pubs)
+                                else:
+                                    gene_data[db_gene] = (types, pubs)
+                        
+                        # Convert deduplicated data to batch format
+                        batch_data = [(gene, types, json.dumps(pubs)) for gene, (types, pubs) in gene_data.items()]
                         
                         # Skip if no valid data
                         if not batch_data:
                             continue
                         
                         # Use direct cursor executemany for better transaction control
-                        transaction.cursor.executemany(
-                            """
-                            INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
-                            VALUES (%s, %s, %s::jsonb)
-                            """,
-                            batch_data
-                        )
+                        try:
+                            transaction.cursor.executemany(
+                                """
+                                INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
+                                VALUES (%s, %s, %s::jsonb)
+                                ON CONFLICT (gene_symbol) DO UPDATE SET
+                                    product_types = EXCLUDED.product_types,
+                                    publications = EXCLUDED.publications
+                                """,
+                                batch_data
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"Error inserting batch data, retrying individual records: {e}")
+                            # Fall back to individual inserts with error handling
+                            for gene_symbol, product_types, publications in batch_data:
+                                try:
+                                    transaction.cursor.execute(
+                                        """
+                                        INSERT INTO temp_gene_types (gene_symbol, product_types, publications)
+                                        VALUES (%s, %s, %s::jsonb)
+                                        ON CONFLICT (gene_symbol) DO UPDATE SET
+                                            product_types = EXCLUDED.product_types,
+                                            publications = EXCLUDED.publications
+                                        """,
+                                        (gene_symbol, product_types, publications)
+                                    )
+                                except Exception as record_error:
+                                    self.logger.warning(f"Skipping gene {gene_symbol} due to error: {record_error}")
+                                    continue
                         
                         # Update from temp table to main table in the same transaction
                         transaction.cursor.execute("""

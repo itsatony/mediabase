@@ -709,15 +709,50 @@ class DrugProcessor(BaseProcessor):
                     ) ON COMMIT DROP
                 """)
                 
-                # Execute the batch insert within the same transaction
-                transaction.cursor.executemany(
-                    """
-                    INSERT INTO temp_drug_data 
-                    (gene_symbol, uniprot_ids, drug_data, drug_references)
-                    VALUES (%s, %s, %s::jsonb, %s::jsonb)
-                    """,
-                    updates
-                )
+                # Execute the batch insert within the same transaction with conflict handling
+                try:
+                    transaction.cursor.executemany(
+                        """
+                        INSERT INTO temp_drug_data 
+                        (gene_symbol, uniprot_ids, drug_data, drug_references)
+                        VALUES (%s, %s, %s::jsonb, %s::jsonb)
+                        ON CONFLICT (gene_symbol) DO UPDATE SET
+                            uniprot_ids = EXCLUDED.uniprot_ids,
+                            drug_data = temp_drug_data.drug_data || EXCLUDED.drug_data,
+                            drug_references = temp_drug_data.drug_references || EXCLUDED.drug_references
+                        """,
+                        updates
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Error in batch drug data insert, processing individually: {e}")
+                    # Fall back to individual processing with deduplication
+                    gene_data = {}
+                    for gene_symbol, uniprot_ids, drug_data_json, drug_refs_json in updates:
+                        drug_data = json.loads(drug_data_json)
+                        drug_refs = json.loads(drug_refs_json)
+                        
+                        if gene_symbol in gene_data:
+                            # Merge data for duplicate genes
+                            existing_data, existing_refs = gene_data[gene_symbol]
+                            merged_data = {**existing_data, **drug_data}  # Merge drug dictionaries
+                            merged_refs = existing_refs + drug_refs  # Combine references
+                            gene_data[gene_symbol] = (merged_data, merged_refs)
+                        else:
+                            gene_data[gene_symbol] = (drug_data, drug_refs)
+                    
+                    # Insert deduplicated data individually
+                    for gene_symbol, (drug_data, drug_refs) in gene_data.items():
+                        transaction.cursor.execute(
+                            """
+                            INSERT INTO temp_drug_data 
+                            (gene_symbol, uniprot_ids, drug_data, drug_references)
+                            VALUES (%s, %s, %s::jsonb, %s::jsonb)
+                            ON CONFLICT (gene_symbol) DO UPDATE SET
+                                drug_data = temp_drug_data.drug_data || EXCLUDED.drug_data,
+                                drug_references = temp_drug_data.drug_references || EXCLUDED.drug_references
+                            """,
+                            (gene_symbol, uniprot_ids, json.dumps(drug_data), json.dumps(drug_refs))
+                        )
                 
                 # Update the main table from the temp table in the same transaction
                 transaction.cursor.execute("""

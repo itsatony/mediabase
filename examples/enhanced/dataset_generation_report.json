@@ -1,0 +1,133 @@
+{
+  "generation_timestamp": "2025-09-20T06:39:18.867498",
+  "database_stats": {
+    "total_genes_in_db": 77114,
+    "available_cancer_genes": 31,
+    "genes_with_pathways": 11057,
+    "genes_with_drugs": 3331
+  },
+  "dataset_stats": {
+    "breast_her2": {
+      "cancer_type": "breast_her2",
+      "total_genes": 500,
+      "gene_categories": {
+        "oncogenes": 10,
+        "tumor_suppressors": 10,
+        "dna_repair": 8,
+        "hormone_receptors": 3,
+        "pathway_genes": 234,
+        "drug_targets": 235
+      },
+      "fold_change_range": {
+        "min": 0.12358257389644481,
+        "max": 12.618,
+        "mean": 1.796342426888752
+      },
+      "upregulated_genes": 261,
+      "downregulated_genes": 67,
+      "output_path": "examples/enhanced/demo_breast_her2_enhanced.csv"
+    },
+    "breast_tnbc": {
+      "cancer_type": "breast_tnbc",
+      "total_genes": 400,
+      "gene_categories": {
+        "oncogenes": 10,
+        "tumor_suppressors": 10,
+        "dna_repair": 8,
+        "hormone_receptors": 3,
+        "pathway_genes": 184,
+        "drug_targets": 185
+      },
+      "fold_change_range": {
+        "min": 0.13251618537533097,
+        "max": 6.334,
+        "mean": 1.7554703293770941
+      },
+      "upregulated_genes": 216,
+      "downregulated_genes": 51,
+      "output_path": "examples/enhanced/demo_breast_tnbc_enhanced.csv"
+    },
+    "lung_egfr": {
+      "cancer_type": "lung_egfr",
+      "total_genes": 300,
+      "gene_categories": {
+        "oncogenes": 10,
+        "tumor_suppressors": 10,
+        "dna_repair": 8,
+        "hormone_receptors": 3,
+        "pathway_genes": 134,
+        "drug_targets": 135
+      },
+      "fold_change_range": {
+        "min": 0.147,
+        "max": 10.86,
+        "mean": 1.7530766666666666
+      },
+      "upregulated_genes": 151,
+      "downregulated_genes": 49,
+      "output_path": "examples/enhanced/demo_lung_egfr_enhanced.csv"
+    },
+    "colorectal_msi": {
+      "cancer_type": "colorectal_msi",
+      "total_genes": 400,
+      "gene_categories": {
+        "oncogenes": 10,
+        "tumor_suppressors": 10,
+        "dna_repair": 8,
+        "hormone_receptors": 3,
+        "pathway_genes": 184,
+        "drug_targets": 185
+      },
+      "fold_change_range": {
+        "min": 0.143,
+        "max": 5.193,
+        "mean": 1.790827500000002
+      },
+      "upregulated_genes": 225,
+      "downregulated_genes": 51,
+      "output_path": "examples/enhanced/demo_colorectal_msi_enhanced.csv"
+    },
+    "pancreatic_pdac": {
+      "cancer_type": "pancreatic_pdac",
+      "total_genes": 350,
+      "gene_categories": {
+        "oncogenes": 10,
+        "tumor_suppressors": 10,
+        "dna_repair": 8,
+        "hormone_receptors": 3,
+        "pathway_genes": 159,
+        "drug_targets": 160
+      },
+      "fold_change_range": {
+        "min": 0.029,
+        "max": 9.125,
+        "mean": 1.7216885714285723
+      },
+      "upregulated_genes": 173,
+      "downregulated_genes": 44,
+      "output_path": "examples/enhanced/demo_pancreatic_pdac_enhanced.csv"
+    },
+    "comprehensive": {
+      "cancer_type": "comprehensive",
+      "total_genes": 1000,
+      "gene_categories": {
+        "oncogenes": 10,
+        "tumor_suppressors": 10,
+        "dna_repair": 8,
+        "hormone_receptors": 3,
+        "pathway_genes": 484,
+        "drug_targets": 485
+      },
+      "fold_change_range": {
+        "min": 0.167,
+        "max": 5.365,
+        "mean": 1.7467210000000002
+      },
+      "upregulated_genes": 542,
+      "downregulated_genes": 122,
+      "output_path": "examples/enhanced/demo_comprehensive_enhanced.csv"
+    }
+  },
+  "total_datasets": 6,
+  "total_genes_generated": 2950
+}

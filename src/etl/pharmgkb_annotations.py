@@ -78,7 +78,7 @@ class PharmGKBAnnotationsProcessor(BaseProcessor):
         self.include_pathways = config.get('include_pathways', True)
         
         # Schema version tracking
-        self.required_schema_version = "0.1.9"  # Minimum schema version required for PharmGKB variants
+        self.required_schema_version = "v0.1.9"  # Minimum schema version required for PharmGKB variants
 
     def download_pharmgkb_data(self) -> Tuple[Path, Optional[Path], Optional[Path], Optional[Path]]:
         """Use existing PharmGKB datasets from downloaded data.

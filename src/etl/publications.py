@@ -714,6 +714,73 @@ class PublicationsProcessor(BaseProcessor):
         except Exception as e:
             self.logger.warning(f"Failed to display enrichment statistics: {e}")
     
+    def enrich_publications_bulk(self, publications: List[Publication]) -> List[Publication]:
+        """Enrich a bulk list of publications with metadata from PubMed.
+        
+        Args:
+            publications: List of Publication objects to enrich
+            
+        Returns:
+            List of enriched Publication objects
+            
+        Raises:
+            ProcessingError: If publication enrichment fails
+        """
+        if not publications:
+            self.logger.info("No publications to enrich")
+            return publications
+            
+        try:
+            self.logger.info(f"Enriching {len(publications)} publications with PubMed metadata")
+            
+            # Extract PMIDs from publications
+            pmids = []
+            pmid_to_publication = {}
+            
+            for pub in publications:
+                if pub.get('pmid'):
+                    pmid = pub['pmid']
+                    pmids.append(pmid)
+                    pmid_to_publication[pmid] = pub
+            
+            if not pmids:
+                self.logger.warning("No PMIDs found in publications to enrich")
+                return publications
+            
+            # Get metadata for all PMIDs
+            self.logger.info(f"Fetching metadata for {len(pmids)} PMIDs")
+            pub_metadata = self.get_publications_metadata(pmids)
+            
+            # Enrich publications with metadata
+            enriched_count = 0
+            for pmid, metadata in pub_metadata.items():
+                if pmid in pmid_to_publication:
+                    publication = pmid_to_publication[pmid]
+                    
+                    # Add metadata if not already present
+                    if metadata.get('title') and not publication.get('title'):
+                        publication['title'] = metadata['title']
+                    if metadata.get('abstract') and not publication.get('abstract'):
+                        publication['abstract'] = metadata['abstract']
+                    if metadata.get('year') and not publication.get('year'):
+                        publication['year'] = metadata['year']
+                    if metadata.get('journal') and not publication.get('journal'):
+                        publication['journal'] = metadata['journal']
+                    if metadata.get('authors') and not publication.get('authors'):
+                        publication['authors'] = metadata['authors']
+                    if metadata.get('citation_count') and not publication.get('citation_count'):
+                        publication['citation_count'] = metadata['citation_count']
+                    if metadata.get('doi') and not publication.get('doi'):
+                        publication['doi'] = metadata['doi']
+                    
+                    enriched_count += 1
+            
+            self.logger.info(f"Successfully enriched {enriched_count}/{len(pmids)} publications")
+            return publications
+            
+        except Exception as e:
+            raise ProcessingError(f"Failed to enrich publications bulk: {e}")
+
     def run(self) -> None:
         """Run the complete publication enrichment pipeline.
         

@@ -486,7 +486,7 @@ class PathwayProcessor(BaseProcessor):
             with self.get_db_transaction() as transaction:
                 transaction.cursor.execute("""
                     CREATE TEMP TABLE temp_pathway_data (
-                        gene_symbol TEXT,
+                        gene_symbol TEXT PRIMARY KEY,
                         uniprot_ids TEXT[],
                         pathways TEXT[],
                         pathway_details JSONB,
@@ -631,6 +631,15 @@ class PathwayProcessor(BaseProcessor):
                 INSERT INTO temp_pathway_data 
                 (gene_symbol, uniprot_ids, pathways, pathway_details, pathway_references)
                 VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
+                ON CONFLICT (gene_symbol) DO UPDATE SET
+                    uniprot_ids = EXCLUDED.uniprot_ids,
+                    pathways = array(
+                        SELECT DISTINCT unnest(
+                            array_cat(temp_pathway_data.pathways, EXCLUDED.pathways)
+                        )
+                    ),
+                    pathway_details = temp_pathway_data.pathway_details || EXCLUDED.pathway_details,
+                    pathway_references = temp_pathway_data.pathway_references || EXCLUDED.pathway_references
                 """,
                 updates
             )

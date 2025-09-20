@@ -291,8 +291,9 @@ SCHEMA_VERSIONS = {
     """
 }
 
-# Minimum supported version constant
+# Schema version constants
 MIN_SUPPORTED_VERSION = "v0.1.8"
+LATEST_SCHEMA_VERSION = "v0.1.9"
 
 class DatabaseManager:
     """Manages database operations including connection, schema, and migrations."""
@@ -962,7 +963,7 @@ class DatabaseManager:
     def reset_database(self) -> bool:
         """Reset the database to the latest schema version directly.
         
-        This method drops all tables and applies the full v0.1.6 schema in one step,
+        This method drops all tables and applies the full v0.1.9 schema in one step,
         without going through incremental migrations.
         
         Returns:
@@ -1086,8 +1087,16 @@ class DatabaseManager:
                 self.logger.info("Applying schema changes for v0.1.7")
                 self.cursor.execute(SCHEMA_VERSIONS["v0.1.7"])
                 
-                # Create schema_version table and record that we're at v0.1.7
-                self.logger.info("Creating schema_version table with v0.1.7")
+                # Apply the schema v0.1.8 changes (Evidence scoring)
+                self.logger.info("Applying schema changes for v0.1.8")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.8"])
+                
+                # Apply the schema v0.1.9 changes (PharmGKB variants)
+                self.logger.info("Applying schema changes for v0.1.9")
+                self.cursor.execute(SCHEMA_VERSIONS["v0.1.9"])
+                
+                # Create schema_version table and record that we're at v0.1.9
+                self.logger.info("Creating schema_version table with v0.1.9")
                 self.cursor.execute("""
                     CREATE TABLE schema_version (
                         version_name TEXT PRIMARY KEY,
@@ -1095,9 +1104,9 @@ class DatabaseManager:
                         description TEXT
                     );
                     
-                    -- Insert the schema version record directly as v0.1.7
+                    -- Insert the schema version record directly as v0.1.9
                     INSERT INTO schema_version (version_name, description) 
-                    VALUES ('v0.1.7', 'Direct schema reset to v0.1.7 with PharmGKB pathways');
+                    VALUES ('v0.1.9', 'Direct schema reset to v0.1.9 with PharmGKB variant annotations');
                 """)
                 
                 # Commit all changes
@@ -1107,11 +1116,11 @@ class DatabaseManager:
                     
                 # Verify the schema is correctly set up
                 current_version = self.get_current_version()
-                if current_version != "v0.1.7":
-                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.1.7")
+                if current_version != LATEST_SCHEMA_VERSION:
+                    self.logger.error(f"Schema version mismatch after reset: {current_version} != {LATEST_SCHEMA_VERSION}")
                     return False
                     
-                self.logger.info("Database reset completed successfully with schema v0.1.7")
+                self.logger.info(f"Database reset completed successfully with schema {LATEST_SCHEMA_VERSION}")
                 return True
             else:
                 self.logger.error("Database cursor is None, cannot reset database")

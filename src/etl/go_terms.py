@@ -231,8 +231,8 @@ class GOTermProcessor(BaseProcessor):
             
         try:
             self.db_manager.cursor.execute("""
-                SELECT DISTINCT gene_symbol 
-                FROM cancer_transcript_base 
+                SELECT DISTINCT gene_symbol
+                FROM genes
                 WHERE gene_symbol IS NOT NULL
             """)
             valid_genes = {row[0] for row in self.db_manager.cursor.fetchall() if row[0]}
@@ -527,14 +527,9 @@ class GOTermProcessor(BaseProcessor):
             initial_count = result[0] if result else 0
             self.logger.info(f"Initial GO terms count: {initial_count}")
             
-            # Use a separate transaction for clearing existing GO terms
-            with self.get_db_transaction() as transaction:
-                # Clear existing GO terms - REMOVED gene_type filter
-                transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base 
-                    SET go_terms = NULL, molecular_functions = NULL, cellular_location = NULL
-                """)
-            
+            # Legacy table clearing removed - using normalized schema only
+            self.logger.info("Skipping legacy table clear (using normalized schema)")
+
             # Process in smaller batches with separate transactions
             updates = []
             processed = 0
@@ -709,35 +704,8 @@ class GOTermProcessor(BaseProcessor):
                     ON CONFLICT DO NOTHING
                 """)
 
-                # Update legacy table for backwards compatibility (if it exists)
-                try:
-                    transaction.cursor.execute("""
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_name = 'cancer_transcript_base'
-                    """)
-                    if transaction.cursor.fetchone():
-                        transaction.cursor.execute("""
-                            UPDATE cancer_transcript_base c
-                            SET
-                                go_terms = t.go_terms,
-                                molecular_functions = t.molecular_functions,
-                                cellular_location = t.cellular_location,
-                                source_references = jsonb_set(
-                                    COALESCE(c.source_references, '{
-                                        "go_terms": [],
-                                        "uniprot": [],
-                                        "drugs": [],
-                                        "pathways": []
-                                    }'::jsonb),
-                                    '{go_terms}',
-                                    COALESCE(t.publications, '[]'::jsonb),
-                                    true
-                                )
-                            FROM temp_go_terms t
-                            WHERE c.gene_symbol = t.gene_symbol
-                        """)
-                except Exception as e:
-                    self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
+                # Legacy table update removed - using normalized schema only
+                self.logger.debug("Legacy table batch update skipped (normalized schema in use)")
                 
                 # The temp table will be automatically dropped on COMMIT
         except Exception as e:

@@ -53,25 +53,68 @@ def test_product_classification(test_config):
     """Test product classification using mock data."""
     classifier = ProductClassifier(test_config)
 
-    # Test TP53 classification
-    tp53_classes = classifier.classify_product('TP53')
+    # Test TP53 classification - classify_gene expects a dict with gene data
+    tp53_data = {
+        'gene_symbol': 'TP53',
+        'features': {'DNA_BIND': 'DNA binding region'},
+        'keywords': ['Transcription regulation'],
+        'go_terms': {'GO:0003700': 'DNA-binding transcription factor activity'},
+        'function': 'Acts as a transcription factor'
+    }
+    tp53_classes = classifier.classify_gene(tp53_data)
     assert 'transcription_factor' in tp53_classes
     assert 'dna_binding' in tp53_classes
 
     # Test MAPK1 classification
-    mapk1_classes = classifier.classify_product('MAPK1')
+    mapk1_data = {
+        'gene_symbol': 'MAPK1',
+        'features': {'DOMAIN': 'Protein kinase'},
+        'keywords': ['Kinase', 'Transferase'],
+        'go_terms': {'GO:0016301': 'kinase activity'},
+        'function': 'Protein kinase activity'
+    }
+    mapk1_classes = classifier.classify_gene(mapk1_data)
     assert 'kinase' in mapk1_classes
 
 def test_invalid_gene_symbol(test_config):
     """Test handling of invalid gene symbols."""
     classifier = ProductClassifier(test_config)
-    assert classifier.classify_product('invalid!') == []
-    assert classifier.classify_product('123ABC') == []
+
+    # Test with empty gene data - should return empty list
+    empty_data = {
+        'gene_symbol': 'INVALID',
+        'features': {},
+        'keywords': [],
+        'go_terms': {},
+        'function': ''
+    }
+    assert classifier.classify_gene(empty_data) == []
+
+    # Test with gene data that has no classifiable information
+    unclassifiable_data = {
+        'gene_symbol': 'UNKNOWN',
+        'features': {'UNKNOWN': 'unknown feature'},
+        'keywords': ['misc'],
+        'go_terms': {},
+        'function': 'Unknown function'
+    }
+    assert classifier.classify_gene(unclassifiable_data) == []
 
 @pytest.mark.integration
 def test_database_update(test_config):
     """Test database classification updates."""
     classifier = ProductClassifier(test_config)
     # Skip actual database update test as it requires full database setup
-    # Just test that the method exists
-    assert hasattr(classifier, 'classify_product')
+    # Just test that the main classification method exists
+    assert hasattr(classifier, 'classify_gene')
+
+    # Verify classify_gene works with sample data
+    test_data = {
+        'gene_symbol': 'TEST',
+        'features': {'test': 'value'},
+        'keywords': [],
+        'go_terms': {},
+        'function': ''
+    }
+    result = classifier.classify_gene(test_data)
+    assert isinstance(result, list)

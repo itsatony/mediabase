@@ -22,7 +22,7 @@ def mock_config() -> Dict[str, Any]:
 @pytest.fixture
 def mock_db_manager(mock_config):
     """Mock database manager."""
-    with patch('src.etl.publications.get_db_manager') as mock:
+    with patch('src.etl.base_processor.get_db_manager') as mock:
         db_manager = Mock()
         db_manager.cursor = Mock()
         db_manager.conn = Mock()

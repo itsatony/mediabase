@@ -13,6 +13,7 @@ from pathlib import Path
 import os
 from typing import Dict, Any, Optional, List, Tuple, cast
 import psycopg2
+import psycopg2.extensions
 from psycopg2.extensions import (
     connection as pg_connection,
     cursor as pg_cursor,
@@ -310,10 +311,10 @@ class DatabaseManager:
         # Ensure we have the required database configuration
         self.db_config = {
             'host': config.get('host', 'localhost'),
-            'port': config.get('port', 5432),
+            'port': config.get('port', 5435),
             'dbname': config.get('dbname', 'mediabase'),
-            'user': config.get('user', 'postgres'),
-            'password': config.get('password', 'postgres')
+            'user': config.get('user', 'mbase_user'),
+            'password': config.get('password', 'mbase_secret')
         }
         # Store other config options separately
         self.config = {k: v for k, v in config.items() 
@@ -362,6 +363,29 @@ class DatabaseManager:
             self.conn.close()
             self.conn = None
         self.cursor = None
+
+    def transaction(self):
+        """Context manager for database transactions with automatic rollback on failure."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _transaction():
+            if not self.conn:
+                raise Exception("No database connection available")
+
+            # Start transaction by setting isolation level
+            old_isolation = self.conn.isolation_level
+            try:
+                self.conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
+                yield
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+            finally:
+                self.conn.set_isolation_level(old_isolation)
+
+        return _transaction()
 
     def create_database(self) -> bool:
         """Create the database if it doesn't exist."""

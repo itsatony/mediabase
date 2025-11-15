@@ -1,22 +1,33 @@
 """Test configuration and shared fixtures."""
 
+import os
 import pytest
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load test environment variables from .env.test
+env_test_path = Path(__file__).parent.parent / '.env.test'
+if env_test_path.exists():
+    load_dotenv(env_test_path, override=True)
+    print(f"✓ Loaded test configuration from {env_test_path}")
+else:
+    print(f"⚠ Warning: .env.test not found at {env_test_path}, using default values")
 
 @pytest.fixture(scope="session")
 def test_db():
     """Create and manage test database."""
-    # Connection parameters for creating/dropping test database
+    # Connection parameters from environment variables
     params = {
-        'host': 'localhost',
-        'port': 5432,
-        'user': 'postgres',
-        'password': 'postgres',
-        'dbname': 'postgres'
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret'),
+        'dbname': 'postgres'  # Connect to postgres to create test database
     }
-    
-    test_db_name = 'mediabase_test'
+
+    test_db_name = os.getenv('MB_POSTGRES_NAME', 'mediabase_test')
     
     # Create test database
     conn = psycopg2.connect(**params)

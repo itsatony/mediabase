@@ -29,10 +29,10 @@ def load_db_config():
 
     return {
         "host": os.environ.get("MB_POSTGRES_HOST", "localhost"),
-        "port": int(os.environ.get("MB_POSTGRES_PORT", "5432")),
+        "port": int(os.environ.get("MB_POSTGRES_PORT", "5435")),
         "dbname": os.environ.get("MB_POSTGRES_DB", "mbase"),
-        "user": os.environ.get("MB_POSTGRES_USER", "postgres"),
-        "password": os.environ.get("MB_POSTGRES_PASSWORD", "postgres")
+        "user": os.environ.get("MB_POSTGRES_USER", "mbase_user"),
+        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret")
     }
 
 def create_basic_materialized_views(db_manager) -> bool:

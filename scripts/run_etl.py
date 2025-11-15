@@ -46,10 +46,10 @@ def get_config() -> Dict[str, Any]:
     return {
         'db': {
             'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
             'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase'),
-            'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
-            'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         },
         'cache_dir': os.getenv('MB_CACHE_DIR', '/tmp/mediabase/cache'),
         'gencode_gtf_url': os.getenv('MB_GENCODE_GTF_URL'),

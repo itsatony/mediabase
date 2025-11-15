@@ -12,10 +12,10 @@ import os
 def test_db():
     """Create and manage test database."""
     db_params = {
-        'host': os.getenv('MB_TEST_POSTGRES_HOST', 'localhost'),
-        'port': int(os.getenv('MB_TEST_POSTGRES_PORT', '5432')),
-        'user': os.getenv('MB_TEST_POSTGRES_USER', 'postgres'),
-        'password': os.getenv('MB_TEST_POSTGRES_PASSWORD', 'postgres'),
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret'),
         'dbname': 'test_mediabase'
     }
     

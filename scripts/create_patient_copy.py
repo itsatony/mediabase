@@ -584,13 +584,29 @@ class PatientDatabaseCreator:
             if not db_manager.ensure_connection():
                 raise CSVValidationError("Failed to connect to source database")
 
-            # Query for all transcript IDs
+            # Query for all transcript IDs - try normalized schema first
             cursor = db_manager.cursor
+
+            try:
+                cursor.execute(
+                    "SELECT DISTINCT transcript_id FROM transcripts WHERE transcript_id IS NOT NULL"
+                )
+                transcript_ids = {row[0] for row in cursor.fetchall()}
+
+                if transcript_ids:  # If we got results from normalized schema
+                    self.logger.debug(f"Retrieved {len(transcript_ids)} transcript IDs from normalized schema")
+                    return transcript_ids
+
+            except Exception as e:
+                self.logger.debug(f"Normalized schema query failed, trying legacy table: {e}")
+
+            # Fallback to legacy table
             cursor.execute(
                 "SELECT DISTINCT transcript_id FROM cancer_transcript_base WHERE transcript_id IS NOT NULL"
             )
 
             transcript_ids = {row[0] for row in cursor.fetchall()}
+            self.logger.debug(f"Retrieved {len(transcript_ids)} transcript IDs from legacy table")
             return transcript_ids
 
         except Exception as e:
@@ -790,26 +806,73 @@ class PatientDatabaseCreator:
                         if not target_db.ensure_connection():
                             raise Exception("Failed to connect to target database")
 
-                        # Execute batch update
-                        execute_batch(
-                            target_db.cursor,
-                            """
-                            UPDATE cancer_transcript_base 
-                            SET expression_fold_change = %s 
-                            WHERE transcript_id = %s
-                            """,
-                            batch_updates,
-                            page_size=BATCH_SIZE,
-                        )
+                        # Execute batch update on normalized schema first
+                        try:
+                            execute_batch(
+                                target_db.cursor,
+                                """
+                                UPDATE transcripts
+                                SET expression_fold_change = %s
+                                WHERE transcript_id = %s
+                                """,
+                                batch_updates,
+                                page_size=BATCH_SIZE,
+                            )
 
-                        # Count successful updates
-                        target_db.cursor.execute(
-                            """
-                            SELECT COUNT(*) FROM cancer_transcript_base 
-                            WHERE transcript_id = ANY(%s)
-                            """,
-                            (batch_ids,),
-                        )
+                            # Count successful updates from normalized schema
+                            target_db.cursor.execute(
+                                """
+                                SELECT COUNT(*) FROM transcripts
+                                WHERE transcript_id = ANY(%s)
+                                """,
+                                (batch_ids,),
+                            )
+                            found_count_normalized = target_db.cursor.fetchone()[0]
+
+                            # Also update legacy table for backwards compatibility (if it exists)
+                            try:
+                                target_db.cursor.execute("""
+                                    SELECT 1 FROM information_schema.tables
+                                    WHERE table_name = 'cancer_transcript_base'
+                                """)
+                                if target_db.cursor.fetchone():
+                                    execute_batch(
+                                        target_db.cursor,
+                                        """
+                                        UPDATE cancer_transcript_base
+                                        SET expression_fold_change = %s
+                                        WHERE transcript_id = %s
+                                        """,
+                                        batch_updates,
+                                        page_size=BATCH_SIZE,
+                                    )
+                            except Exception as legacy_error:
+                                self.logger.debug(f"Legacy table update failed (normal after migration): {legacy_error}")
+
+                            found_count = found_count_normalized
+
+                        except Exception as normalized_error:
+                            # Fallback to legacy table if normalized schema not available
+                            self.logger.warning(f"Normalized schema update failed, using legacy: {normalized_error}")
+                            execute_batch(
+                                target_db.cursor,
+                                """
+                                UPDATE cancer_transcript_base
+                                SET expression_fold_change = %s
+                                WHERE transcript_id = %s
+                                """,
+                                batch_updates,
+                                page_size=BATCH_SIZE,
+                            )
+
+                            # Count successful updates from legacy table
+                            target_db.cursor.execute(
+                                """
+                                SELECT COUNT(*) FROM cancer_transcript_base
+                                WHERE transcript_id = ANY(%s)
+                                """,
+                                (batch_ids,),
+                            )
 
                         found_count = target_db.cursor.fetchone()[0]
                         self.stats["updates_applied"] += found_count
@@ -966,10 +1029,10 @@ Examples:
         # Get database configuration
         db_config = {
             "host": os.getenv("MB_POSTGRES_HOST", "localhost"),
-            "port": int(os.getenv("MB_POSTGRES_PORT", 5432)),
+            "port": int(os.getenv("MB_POSTGRES_PORT", 5435)),
             "dbname": args.source_db,
-            "user": os.getenv("MB_POSTGRES_USER", "postgres"),
-            "password": os.getenv("MB_POSTGRES_PASSWORD", "postgres"),
+            "user": os.getenv("MB_POSTGRES_USER", "mbase_user"),
+            "password": os.getenv("MB_POSTGRES_PASSWORD", "mbase_secret"),
         }
 
         # Display operation summary

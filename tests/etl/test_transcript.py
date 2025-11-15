@@ -11,7 +11,7 @@ import pandas as pd
 def test_config():
     """Provide test configuration."""
     return {
-        'gtf_url': os.getenv('MB_GENCODE_GTF_URL', 'https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.basic.annotation.gtf.gz'),
+        'gencode_gtf_url': os.getenv('MB_GENCODE_GTF_URL', 'https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.basic.annotation.gtf.gz'),
         'cache_dir': '/tmp/mediabase_test/cache',
         'cache_ttl': 3600,  # 1 hour cache for tests
         'batch_size': 100,

@@ -1,6 +1,7 @@
 """Tests for GO terms enrichment module."""
 
 import pytest
+import os
 from pathlib import Path
 import json
 import networkx as nx
@@ -15,11 +16,11 @@ def test_config():
         'cache_dir': '/tmp/mediabase_test/cache',
         'cache_ttl': 3600,  # 1 hour cache for tests
         'batch_size': 100,
-        'host': 'localhost',
-        'port': 5432,
-        'dbname': 'mediabase_test',
-        'user': 'postgres',
-        'password': 'postgres'
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
     }
 
 @pytest.fixture
@@ -97,9 +98,10 @@ def test_populate_initial_terms(test_config, sample_obo_data):
     """Test initial GO term population from UniProt features."""
     processor = GOTermProcessor(test_config)
     processor.load_go_graph(sample_obo_data)
-    
+
     # Create test data in database
-    conn = get_db_connection(test_config)
+    db_manager = get_db_manager(test_config)
+    conn = db_manager.conn
     try:
         with conn.cursor() as cur:
             cur.execute("""

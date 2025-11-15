@@ -1,6 +1,7 @@
 """Tests for drug ETL pipeline."""
 
 import pytest
+import os
 from pathlib import Path
 import pandas as pd
 import json
@@ -13,7 +14,12 @@ def test_config():
         'drugcentral_url': 'https://drugcentral.org/download/current',
         'cache_dir': '/tmp/mediabase_test/cache',
         'cache_ttl': 3600,  # 1 hour cache for tests
-        'batch_size': 100
+        'batch_size': 100,
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
     }
 
 @pytest.fixture

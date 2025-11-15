@@ -59,8 +59,17 @@ def test_genes():
 def test_product_classification(mock_uniprot_data, test_genes, monkeypatch):
     """Test product classification using mock data."""
     monkeypatch.setenv('MB_CACHE_DIR', str(mock_uniprot_data))
-    
-    classifier = ProductClassifier()
+
+    config = {
+        'cache_dir': str(mock_uniprot_data),
+        'batch_size': 100,
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
+    }
+    classifier = ProductClassifier(config)
     
     # Test TP53 classification
     tp53_classes = classifier.classify_product('TP53')
@@ -87,8 +96,17 @@ def test_product_classification(mock_uniprot_data, test_genes, monkeypatch):
 def test_invalid_gene_symbols(mock_uniprot_data, monkeypatch):
     """Test handling of invalid gene symbols."""
     monkeypatch.setenv('MB_CACHE_DIR', str(mock_uniprot_data))
-    
-    classifier = ProductClassifier()
+
+    config = {
+        'cache_dir': str(mock_uniprot_data),
+        'batch_size': 100,
+        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
+    }
+    classifier = ProductClassifier(config)
     
     # Test various invalid symbols
     assert classifier.classify_product('') == []
@@ -100,22 +118,25 @@ def test_invalid_gene_symbols(mock_uniprot_data, monkeypatch):
 def test_database_update(mock_uniprot_data, monkeypatch):
     """Test database classification updates."""
     # Setup test database configuration
-    db_config = {
+    config = {
+        'cache_dir': str(mock_uniprot_data),
+        'batch_size': 100,
         'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-        'port': int(os.getenv('MB_POSTGRES_PORT', '5432')),
-        'dbname': os.getenv('MB_POSTGRES_NAME', 'mbase'),
-        'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
-        'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
     }
 
     monkeypatch.setenv('MB_CACHE_DIR', str(mock_uniprot_data))
-    
+
     # Create classifier with correct database config
-    classifier = ProductClassifier(config={'db': db_config})
+    classifier = ProductClassifier(config)
     classifier.update_database_classifications()
-    
+
     # Verify database updates
-    conn = get_db_connection(db_config)
+    db_manager = get_db_manager(config)
+    conn = db_manager.conn
     try:
         with conn.cursor() as cur:
             cur.execute("""

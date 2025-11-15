@@ -51,10 +51,10 @@ class TranscriptResponse(BaseModel):
     gene_type: Optional[str]
     chromosome: Optional[str]
     expression_fold_change: Optional[float]
-    product_type: Optional[str]
-    go_terms: Optional[List[str]]
-    pathways: Optional[List[str]]
-    drugs: Optional[Dict[str, Any]]
+    product_type: Optional[List[str]]  # Array from gene_annotations
+    go_terms: Optional[List[Dict[str, Any]]]  # JSONB array of objects
+    pathways: Optional[List[str]]  # Array from gene_pathways
+    drugs: Optional[Dict[str, Any]]  # JSONB object from gene_drug_interactions
     molecular_functions: Optional[List[str]]
     cellular_location: Optional[List[str]]
     source_references: Optional[Dict[str, Any]]

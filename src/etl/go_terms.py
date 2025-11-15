@@ -666,14 +666,14 @@ class GOTermProcessor(BaseProcessor):
                     SELECT
                         tr.transcript_id,
                         go_entry.key as go_id,
-                        go_entry.value->>'name' as go_term,
-                        go_entry.value->>'namespace' as go_category,
-                        'IEA' as evidence_code
+                        go_entry.value->>'term' as go_term,
+                        go_entry.value->>'aspect' as go_category,
+                        COALESCE(go_entry.value->>'evidence', 'IEA') as evidence_code
                     FROM temp_go_terms t
                     INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
                     INNER JOIN transcripts tr ON tr.gene_id = g.gene_id
                     CROSS JOIN LATERAL jsonb_each(t.go_terms) as go_entry
-                    WHERE go_entry.value->>'name' IS NOT NULL
+                    WHERE go_entry.value->>'term' IS NOT NULL
                     ON CONFLICT DO NOTHING
                 """)
 

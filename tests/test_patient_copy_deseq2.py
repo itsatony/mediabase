@@ -25,7 +25,12 @@ from scripts.create_patient_copy import (
 
 class TestDESeq2FormatDetection:
     """Test suite for DESeq2 format detection and parsing."""
-    
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, test_db):
+        """Ensure test database exists for all tests in this class."""
+        pass
+
     @pytest.fixture
     def deseq2_csv_data(self) -> pd.DataFrame:
         """Create DESeq2 format CSV data for testing."""
@@ -80,11 +85,11 @@ class TestDESeq2FormatDetection:
     def db_config(self) -> Dict[str, Any]:
         """Database configuration for testing."""
         return {
-            'host': 'localhost',
-            'port': 5432,
-            'dbname': 'mediabase_test',
-            'user': 'postgres',
-            'password': 'postgres'
+            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+            'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
     
     def test_detect_deseq2_format_valid(self, tmp_path: Path, db_config: Dict[str, Any], deseq2_csv_data: pd.DataFrame):
@@ -203,16 +208,21 @@ class TestDESeq2FormatDetection:
 
 class TestGeneSymbolMapping:
     """Test suite for gene symbol to transcript ID mapping."""
-    
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, test_db):
+        """Ensure test database exists for all tests in this class."""
+        pass
+
     @pytest.fixture
     def db_config(self) -> Dict[str, Any]:
         """Database configuration for testing."""
         return {
-            'host': 'localhost',
-            'port': 5432,
-            'dbname': 'mediabase_test',
-            'user': 'postgres',
-            'password': 'postgres'
+            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+            'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
     
     @pytest.fixture
@@ -297,16 +307,21 @@ class TestGeneSymbolMapping:
 
 class TestDESeq2Integration:
     """Integration tests for complete DESeq2 workflow."""
-    
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, test_db):
+        """Ensure test database exists for all tests in this class."""
+        pass
+
     @pytest.fixture
     def db_config(self) -> Dict[str, Any]:
         """Database configuration for testing."""
         return {
-            'host': 'localhost',
-            'port': 5432,
-            'dbname': 'mediabase_test',
-            'user': 'postgres',
-            'password': 'postgres'
+            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+            'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
     
     def test_end_to_end_deseq2_workflow(self, tmp_path: Path, db_config: Dict[str, Any]):

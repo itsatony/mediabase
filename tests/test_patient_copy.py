@@ -31,7 +31,12 @@ from scripts.create_patient_copy import (
 
 class TestPatientDatabaseCreator:
     """Test suite for PatientDatabaseCreator class."""
-    
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, test_db):
+        """Ensure test database exists for all tests in this class."""
+        pass
+
     @pytest.fixture
     def valid_csv_data(self) -> pd.DataFrame:
         """Create valid CSV data for testing."""
@@ -68,11 +73,11 @@ class TestPatientDatabaseCreator:
     def db_config(self) -> Dict[str, Any]:
         """Database configuration for testing."""
         return {
-            'host': 'localhost',
-            'port': 5432,
-            'dbname': 'mediabase_test',
-            'user': 'postgres',
-            'password': 'postgres'
+            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+            'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
     
     @pytest.fixture
@@ -372,16 +377,21 @@ class TestPatientDatabaseCreator:
 
 class TestCSVValidationEdgeCases:
     """Test edge cases for CSV validation."""
-    
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, test_db):
+        """Ensure test database exists for all tests in this class."""
+        pass
+
     @pytest.fixture
     def db_config(self) -> Dict[str, Any]:
         """Database configuration for testing."""
         return {
-            'host': 'localhost',
-            'port': 5432,
-            'dbname': 'mediabase_test',
-            'user': 'postgres',
-            'password': 'postgres'
+            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+            'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
     
     def test_mixed_case_columns(self, tmp_path: Path, db_config: Dict[str, Any]):
@@ -452,16 +462,21 @@ class TestCSVValidationEdgeCases:
 
 class TestIntegrationScenarios:
     """Integration test scenarios."""
-    
+
+    @pytest.fixture(autouse=True)
+    def setup_db(self, test_db):
+        """Ensure test database exists for all tests in this class."""
+        pass
+
     @pytest.fixture
     def db_config(self) -> Dict[str, Any]:
         """Database configuration for testing."""
         return {
-            'host': 'localhost',
-            'port': 5432,
-            'dbname': 'mediabase_test',
-            'user': 'postgres',
-            'password': 'postgres'
+            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
+            'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
+            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
         }
     
     @pytest.mark.integration

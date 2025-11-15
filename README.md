@@ -114,33 +114,45 @@ This approach enables MEDIABASE to:
 
 2. Run tests:
    ```bash
-   # Run all tests
+   # Run all tests (93 tests, 97.9% pass rate)
    poetry run pytest
+
+   # Run with coverage report (16% overall, 77% API coverage)
+   poetry run pytest --cov=src --cov-report=html
+
+   # Run API integration tests (6 tests covering all endpoints)
+   poetry run pytest tests/test_api_server.py -v
+
+   # Run patient copy tests (including DESeq2 format)
+   poetry run pytest tests/test_patient_copy*.py -v
 
    # Run specific test module
    poetry run pytest tests/etl/test_transcript.py
-
-   # Run only integration tests
-   poetry run pytest -m integration
-
-   # Run with coverage report
-   poetry run pytest --cov=src
 
    # Run with verbose output
    poetry run pytest -v
    ```
 
-3. Before running tests, ensure your test database is configured:
+3. **Test Infrastructure** (v0.2.1+):
+
+   The test suite uses a normalized schema with materialized views, automatically created by the `test_db` fixture in `conftest.py`:
+
+   - **93/95 tests passing** (97.9% pass rate, 0 failures)
+   - **2.08s runtime** (excellent performance)
+   - **Integration tests** for API endpoints with real database
+   - **Seed data**: BRCA1 and TP53 with full enrichment (GO terms, pathways, drugs)
+   - **Test database** auto-created with:
+     - Normalized tables (genes, transcripts, enrichment tables)
+     - Materialized views (transcript_enrichment_view, gene_summary_view)
+     - Legacy table for backwards compatibility
+
+   Environment variables are automatically set by the test fixture, but can be overridden:
    ```bash
-   # Set up test environment variables
    export MB_POSTGRES_HOST=localhost
    export MB_POSTGRES_PORT=5435
    export MB_POSTGRES_NAME=mediabase_test
    export MB_POSTGRES_USER=mbase_user
    export MB_POSTGRES_PASSWORD=mbase_secret
-   
-   # Initialize test database
-   poetry run python scripts/manage_db.py --non-interactive
    ```
 
 ## Quick Start
@@ -653,15 +665,14 @@ curl http://localhost:8000/health
 
 #### Search Transcripts
 ```bash
-# Search by gene symbols
-curl -X POST "http://localhost:8000/api/v1/transcripts" \
-  -H "Content-Type: application/json" \
-  -d '{"gene_symbols": ["BRCA1", "TP53"]}'
+# Search by gene symbols (with enrichment data)
+curl "http://localhost:8000/api/v1/transcripts?gene_symbols=BRCA1&gene_symbols=TP53&limit=10"
 
-# Filter by fold change range
-curl -X POST "http://localhost:8000/api/v1/transcripts" \
-  -H "Content-Type: application/json" \
-  -d '{"fold_change_min": 2.0, "has_drugs": true}'
+# Filter by fold change range and drug presence
+curl "http://localhost:8000/api/v1/transcripts?fold_change_min=2.0&has_drugs=true&limit=50"
+
+# Get single transcript with full enrichment
+curl "http://localhost:8000/api/v1/transcripts/ENST00000357654"
 ```
 
 #### Database Statistics
@@ -683,14 +694,7 @@ The API is designed for clinical and research workflows:
 
 ```bash
 # Find overexpressed genes with drug targets
-curl -X POST "http://localhost:8000/api/v1/transcripts" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "fold_change_min": 2.0,
-    "has_drugs": true,
-    "has_pathways": true,
-    "limit": 50
-  }'
+curl "http://localhost:8000/api/v1/transcripts?fold_change_min=2.0&has_drugs=true&has_pathways=true&limit=50"
 ```
 
 ## Database Schema and Structure

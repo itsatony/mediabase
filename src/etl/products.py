@@ -411,18 +411,12 @@ class ProductClassifier(BaseProcessor):
                 updates
             )
             
-            # Update from temp table to main table
+            # Legacy table update removed - using normalized schema only
+            # The temp table data stays for the next batch processing step
+            self.logger.debug(f"Processed batch of {len(updates)} genes (legacy UPDATE skipped)")
+
+            # Clear temp table for next batch
             if self.db_manager.cursor:
-                self.db_manager.cursor.execute("""
-                    UPDATE cancer_transcript_base AS c
-                    SET 
-                        features = COALESCE(c.features, '{}'::jsonb) || t.features,
-                        go_terms = COALESCE(c.go_terms, '{}'::jsonb) || t.go_terms
-                    FROM temp_gene_features AS t
-                    WHERE c.gene_symbol = t.gene_symbol
-                """)
-                
-                # Clear temp table for next batch
                 self.db_manager.cursor.execute("TRUNCATE temp_gene_features")
             else:
                 raise DatabaseError("No database cursor available")
@@ -821,28 +815,8 @@ class ProductProcessor(BaseProcessor):
                             ON CONFLICT DO NOTHING
                         """)
 
-                        # Also update legacy table for backwards compatibility (if it exists)
-                        try:
-                            transaction.cursor.execute("""
-                                SELECT 1 FROM information_schema.tables
-                                WHERE table_name = 'cancer_transcript_base'
-                            """)
-                            if transaction.cursor.fetchone():
-                                transaction.cursor.execute("""
-                                    UPDATE cancer_transcript_base AS c
-                                    SET
-                                        product_type = t.product_types,
-                                        source_references = jsonb_set(
-                                            COALESCE(c.source_references, '{}'::jsonb),
-                                            '{uniprot}',
-                                            t.publications,
-                                            true
-                                        )
-                                    FROM temp_gene_types AS t
-                                    WHERE c.gene_symbol = t.gene_symbol
-                                """)
-                        except Exception as e:
-                            self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
+                        # Legacy table update removed - using normalized schema only
+                        self.logger.debug("Legacy table update skipped (using normalized schema)")
                         
                         # The temporary table will be dropped automatically (ON COMMIT DROP)
                     
@@ -1012,71 +986,12 @@ def integrate_products(self, product_data: Dict[str, Dict[str, Any]]) -> None:
         if updates:
             self._update_product_batch(updates)
         
-        # Update main table from temp table using both primary and alternate transcript IDs
+        # Legacy table updates removed - using normalized schema only
+        # Product data is already written to gene_annotations table
+        self.logger.debug(f"Skipping legacy table updates for {processed} transcripts")
+
+        # Clean up temp table
         with self.get_db_transaction() as transaction:
-            # First update by direct transcript ID
-            transaction.cursor.execute("""
-                UPDATE cancer_transcript_base cb
-                SET 
-                    product_type = COALESCE(cb.product_type, '{}'::text[]) || pd.product_type,
-                    features = COALESCE(cb.features, '{}'::jsonb) || pd.product_details
-                FROM temp_product_data pd
-                WHERE cb.transcript_id = pd.transcript_id
-            """)
-            
-            # Update cellular location for better filtering/querying
-            transaction.cursor.execute("""
-                UPDATE cancer_transcript_base cb
-                SET 
-                    cellular_location = ARRAY(
-                        SELECT DISTINCT jsonb_array_elements_text(pd.product_details->'cellular_location')
-                        FROM temp_product_data pd
-                        WHERE cb.transcript_id = pd.transcript_id
-                    )
-                FROM temp_product_data pd
-                WHERE cb.transcript_id = pd.transcript_id
-                AND pd.product_details->'cellular_location' IS NOT NULL
-                AND jsonb_array_length(pd.product_details->'cellular_location') > 0
-            """)
-            
-            # Update molecular functions from the product details
-            transaction.cursor.execute("""
-                UPDATE cancer_transcript_base cb
-                SET 
-                    molecular_functions = ARRAY(
-                        SELECT DISTINCT jsonb_array_elements_text(pd.product_details->'functions')
-                        FROM temp_product_data pd
-                        WHERE cb.transcript_id = pd.transcript_id
-                    )
-                FROM temp_product_data pd
-                WHERE cb.transcript_id = pd.transcript_id
-                AND pd.product_details->'functions' IS NOT NULL
-                AND jsonb_array_length(pd.product_details->'functions') > 0
-            """)
-            
-            # Then attempt to match by alternative transcript IDs (RefSeq, Ensembl)
-            transaction.cursor.execute("""
-                WITH alt_id_matches AS (
-                    SELECT 
-                        cb.transcript_id as cb_id,
-                        pd.transcript_id as pd_id
-                    FROM cancer_transcript_base cb
-                    JOIN temp_product_data pd ON 
-                        (cb.alt_transcript_ids->>'RefSeq' = pd.alt_transcript_ids->>'RefSeq' AND 
-                         pd.alt_transcript_ids->>'RefSeq' IS NOT NULL) OR
-                        (cb.alt_transcript_ids->>'Ensembl' = pd.alt_transcript_ids->>'Ensembl' AND 
-                         pd.alt_transcript_ids->>'Ensembl' IS NOT NULL)
-                    WHERE cb.transcript_id != pd.transcript_id
-                )
-                UPDATE cancer_transcript_base cb
-                SET 
-                    product_type = COALESCE(cb.product_type, '{}'::text[]) || pd.product_type,
-                    features = COALESCE(cb.features, '{}'::jsonb) || pd.product_details
-                FROM temp_product_data pd, alt_id_matches aim
-                WHERE cb.transcript_id = aim.cb_id AND pd.transcript_id = aim.pd_id
-            """)
-            
-            # Clean up
             transaction.cursor.execute("DROP TABLE IF EXISTS temp_product_data")
         
         self.logger.info(f"Successfully integrated product data for {processed} transcripts")

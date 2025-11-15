@@ -1,5 +1,7 @@
 # MEDIABASE: Cancer Transcriptome Base
 
+**Version:** 0.3.1 | **Status:** Pre-Release (Active Development) | [CHANGELOG](CHANGELOG.md)
+
 A comprehensive database for cancer transcriptomics analysis, enriched with gene products, GO terms, pathways, drugs, pharmacogenomics, clinical trials, scientific publications with quality scoring, and cross-database identifiers.
 
 ## Overview

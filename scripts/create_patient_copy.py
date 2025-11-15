@@ -384,8 +384,11 @@ class PatientDatabaseCreator:
 
     def _process_standard_data(
         self, valid_data: pd.DataFrame, transcript_col: str, fold_col: str
-    ) -> None:
-        """Process standard format data (transcript_id, fold_change) with flexible ID matching.
+        ) -> None:
+        """Process standard format data (transcript_id, fold_change) - validation only.
+
+        This method performs FORMAT validation only, without database access.
+        Database matching happens later in update_fold_changes() for flexible ID matching.
 
         Args:
             valid_data: DataFrame with valid data rows
@@ -393,61 +396,30 @@ class PatientDatabaseCreator:
             fold_col: Column name containing fold-change values
         """
         self.console.print(
-            "[blue]🧬 Processing standard transcript data with flexible ID matching...[/blue]"
+            "[blue]🧬 Processing standard transcript data...[/blue]"
         )
 
-        # Get available transcript IDs from database for matching
-        database_transcript_ids = self._get_database_transcript_ids()
-
-        transcript_updates = {}
-        unmatched_ids = []
-
+        # Store all transcript updates without database validation
+        # Database matching will happen during the update phase
         for idx, (transcript_id, fold_change) in zip(
             valid_data.index, zip(valid_data[transcript_col], valid_data[fold_col])
         ):
             transcript_id = str(transcript_id).strip()
-
-            # Try flexible matching
-            matched_id = self._match_transcript_id_flexibly(
-                transcript_id, database_transcript_ids
-            )
-
-            if matched_id:
-                transcript_updates[matched_id] = float(pd.to_numeric(fold_change))
-            else:
-                unmatched_ids.append(transcript_id)
-
-        self.transcript_updates = transcript_updates
+            self.transcript_updates[transcript_id] = float(pd.to_numeric(fold_change))
 
         # Update statistics
         self.stats["valid_transcripts"] = len(self.transcript_updates)
         csv_data_length = (
             len(self.csv_data) if self.csv_data is not None else len(valid_data)
         )
-        self.stats["invalid_transcripts"] = (
-            csv_data_length - len(valid_data) + len(unmatched_ids)
-        )
-        self.stats["unmatched_ids"] = len(unmatched_ids)
-        self.stats["matching_success_rate"] = (
-            len(self.transcript_updates) / len(valid_data)
-        ) * 100
+        self.stats["invalid_transcripts"] = csv_data_length - len(valid_data)
 
         self.console.print(f"[blue]📊 Standard Processing Results:[/blue]")
         self.console.print(f"  Transcript IDs processed: {len(valid_data)}")
-        self.console.print(f"  Successfully matched: {len(self.transcript_updates)}")
-        self.console.print(f"  Unmatched IDs: {len(unmatched_ids)}")
+        self.console.print(f"  Valid entries: {len(self.transcript_updates)}")
         self.console.print(
-            f"  Matching success rate: {self.stats['matching_success_rate']:.1f}%"
+            f"[yellow]  Note: Flexible ID matching will occur during database update phase[/yellow]"
         )
-
-        if unmatched_ids and len(unmatched_ids) <= 10:
-            self.console.print(
-                f"[yellow]Unmatched IDs: {', '.join(unmatched_ids[:10])}[/yellow]"
-            )
-        elif len(unmatched_ids) > 10:
-            self.console.print(
-                f"[yellow]First 10 unmatched IDs: {', '.join(unmatched_ids[:10])}... (+{len(unmatched_ids)-10} more)[/yellow]"
-            )
 
     def _process_deseq2_data(
         self, valid_data: pd.DataFrame, symbol_col: str, log2_col: str
@@ -619,6 +591,88 @@ class PatientDatabaseCreator:
             if "db_manager" in locals():
                 db_manager.close()
 
+    def _apply_flexible_id_matching(self, target_db) -> None:
+        """Apply flexible transcript ID matching against target database.
+
+        This method matches transcript IDs from the CSV against what's actually
+        in the target database, handling version suffixes and variants.
+        Updates self.transcript_updates to only include matched IDs.
+
+        Args:
+            target_db: DatabaseManager for target patient database
+        """
+        self.console.print(
+            "[blue]🔍 Applying flexible ID matching against target database...[/blue]"
+        )
+
+        # Get transcript IDs from target database
+        try:
+            cursor = target_db.cursor
+
+            # Try normalized schema first
+            try:
+                cursor.execute(
+                    "SELECT DISTINCT transcript_id FROM transcripts WHERE transcript_id IS NOT NULL"
+                )
+                database_transcript_ids = {row[0] for row in cursor.fetchall()}
+
+                if not database_transcript_ids:  # If empty, try legacy
+                    raise Exception("No IDs in normalized schema")
+
+            except Exception:
+                # Fallback to legacy table
+                cursor.execute(
+                    "SELECT DISTINCT transcript_id FROM cancer_transcript_base WHERE transcript_id IS NOT NULL"
+                )
+                database_transcript_ids = {row[0] for row in cursor.fetchall()}
+
+            # Match each CSV ID against database IDs
+            original_updates = self.transcript_updates.copy()
+            matched_updates = {}
+            unmatched_ids = []
+
+            for csv_id, fold_change in original_updates.items():
+                matched_id = self._match_transcript_id_flexibly(csv_id, database_transcript_ids)
+
+                if matched_id:
+                    matched_updates[matched_id] = fold_change
+                else:
+                    unmatched_ids.append(csv_id)
+
+            # Update with only matched IDs
+            self.transcript_updates = matched_updates
+
+            # Update statistics
+            total_csv_ids = len(original_updates)
+            matched_count = len(matched_updates)
+            self.stats["unmatched_ids"] = len(unmatched_ids)
+            self.stats["matching_success_rate"] = (matched_count / total_csv_ids * 100) if total_csv_ids > 0 else 0
+
+            # Report results
+            self.console.print(f"[blue]📊 Flexible Matching Results:[/blue]")
+            self.console.print(f"  CSV transcript IDs: {total_csv_ids}")
+            self.console.print(f"  Successfully matched: {matched_count}")
+            self.console.print(f"  Unmatched IDs: {len(unmatched_ids)}")
+            self.console.print(
+                f"  Matching success rate: {self.stats['matching_success_rate']:.1f}%"
+            )
+
+            if unmatched_ids and len(unmatched_ids) <= 10:
+                self.console.print(
+                    f"[yellow]Unmatched IDs: {', '.join(unmatched_ids)}[/yellow]"
+                )
+            elif len(unmatched_ids) > 10:
+                self.console.print(
+                    f"[yellow]First 10 unmatched IDs: {', '.join(unmatched_ids[:10])}... (+{len(unmatched_ids)-10} more)[/yellow]"
+                )
+
+        except Exception as e:
+            self.logger.warning(f"Flexible ID matching failed: {e}")
+            self.console.print(
+                f"[yellow]Warning: Could not perform flexible ID matching: {e}[/yellow]"
+            )
+            # Continue with original IDs if matching fails
+
     def _load_gene_symbol_mapping(self) -> None:
         """Load gene symbol to transcript ID mapping from database.
 
@@ -783,6 +837,11 @@ class PatientDatabaseCreator:
             target_config = self.source_db_config.copy()
             target_config["dbname"] = self.target_db_name
             target_db = get_db_manager(target_config)
+
+            # Apply flexible ID matching for standard format (not DESeq2)
+            # This matches transcript IDs from CSV against what's actually in the database
+            if not self.is_deseq2_format:
+                self._apply_flexible_id_matching(target_db)
 
             # Process updates in batches
             transcript_ids = list(self.transcript_updates.keys())

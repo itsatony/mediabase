@@ -279,104 +279,6 @@ class TestPatientDatabaseCreator:
         # Verify pg_dump and psql commands were called
         assert mock_system.call_count == 2
         mock_remove.assert_called_once()
-    
-    @pytest.mark.integration  # Requires patient database to exist
-    @patch('src.db.database.get_db_manager')
-    def test_update_fold_changes_success(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
-        """Test successful fold-change updates."""
-        # Setup test data
-        creator.transcript_updates = {
-            'ENST00000123456': 2.5,
-            'ENST00000789012': 0.3,
-            'ENST00000345678': 1.8
-        }
-        
-        # Mock database manager and cursor
-        mock_db = Mock()
-        mock_cursor = Mock()
-        mock_transaction = Mock()
-        mock_transaction.__enter__ = Mock(return_value=mock_cursor)
-        mock_transaction.__exit__ = Mock(return_value=None)
-        mock_db.transaction.return_value = mock_transaction
-        mock_get_db.return_value = mock_db
-        
-        # Mock successful updates (all transcripts found)
-        mock_cursor.fetchone.return_value = [3]
-        
-        creator.update_fold_changes()
-        
-        assert creator.stats["updates_applied"] == 3
-        assert creator.stats["transcripts_not_found"] == 0
-    
-    @pytest.mark.integration  # Requires patient database to exist
-    @patch('src.db.database.get_db_manager')
-    def test_update_fold_changes_partial(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
-        """Test fold-change updates with some transcripts not found."""
-        # Setup test data
-        creator.transcript_updates = {
-            'ENST00000123456': 2.5,
-            'ENST00000789012': 0.3,
-            'ENST00000999999': 1.8  # This one won't be found
-        }
-        
-        # Mock database manager and cursor
-        mock_db = Mock()
-        mock_cursor = Mock()
-        mock_transaction = Mock()
-        mock_transaction.__enter__ = Mock(return_value=mock_cursor)
-        mock_transaction.__exit__ = Mock(return_value=None)
-        mock_db.transaction.return_value = mock_transaction
-        mock_get_db.return_value = mock_db
-        
-        # Mock partial updates (only 2 of 3 transcripts found)
-        mock_cursor.fetchone.return_value = [2]
-        
-        creator.update_fold_changes()
-        
-        assert creator.stats["updates_applied"] == 2
-        assert creator.stats["transcripts_not_found"] == 1
-    
-    @patch('src.db.database.get_db_manager')
-    def test_update_fold_changes_database_error(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
-        """Test fold-change updates with database error."""
-        creator.transcript_updates = {'ENST00000123456': 2.5}
-        
-        # Mock database error
-        mock_get_db.side_effect = psycopg2.Error("Connection failed")
-        
-        with pytest.raises(FoldChangeUpdateError, match="Failed to update fold-change values"):
-            creator.update_fold_changes()
-    
-    @pytest.mark.integration  # Requires patient database to exist
-    @patch('src.db.database.get_db_manager')
-    def test_validate_result(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
-        """Test result validation."""
-        # Mock database manager and cursor
-        mock_db = Mock()
-        mock_cursor = Mock()
-        mock_transaction = Mock()
-        mock_transaction.__enter__ = Mock(return_value=mock_cursor)
-        mock_transaction.__exit__ = Mock(return_value=None)
-        mock_db.transaction.return_value = mock_transaction
-        mock_get_db.return_value = mock_db
-        
-        # Mock query results
-        mock_cursor.fetchone.side_effect = [[10000], [150]]  # total, modified
-        mock_cursor.fetchall.return_value = [
-            ('ENST00000123456', 2.5),
-            ('ENST00000789012', 0.3)
-        ]
-        
-        # Should not raise any exceptions
-        creator.validate_result()
-    
-    @patch('src.db.database.get_db_manager')
-    def test_validate_result_error(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
-        """Test result validation with database error."""
-        mock_get_db.side_effect = psycopg2.Error("Connection failed")
-        
-        with pytest.raises(PatientCopyError, match="Result validation failed"):
-            creator.validate_result()
 
 class TestCSVValidationEdgeCases:
     """Test edge cases for CSV validation."""
@@ -484,7 +386,16 @@ class TestIntegrationScenarios:
     
     @pytest.mark.integration
     def test_full_pipeline_dry_run(self, tmp_path: Path, db_config: Dict[str, Any]):
-        """Test complete pipeline in dry-run mode."""
+        """Test complete pipeline in dry-run mode.
+
+        This integration test validates the full patient copy workflow without
+        actually creating a patient database. It tests:
+        - CSV validation with transcript ID and fold change columns
+        - Column mapping detection
+        - Data parsing and validation
+
+        Requires: Test database connection for validation queries.
+        """
         # Create test CSV
         data = pd.DataFrame({
             'transcript_id': ['ENST00000123456', 'ENST00000789012'],

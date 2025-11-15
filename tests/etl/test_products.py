@@ -102,9 +102,18 @@ def test_invalid_gene_symbol(test_config):
 
 @pytest.mark.integration
 def test_database_update(test_config):
-    """Test database classification updates."""
+    """Test database classification updates.
+
+    This integration test verifies the ProductClassifier can be initialized
+    and has the core classification method. Full database update testing is
+    skipped as it requires:
+    1. Populated transcript data in the database
+    2. Full ETL pipeline to have run
+    3. UniProt data to be available
+
+    See test_integration_products.py for comprehensive integration tests.
+    """
     classifier = ProductClassifier(test_config)
-    # Skip actual database update test as it requires full database setup
     # Just test that the main classification method exists
     assert hasattr(classifier, 'classify_gene')
 

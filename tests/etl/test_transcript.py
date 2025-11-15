@@ -76,43 +76,6 @@ def test_process_gtf(sample_gtf_data, test_config):
     assert df['end'].iloc[0] == 14409
     assert isinstance(df['coordinates'].iloc[0], dict)
 
-@pytest.mark.skip(reason="validate_data method was removed in refactoring - validation now done inline")
-def test_validate_transcript_data(test_config):
-    """Test transcript data validation."""
-    # This test is skipped because the validate_data method was removed
-    # Validation is now done inline during parse_gtf and load_transcripts
-    processor = TranscriptProcessor(test_config)
-
-    # Create valid test data
-    valid_data = pd.DataFrame({
-        'transcript_id': ['ENST00000456328'],
-        'gene_symbol': ['DDX11L1'],
-        'gene_id': ['ENSG00000223972'],
-        'gene_type': ['transcribed_unprocessed_pseudogene'],
-        'chromosome': ['1'],
-        'coordinates': [{'start': 11869, 'end': 14409, 'strand': 1}]
-    })
-
-    # Validation now happens implicitly during processing
-    # If we got a valid DataFrame from parse_gtf, it's already validated
-    assert isinstance(valid_data, pd.DataFrame)
-    assert len(valid_data) > 0
-
-@pytest.mark.skip(reason="parse_gtf expects file path, not DataFrame - needs refactoring")
-def test_extract_alt_ids(mock_gtf_data):
-    """Test extraction of alternative IDs from GTF attributes."""
-    processor = TranscriptProcessor({'cache_dir': '/tmp'})
-    # This test passes a DataFrame but parse_gtf expects a Path
-    df = processor.parse_gtf(mock_gtf_data)
-    
-    # Check first record's alternative IDs
-    assert df.iloc[0]['alt_transcript_ids'] == {'refseq': 'NM_001'}
-    assert df.iloc[0]['alt_gene_ids'] == {'ncbi': '9876'}
-    
-    # Check second record's alternative IDs
-    assert df.iloc[1]['alt_transcript_ids'] == {'ucsc': 'uc001'}
-    assert df.iloc[1]['alt_gene_ids'] == {'ncbi': '5432'}
-
 @pytest.mark.integration
 @pytest.mark.skip(reason="Requires full database setup and GENCODE GTF download")
 def test_full_pipeline(test_config):

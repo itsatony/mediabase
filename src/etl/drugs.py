@@ -355,22 +355,27 @@ class DrugProcessor(BaseProcessor):
             raise DatabaseError("Database connection failed")
             
         try:
-            # Get all gene symbols from the database for matching
+            # Get all gene symbols from the database for matching (normalized schema)
             self.db_manager.cursor.execute("""
-                SELECT DISTINCT gene_symbol FROM cancer_transcript_base
+                SELECT DISTINCT gene_symbol FROM genes
                 WHERE gene_symbol IS NOT NULL
             """)
             db_genes = [row[0] for row in self.db_manager.cursor.fetchall() if row[0]]
-            
+
             # Create a normalized map for case-insensitive lookups
             self.logger.info(f"Building normalized gene symbol map for {len(db_genes)} database genes")
             db_gene_map = {normalize_gene_symbol(g): g for g in db_genes if g}
-            
-            # Get UniProt IDs from database for additional matching
+
+            # Get UniProt IDs from database for additional matching (normalized schema)
             self.db_manager.cursor.execute("""
-                SELECT gene_symbol, uniprot_ids 
-                FROM cancer_transcript_base
-                WHERE uniprot_ids IS NOT NULL AND array_length(uniprot_ids, 1) > 0
+                SELECT DISTINCT
+                    g.gene_symbol,
+                    ARRAY_AGG(DISTINCT gcr.external_id) as uniprot_ids
+                FROM gene_cross_references gcr
+                INNER JOIN genes g ON gcr.gene_id = g.gene_id
+                WHERE gcr.external_db = 'UniProt'
+                    AND gcr.external_id IS NOT NULL
+                GROUP BY g.gene_symbol
             """)
             
             # Create UniProt to gene mapping
@@ -463,17 +468,14 @@ class DrugProcessor(BaseProcessor):
             matched_count = 0
             unmatched_count = 0
             matched_genes = []  # Track all matched genes for debugging
-            
-            # Count existing references before processing
+
+            # Count existing drug interactions before processing (normalized schema)
             if self.db_manager.cursor:
                 self.db_manager.cursor.execute("""
-                    SELECT COUNT(*) FROM cancer_transcript_base
-                    WHERE jsonb_array_length(
-                        COALESCE(source_references->'drugs', '[]'::jsonb)
-                    ) > 0
+                    SELECT COUNT(DISTINCT gene_id) FROM gene_drug_interactions
                 """)
                 result = self.db_manager.cursor.fetchone()
-                self.logger.info(f"Records with drug references before processing: {result[0] if result else 0}")
+                self.logger.info(f"Genes with drug interactions before processing: {result[0] if result else 0}")
             
             # Debug sample of reference_ids in drug_targets
             has_refs = drug_targets['reference_ids'].apply(lambda x: bool(x) if isinstance(x, list) else False)
@@ -584,12 +586,16 @@ class DrugProcessor(BaseProcessor):
                 if debug_this_gene:
                     self.logger.info(f"  Final extracted references: {references}")
                 
-                # Get UniProt IDs for this gene if available
+                # Get UniProt IDs for this gene if available (normalized schema)
                 uniprot_ids = []
                 if self.db_manager.cursor:
                     self.db_manager.cursor.execute("""
-                        SELECT uniprot_ids FROM cancer_transcript_base
-                        WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
+                        SELECT ARRAY_AGG(DISTINCT gcr.external_id)
+                        FROM gene_cross_references gcr
+                        INNER JOIN genes g ON gcr.gene_id = g.gene_id
+                        WHERE g.gene_symbol = %s
+                          AND gcr.external_db = 'UniProt'
+                          AND gcr.external_id IS NOT NULL
                     """, (db_gene,))
                     result = self.db_manager.cursor.fetchone()
                     if result and result[0]:
@@ -614,64 +620,20 @@ class DrugProcessor(BaseProcessor):
             if updates:
                 self._update_drug_batch(updates)
             
-            # Update main table from temp table with enhanced ID mapping awareness
+            # Legacy table updates removed - using normalized schema only
+            # Drug data is already written to gene_drug_interactions table (line 759-772)
             with self.get_db_transaction() as transaction:
-                self.logger.debug("Updating main table from temporary table...")
-                transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base cb
-                    SET 
-                        drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data,
-                        source_references = jsonb_set(
-                            COALESCE(cb.source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{drugs}',
-                            tdd.drug_references,
-                            true
-                        )
-                    FROM temp_drug_data tdd
-                    WHERE cb.gene_symbol = tdd.gene_symbol
-                """)
-                
-                # Add secondary mapping for UniProt IDs to ensure complete coverage
-                transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base cb
-                    SET 
-                        drugs = COALESCE(cb.drugs, '{}'::jsonb) || tdd.drug_data,
-                        source_references = jsonb_set(
-                            COALESCE(cb.source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{drugs}',
-                            tdd.drug_references,
-                            true
-                        )
-                    FROM temp_drug_data tdd
-                    WHERE cb.uniprot_ids && tdd.uniprot_ids
-                    AND cb.gene_symbol != tdd.gene_symbol
-                    AND tdd.uniprot_ids IS NOT NULL
-                    AND array_length(tdd.uniprot_ids, 1) > 0
-                """)
-                
+                self.logger.debug("Legacy table updates skipped (using normalized schema)")
                 # Drop temporary table
                 transaction.cursor.execute("DROP TABLE IF EXISTS temp_drug_data")
                 
-            # After processing, check if any references were created
+            # After processing, check drug interactions in normalized schema
             if self.db_manager.cursor:
                 self.db_manager.cursor.execute("""
-                    SELECT COUNT(*) FROM cancer_transcript_base
-                    WHERE jsonb_array_length(
-                        COALESCE(source_references->'drugs', '[]'::jsonb)
-                    ) > 0
+                    SELECT COUNT(DISTINCT gene_id) FROM gene_drug_interactions
                 """)
                 result = self.db_manager.cursor.fetchone()
-                self.logger.info(f"Records with drug references after processing: {result[0] if result else 0}")
+                self.logger.info(f"Genes with drug interactions after processing: {result[0] if result else 0}")
                 
         except Exception as e:
             if self.db_manager.conn and not self.db_manager.conn.closed:
@@ -771,242 +733,27 @@ class DrugProcessor(BaseProcessor):
                     ON CONFLICT DO NOTHING
                 """)
 
-                # Update legacy table for backwards compatibility (if it exists)
-                try:
-                    transaction.cursor.execute("""
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_name = 'cancer_transcript_base'
-                    """)
-                    if transaction.cursor.fetchone():
-                        transaction.cursor.execute("""
-                            UPDATE cancer_transcript_base AS c
-                            SET
-                                drugs = COALESCE(c.drugs, '{}'::jsonb) || t.drug_data,
-                                source_references = jsonb_set(
-                                    COALESCE(c.source_references, '{
-                                        "go_terms": [],
-                                        "uniprot": [],
-                                        "drugs": [],
-                                        "pathways": []
-                                    }'::jsonb),
-                                    '{drugs}',
-                                    t.drug_references,
-                                    true
-                                )
-                            FROM temp_drug_data t
-                            WHERE c.gene_symbol = t.gene_symbol
-                        """)
-                except Exception as e:
-                    self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
+                # Legacy table update removed - using normalized schema only
+                # Drug data is already written to gene_drug_interactions table above (line 714-728)
+                self.logger.debug("Legacy table update skipped (using normalized schema)")
         except Exception as e:
             self.logger.error(f"Drug batch update failed: {e}")
             raise DatabaseError(f"Failed to update drug batch: {e}")
 
     def calculate_drug_scores(self) -> None:
-        """Calculate synergy-based drug scores using pathways and GO terms.
+        """Drug scoring algorithm removed.
+        
+        NOTE: Complex drug scoring algorithm was removed to eliminate blocking
+        operations on legacy table. Drug interaction data is available in the
+        gene_drug_interactions table. Scoring can be re-implemented later if needed
+        using the normalized schema.
         
         Raises:
-            DatabaseError: If drug score calculation fails
+            DatabaseError: Not raised (stub implementation)
         """
-        if self.skip_scores:
-            self.logger.info("Skipping drug score calculation as requested")
-            return
-            
-        if not self.ensure_connection() or not self.db_manager.cursor:
-            raise DatabaseError("Database connection failed")
-            
-        try:
-            # Create temporary scoring tables
-            with self.get_db_transaction() as transaction:
-                transaction.cursor.execute("""
-                    -- Table for storing intermediate pathway scores
-                    CREATE TEMP TABLE temp_pathway_scores (
-                        gene_symbol TEXT,
-                        drug_id TEXT,
-                        pathway_score FLOAT,
-                        PRIMARY KEY (gene_symbol, drug_id)
-                    );
-                    
-                    -- Table for storing intermediate GO term scores
-                    CREATE TEMP TABLE temp_go_scores (
-                        gene_symbol TEXT,
-                        drug_id TEXT,
-                        go_score FLOAT,
-                        PRIMARY KEY (gene_symbol, drug_id)
-                    );
-                    
-                    -- Table for final combined scores
-                    CREATE TEMP TABLE temp_final_scores (
-                        gene_symbol TEXT,
-                        drug_scores JSONB
-                    );
-                """)
-            
-            # Count total genes to process
-            if self.db_manager.cursor:
-                self.db_manager.cursor.execute("""
-                    SELECT COUNT(*) 
-                    FROM cancer_transcript_base 
-                    WHERE drugs IS NOT NULL
-                """)
-                result = self.db_manager.cursor.fetchone()
-                total_genes = result[0] if result is not None else 0
-            else:
-                total_genes = 0
-                
-            self.logger.info(f"Calculating drug scores for {total_genes} genes")
-            
-            # Process in batches
-            offset = 0
-            total_processed = 0
-            
-            # Setup progress tracking
-            from ..utils.logging import get_progress_bar, complete_all_progress_bars
-            
-            # Create a progress bar
-            progress = get_progress_bar(
-                total=total_genes,
-                desc="Calculating drug scores",
-                module_name="drugs",
-                unit="genes"
-            )
-            
-            try:
-                while True:
-                    # Ensure connection is still valid
-                    if not self.ensure_connection() or not self.db_manager.cursor:
-                        raise DatabaseError("Database connection lost during score calculation")
-                        
-                    # Get batch of genes with drugs
-                    self.db_manager.cursor.execute("""
-                        SELECT gene_symbol, drugs, pathways, go_terms
-                        FROM cancer_transcript_base
-                        WHERE drugs IS NOT NULL
-                        ORDER BY gene_symbol
-                        LIMIT %s OFFSET %s
-                    """, (self.batch_size, offset))
-                    
-                    rows = self.db_manager.cursor.fetchall()
-                    if not rows:
-                        break
-                        
-                    # Process scores in a transaction
-                    with self.get_db_transaction() as transaction:
-                        # Process pathway scores for this batch
-                        transaction.cursor.execute("""
-                            INSERT INTO temp_pathway_scores
-                            WITH batch_genes AS (
-                                SELECT 
-                                    t1.gene_symbol,
-                                    t1.drugs,
-                                    t1.pathways as source_pathways
-                                FROM cancer_transcript_base t1
-                                WHERE t1.gene_symbol = ANY(%s)
-                            )
-                            SELECT DISTINCT
-                                bg.gene_symbol,
-                                d.key as drug_id,
-                                COUNT(DISTINCT t2.gene_symbol)::float as pathway_score
-                            FROM batch_genes bg
-                            CROSS JOIN LATERAL jsonb_each(bg.drugs) d
-                            JOIN cancer_transcript_base t2 
-                            ON t2.pathways && bg.source_pathways
-                            AND t2.gene_type = 'protein_coding'
-                            GROUP BY bg.gene_symbol, d.key
-                        """, ([row[0] for row in rows],))
-                        
-                        # Process GO term scores for this batch
-                        transaction.cursor.execute("""
-                            INSERT INTO temp_go_scores
-                            WITH batch_genes AS (
-                                SELECT 
-                                    t1.gene_symbol,
-                                    t1.drugs,
-                                    t1.go_terms as source_terms
-                                FROM cancer_transcript_base t1
-                                WHERE t1.gene_symbol = ANY(%s)
-                            )
-                            SELECT DISTINCT
-                                bg.gene_symbol,
-                                d.key as drug_id,
-                                COUNT(DISTINCT t2.gene_symbol)::float as go_score
-                            FROM batch_genes bg
-                            CROSS JOIN LATERAL jsonb_each(bg.drugs) d
-                            JOIN cancer_transcript_base t2 
-                            ON EXISTS (
-                                SELECT 1
-                                FROM jsonb_object_keys(bg.source_terms) go_id
-                                WHERE t2.go_terms ? go_id
-                            )
-                            AND t2.gene_type = 'protein_coding'
-                            GROUP BY bg.gene_symbol, d.key
-                        """, ([row[0] for row in rows],))
-                        
-                        # Combine scores for this batch with proper casting to ensure numeric operations
-                        pathway_weight = float(self.config.get('drug_pathway_weight', 1.0))
-                        go_weight = pathway_weight * GO_TERM_WEIGHT_FACTOR
-                        
-                        transaction.cursor.execute("""
-                            INSERT INTO temp_final_scores
-                            SELECT 
-                                ps.gene_symbol,
-                                jsonb_object_agg(
-                                    ps.drug_id,
-                                    (COALESCE(ps.pathway_score * %s, 0) + 
-                                     COALESCE(gs.go_score * %s, 0))::text::jsonb
-                                ) as drug_scores
-                            FROM temp_pathway_scores ps
-                            LEFT JOIN temp_go_scores gs 
-                            ON ps.gene_symbol = gs.gene_symbol 
-                            AND ps.drug_id = gs.drug_id
-                            WHERE ps.gene_symbol = ANY(%s)
-                            GROUP BY ps.gene_symbol
-                        """, (pathway_weight, go_weight, [row[0] for row in rows]))
-                        
-                        # Update main table for this batch
-                        transaction.cursor.execute("""
-                            UPDATE cancer_transcript_base cb
-                            SET drug_scores = fs.drug_scores
-                            FROM temp_final_scores fs
-                            WHERE cb.gene_symbol = fs.gene_symbol
-                        """)
-                        
-                        # Clear temporary tables for next batch
-                        transaction.cursor.execute("""
-                            TRUNCATE temp_pathway_scores, temp_go_scores, temp_final_scores
-                        """)
-                    
-                    batch_size = len(rows)
-                    total_processed += batch_size
-                    offset += self.batch_size
-                    
-                    # Update progress
-                    progress.update(batch_size)
-                
-                # Log final statistics
-                self.logger.info(f"Drug score calculation completed. Total genes processed: {total_processed}")
-            finally:
-                # Ensure progress bar is completed
-                progress.close()
-            
-        except Exception as e:
-            self.logger.error(f"Drug score calculation failed: {e}")
-            if self.db_manager.conn and not self.db_manager.conn.closed:
-                self.db_manager.conn.rollback()
-            raise DatabaseError(f"Drug score calculation failed: {e}")
-        finally:
-            # Clean up temporary tables
-            try:
-                if self.ensure_connection() and self.db_manager.cursor:
-                    self.db_manager.cursor.execute("""
-                        DROP TABLE IF EXISTS temp_pathway_scores;
-                        DROP TABLE IF EXISTS temp_go_scores;
-                        DROP TABLE IF EXISTS temp_final_scores;
-                    """)
-                    if self.db_manager.conn and not self.db_manager.conn.closed:
-                        self.db_manager.conn.commit()
-            except Exception as e:
-                self.logger.warning(f"Failed to clean up temporary tables: {e}")
+        self.logger.info("Drug scoring skipped (algorithm removed - see gene_drug_interactions table for drug data)")
+        return
+
 
     def extract_publication_references(self, drug_references: str) -> List[Publication]:
         """Extract publication references from drug evidence data.
@@ -1077,60 +824,52 @@ class DrugProcessor(BaseProcessor):
     
     def run(self) -> None:
         """Run the complete drug processing pipeline.
-        
+
         Steps:
         1. Download DrugCentral data
         2. Process drug-target relationships
-        3. Integrate with transcript data
-        4. Calculate synergy-based drug scores
-        
+        3. Integrate with transcript data (writes to gene_drug_interactions table)
+
         Raises:
             Various ETLError subclasses based on failure point
         """
         try:
             self.logger.info("Starting drug processing pipeline...")
-            
-            # Add diagnostic query to count transcripts before processing
+
+            # Add diagnostic query using normalized schema
             if not self.ensure_connection() or not self.db_manager.cursor:
                 raise DatabaseError("Database connection failed")
-                    
+
             self.db_manager.cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_records,
-                    COUNT(CASE WHEN drugs IS NOT NULL AND drugs != '{}'::jsonb THEN 1 END) as with_drugs,
-                    COUNT(CASE WHEN drug_scores IS NOT NULL AND drug_scores != '{}'::jsonb THEN 1 END) as with_scores,
-                    COUNT(CASE WHEN gene_symbol IS NOT NULL THEN 1 END) as with_genes,
-                    COUNT(CASE WHEN uniprot_ids IS NOT NULL AND array_length(uniprot_ids, 1) > 0 THEN 1 END) as with_uniprot
-                FROM cancer_transcript_base
+                SELECT
+                    COUNT(DISTINCT g.gene_id) as total_genes,
+                    COUNT(DISTINCT gdi.gene_id) as genes_with_drugs,
+                    COUNT(DISTINCT gdi.id) as total_drug_interactions
+                FROM genes g
+                LEFT JOIN gene_drug_interactions gdi ON g.gene_id = gdi.gene_id
             """)
-            
+
             stats = self.db_manager.cursor.fetchone()
             if stats:
                 self.logger.info(
                     f"Before drug processing:\n"
-                    f"- Total records: {stats[0]:,}\n"
-                    f"- Records with drugs: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
-                    f"- Records with drug scores: {stats[2]:,} ({stats[2]/max(1, stats[0])*100:.1f}%)\n"
-                    f"- Records with gene symbols: {stats[3]:,} ({stats[3]/max(1, stats[0])*100:.1f}%)\n"
-                    f"- Records with UniProt IDs: {stats[4]:,} ({stats[4]/max(1, stats[0])*100:.1f}%)"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Genes with drugs: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Total drug interactions: {stats[2]:,}"
                 )
-            
+
             # Download and extract data
             drug_data_path = self.download_drugcentral()
-            
+
             # Process drug targets with validation
             drug_targets = self.process_drug_targets(drug_data_path)
             if drug_targets.empty:
                 raise ProcessingError("No valid drug target relationships found")
-            
+
             # Integrate with transcript data
-            self.logger.info("Integrating drug data with transcripts...")
+            self.logger.info("Integrating drug data with gene_drug_interactions table...")
             self.integrate_drugs(drug_targets)
-            
-            # Calculate drug scores
-            self.logger.info("Calculating drug interaction scores...")
-            self.calculate_drug_scores()
-            
+
             # Verify results
             self._verify_integration_results()
             
@@ -1141,59 +880,65 @@ class DrugProcessor(BaseProcessor):
             raise
     
     def _verify_integration_results(self) -> None:
-        """Verify drug integration results with database statistics."""
+        """Verify drug integration results with database statistics.
+
+        NOTE: Migrated to use normalized schema (genes + gene_drug_interactions).
+        """
         if not self.ensure_connection():
             self.logger.warning("Cannot verify results - database connection unavailable")
             return
-            
+
         try:
             # Validate cursor before using
             if not self.db_manager.cursor:
                 self.logger.warning("Cannot verify results - no database cursor available")
                 return
-                
-            # Detailed verification that includes reference counts
+
+            # Verification using normalized schema
             self.db_manager.cursor.execute("""
-                SELECT 
-                    COUNT(*) as total,
-                    COUNT(CASE WHEN drugs != '{}'::jsonb THEN 1 END) as with_drugs,
-                    COUNT(CASE WHEN drug_scores != '{}'::jsonb THEN 1 END) as with_scores,
-                    COUNT(CASE WHEN source_references->'drugs' IS NOT NULL 
-                              AND source_references->'drugs' != '[]'::jsonb 
-                         THEN 1 END) as with_refs,
-                    SUM(CASE WHEN source_references->'drugs' IS NOT NULL 
-                             THEN jsonb_array_length(source_references->'drugs')
-                             ELSE 0 
-                        END) as total_refs
-                FROM cancer_transcript_base
+                SELECT
+                    COUNT(DISTINCT g.gene_id) as total_genes,
+                    COUNT(DISTINCT gdi.gene_id) as genes_with_drugs,
+                    COUNT(DISTINCT gdi.drug_id) as unique_drugs,
+                    COUNT(*) as total_drug_interactions
+                FROM genes g
+                LEFT JOIN gene_drug_interactions gdi ON g.gene_id = gdi.gene_id
             """)
-            
+
             stats = self.db_manager.cursor.fetchone()
             if stats:
                 self.logger.info(
                     f"Pipeline completed:\n"
-                    f"- Total records: {stats[0]:,}\n"
-                    f"- Records with drugs: {stats[1]:,}\n"
-                    f"- Records with drug scores: {stats[2]:,}\n"
-                    f"- Records with drug references: {stats[3]:,}\n"
-                    f"- Total drug references: {stats[4]:,}"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Genes with drug interactions: {stats[1]:,}\n"
+                    f"- Unique drugs: {stats[2]:,}\n"
+                    f"- Total drug interactions: {stats[3]:,}"
                 )
-                
-                # If there are no references, add extra debugging info
-                if stats[3] == 0:
-                    self.logger.warning("No drug references were found! Checking reference storage...")
-                    
-                    # Check a sample of records with drugs for reference structure
+
+                # If there are no drug interactions, add extra debugging info
+                if stats[1] == 0:
+                    self.logger.warning("No drug interactions were found! Checking gene_drug_interactions table...")
+
+                    # Check if table exists and has any data
                     self.db_manager.cursor.execute("""
-                        SELECT gene_symbol, source_references 
-                        FROM cancer_transcript_base 
-                        WHERE drugs != '{}'::jsonb
-                        LIMIT 5
+                        SELECT COUNT(*) FROM gene_drug_interactions
                     """)
-                    
-                    sample_records = self.db_manager.cursor.fetchall()
-                    for record in sample_records:
-                        self.logger.info(f"Sample gene {record[0]} source_references: {record[1]}")
-                
+
+                    count = self.db_manager.cursor.fetchone()
+                    self.logger.info(f"Total rows in gene_drug_interactions: {count[0] if count else 0}")
+
+                    # Show sample of drugs if any exist
+                    if count and count[0] > 0:
+                        self.db_manager.cursor.execute("""
+                            SELECT g.gene_symbol, gdi.drug_name, gdi.interaction_type
+                            FROM gene_drug_interactions gdi
+                            INNER JOIN genes g ON gdi.gene_id = g.gene_id
+                            LIMIT 5
+                        """)
+
+                        sample_records = self.db_manager.cursor.fetchall()
+                        for record in sample_records:
+                            self.logger.info(f"Sample: {record[0]} - {record[1]} ({record[2]})")
+
         except Exception as e:
             self.logger.warning(f"Failed to verify results: {e}")

@@ -210,28 +210,27 @@ class PathwayProcessor(BaseProcessor):
             return {}
     
     def _get_ncbi_mapping(self) -> Dict[str, str]:
-        """Get mapping from NCBI gene IDs to gene symbols.
-        
+        """Get mapping from NCBI gene IDs to gene symbols using normalized schema.
+
         Returns:
             Dictionary mapping NCBI IDs to gene symbols
         """
         if not self.ensure_connection() or not self.db_manager.cursor:
             self.logger.warning("Cannot get NCBI mappings: no database connection")
             return {}
-        
+
         try:
-            # Query database for existing gene symbols and NCBI IDs
+            # Query gene_cross_references table for NCBI ID mappings (normalized schema)
             self.db_manager.cursor.execute("""
-                SELECT 
-                    gene_symbol,
-                    unnest(ncbi_ids) as ncbi_id
-                FROM 
-                    cancer_transcript_base
-                WHERE 
-                    ncbi_ids IS NOT NULL
-                    AND array_length(ncbi_ids, 1) > 0
+                SELECT DISTINCT
+                    g.gene_symbol,
+                    gcr.external_id as ncbi_id
+                FROM gene_cross_references gcr
+                INNER JOIN genes g ON gcr.gene_id = g.gene_id
+                WHERE gcr.external_db IN ('NCBI', 'EntrezGene')
+                    AND gcr.external_id IS NOT NULL
             """)
-            
+
             # Build mapping dictionary with normalized keys for case-insensitive lookup
             mapping = {}
             for row in self.db_manager.cursor.fetchall():
@@ -240,15 +239,15 @@ class PathwayProcessor(BaseProcessor):
                     # Add both normalized and original versions of the NCBI ID
                     mapping[ncbi_id] = gene_symbol
                     mapping[ncbi_id.upper()] = gene_symbol
-            
-            # If no mappings found in database, use a fallback
+
+            # If no mappings found in gene_cross_references, use direct gene symbol mapping
             if not mapping:
-                self.logger.warning("No NCBI ID mappings found in database, using direct symbol mapping")
-                
-                # Query database for gene symbols to use for direct mapping
+                self.logger.warning("No NCBI ID mappings found in gene_cross_references, using direct symbol mapping")
+
+                # Query genes table for gene symbols to use for direct mapping
                 self.db_manager.cursor.execute("""
                     SELECT DISTINCT gene_symbol
-                    FROM cancer_transcript_base
+                    FROM genes
                     WHERE gene_symbol IS NOT NULL
                 """)
                 
@@ -285,36 +284,35 @@ class PathwayProcessor(BaseProcessor):
         try:
             self.logger.info("Enriching transcripts with pathway data")
             
-            # Add diagnostic query to count transcripts before processing
+            # Add diagnostic query to count genes before processing (using normalized schema)
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
-                    
+
             self.db_manager.cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_genes,
-                    COUNT(CASE WHEN pathways IS NOT NULL AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
-                    (SELECT COUNT(DISTINCT gene_symbol) FROM cancer_transcript_base) as unique_genes
-                FROM cancer_transcript_base
+                SELECT
+                    COUNT(DISTINCT g.gene_id) as total_genes,
+                    COUNT(DISTINCT gp.gene_id) as genes_with_pathways
+                FROM genes g
+                LEFT JOIN gene_pathways gp ON g.gene_id = gp.gene_id
             """)
-            
+
             stats = self.db_manager.cursor.fetchone()
             if stats:
                 self.logger.info(
                     f"Before pathway enrichment:\n"
-                    f"- Total records: {stats[0]:,}\n"
-                    f"- Records with pathways: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
-                    f"- Unique genes: {stats[2]:,}"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Genes with pathways: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)"
                 )
                 
             # Load pathway publications
             pathway_publications = self._load_pathway_publications()
             
-            # Get all gene symbols from the database for matching
+            # Get all gene symbols from the database for matching (using normalized schema)
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
-                
+
             self.db_manager.cursor.execute("""
-                SELECT DISTINCT gene_symbol FROM cancer_transcript_base
+                SELECT DISTINCT gene_symbol FROM genes
                 WHERE gene_symbol IS NOT NULL
             """)
             db_genes = [row[0] for row in self.db_manager.cursor.fetchall() if row[0]]
@@ -372,22 +370,28 @@ class PathwayProcessor(BaseProcessor):
             if updates:
                 self._update_batch(updates)
             
-            # At the end of the method, add another diagnostic query
+            # At the end of the method, add another diagnostic query (using normalized schema)
             self.db_manager.cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_genes,
-                    COUNT(CASE WHEN pathways IS NOT NULL AND array_length(pathways, 1) > 0 THEN 1 END) as with_pathways,
-                    AVG(CASE WHEN pathways IS NOT NULL THEN array_length(pathways, 1) ELSE 0 END) as avg_pathway_count
-                FROM cancer_transcript_base
+                SELECT
+                    COUNT(DISTINCT g.gene_id) as total_genes,
+                    COUNT(DISTINCT gp.gene_id) as genes_with_pathways,
+                    COALESCE(AVG(pathway_counts.pathway_count), 0) as avg_pathway_count
+                FROM genes g
+                LEFT JOIN gene_pathways gp ON g.gene_id = gp.gene_id
+                LEFT JOIN (
+                    SELECT gene_id, COUNT(*) as pathway_count
+                    FROM gene_pathways
+                    GROUP BY gene_id
+                ) pathway_counts ON g.gene_id = pathway_counts.gene_id
             """)
-            
+
             stats = self.db_manager.cursor.fetchone()
             if stats:
                 self.logger.info(
                     f"After pathway enrichment:\n"
-                    f"- Total records: {stats[0]:,}\n"
-                    f"- Records with pathways: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
-                    f"- Average pathways per record: {stats[2]:.2f}"
+                    f"- Total genes: {stats[0]:,}\n"
+                    f"- Genes with pathways: {stats[1]:,} ({stats[1]/max(1, stats[0])*100:.1f}%)\n"
+                    f"- Average pathways per gene: {stats[2]:.2f}"
                 )
                 
             self.logger.info("Pathway enrichment completed successfully")
@@ -399,43 +403,20 @@ class PathwayProcessor(BaseProcessor):
     
     def _update_batch(self, updates: List[Tuple[List[str], str, str]]) -> None:
         """Update a batch of transcript records with pathway data.
-        
+
+        NOTE: Legacy table UPDATE removed - pathway data is written to gene_pathways table
+        in the integrate_pathways() method. This method is kept for backwards compatibility
+        but no longer performs database operations.
+
         Args:
             updates: List of tuples with (pathways, publications_json, gene_symbol)
-            
+
         Raises:
             DatabaseError: If batch update fails
         """
-        if not self.db_manager.cursor:
-            raise DatabaseError("No database cursor available")
-        
-        try:
-            # Use a single transaction context for the update
-            with self.get_db_transaction() as transaction:
-                # Execute the batch update within the transaction
-                transaction.cursor.executemany(
-                    """
-                    UPDATE cancer_transcript_base
-                    SET 
-                        pathways = %s::text[],
-                        source_references = jsonb_set(
-                            COALESCE(source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{pathways}',
-                            COALESCE(%s::jsonb, '[]'::jsonb),
-                            true
-                        )
-                    WHERE gene_symbol = %s
-                    """,
-                    updates
-                )
-        except Exception as e:
-            self.logger.error(f"Pathway batch update failed: {e}")
-            raise DatabaseError(f"Failed to update pathway batch: {e}")
+        # Legacy table update removed - using normalized schema only
+        # Pathway data is written to gene_pathways table in integrate_pathways()
+        self.logger.debug(f"Processed batch of {len(updates)} genes (legacy UPDATE skipped)")
     
     def extract_pathway_references(self, pathway_data: Dict[str, Any]) -> List[Publication]:
         """Extract publication references from pathway data.
@@ -503,13 +484,16 @@ class PathwayProcessor(BaseProcessor):
                 if not gene_symbol or not pathways:
                     continue
                     
-                # Get additional IDs for this gene for more comprehensive mapping
+                # Get additional IDs for this gene from normalized schema (gene_cross_references)
                 uniprot_ids = []
                 if self.db_manager.cursor:
                     self.db_manager.cursor.execute("""
-                        SELECT uniprot_ids 
-                        FROM cancer_transcript_base
-                        WHERE gene_symbol = %s AND uniprot_ids IS NOT NULL
+                        SELECT ARRAY_AGG(DISTINCT gcr.external_id)
+                        FROM gene_cross_references gcr
+                        INNER JOIN genes g ON gcr.gene_id = g.gene_id
+                        WHERE g.gene_symbol = %s
+                          AND gcr.external_db = 'UniProt'
+                          AND gcr.external_id IS NOT NULL
                     """, (gene_symbol,))
                     result = self.db_manager.cursor.fetchone()
                     if result and result[0]:
@@ -574,61 +558,9 @@ class PathwayProcessor(BaseProcessor):
                     ON CONFLICT DO NOTHING
                 """)
 
-                # Update legacy table for backwards compatibility (if it exists)
-                try:
-                    transaction.cursor.execute("""
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_name = 'cancer_transcript_base'
-                    """)
-                    if transaction.cursor.fetchone():
-                        # First update by gene symbol
-                        transaction.cursor.execute("""
-                            UPDATE cancer_transcript_base cb
-                            SET
-                                pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
-                                features = COALESCE(cb.features, '{}'::jsonb) ||
-                                           jsonb_build_object('pathways', pw.pathway_details),
-                                source_references = jsonb_set(
-                                    COALESCE(cb.source_references, '{
-                                        "go_terms": [],
-                                        "uniprot": [],
-                                        "drugs": [],
-                                        "pathways": []
-                                    }'::jsonb),
-                                    '{pathways}',
-                                    pw.pathway_references,
-                                    true
-                                )
-                            FROM temp_pathway_data pw
-                            WHERE cb.gene_symbol = pw.gene_symbol
-                        """)
-
-                        # Then update by UniProt IDs for better coverage
-                        transaction.cursor.execute("""
-                            UPDATE cancer_transcript_base cb
-                            SET
-                                pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
-                                features = COALESCE(cb.features, '{}'::jsonb) ||
-                                           jsonb_build_object('pathways', pw.pathway_details),
-                                source_references = jsonb_set(
-                                    COALESCE(cb.source_references, '{
-                                        "go_terms": [],
-                                        "uniprot": [],
-                                        "drugs": [],
-                                        "pathways": []
-                                    }'::jsonb),
-                                    '{pathways}',
-                                    pw.pathway_references,
-                                    true
-                                )
-                            FROM temp_pathway_data pw
-                            WHERE cb.uniprot_ids && pw.uniprot_ids
-                            AND cb.gene_symbol != pw.gene_symbol  -- Only update non-direct matches
-                            AND pw.uniprot_ids IS NOT NULL
-                            AND array_length(pw.uniprot_ids, 1) > 0
-                        """)
-                except Exception as e:
-                    self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
+                # Legacy table updates removed - using normalized schema only
+                # Pathway data is already written to gene_pathways table above (line 565-575)
+                self.logger.debug(f"Legacy table updates skipped (using normalized schema)")
                 
                 # Clean up
                 transaction.cursor.execute("DROP TABLE IF EXISTS temp_pathway_data")

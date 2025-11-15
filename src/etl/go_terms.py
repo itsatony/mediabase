@@ -665,18 +665,20 @@ class GOTermProcessor(BaseProcessor):
                     )
                 
                 # Update normalized schema: create transcript GO term relationships
+                # go_terms is a JSONB object with GO IDs as keys, use jsonb_each() instead of jsonb_array_elements()
                 transaction.cursor.execute("""
                     INSERT INTO transcript_go_terms (transcript_id, go_id, go_term, go_category, evidence_code)
                     SELECT
                         tr.transcript_id,
-                        go_entry.value->>'go_id' as go_id,
+                        go_entry.key as go_id,
                         go_entry.value->>'name' as go_term,
-                        go_entry.value->>'category' as go_category,
-                        COALESCE(go_entry.value->>'evidence', 'IEA') as evidence_code
+                        go_entry.value->>'namespace' as go_category,
+                        'IEA' as evidence_code
                     FROM temp_go_terms t
                     INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
                     INNER JOIN transcripts tr ON tr.gene_id = g.gene_id
-                    CROSS JOIN LATERAL jsonb_array_elements(t.go_terms) as go_entry
+                    CROSS JOIN LATERAL jsonb_each(t.go_terms) as go_entry
+                    WHERE go_entry.value->>'name' IS NOT NULL
                     ON CONFLICT DO NOTHING
                 """)
 

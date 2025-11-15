@@ -16,10 +16,10 @@ def test_config():
         'cache_ttl': 3600,  # 1 hour cache for tests
         'batch_size': 100,
         'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-        'port': int(os.getenv('MB_POSTGRES_PORT', 5432)),
+        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
         'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
-        'user': os.getenv('MB_POSTGRES_USER', 'postgres'),
-        'password': os.getenv('MB_POSTGRES_PASSWORD', 'postgres')
+        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
+        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
     }
 
 @pytest.fixture

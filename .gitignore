@@ -172,3 +172,24 @@ cython_debug/
 
 mbase/
 *.dump
+
+# Migration system artifacts (runtime only)
+migration_checkpoints/
+migration_test_report_*.json
+migration_state_*.json
+migration_failure_*.json
+backup_metadata_*.json
+checkpoint_*.json
+validation_report_*.json
+
+# Database exports (large binary files)
+exports/
+mediabase_exports/
+*_export_*.zip
+*_export_*.tar.gz
+
+# Claude Code configuration (user-specific)
+.claude/
+
+# Session files
+*.session.sql

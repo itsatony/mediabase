@@ -1,8 +1,30 @@
+-- =====================================================================================================
+-- ⚠️ WARNING: THIS FILE IS DEPRECATED AND CONTAINS POSTGRESQL SYNTAX ERRORS - DO NOT USE ⚠️
+-- =====================================================================================================
+--
+-- This file has been REPLACED by: legacy_sota_queries_for_patients.sql (v0.3.1)
+--
+-- KNOWN ISSUES IN THIS FILE (5 PostgreSQL syntax errors):
+-- 1. Line 24: set-returning function jsonb_object_keys() not allowed in CASE expression
+-- 2. Lines 154, 167: ARRAY_AGG(DISTINCT unnest(...)) pattern and array slicing syntax errors
+-- 3. Line 208: ARRAY_AGG(DISTINCT x ORDER BY y) where x != y
+-- 4. Lines 322-420: UNION query structure with mismatched columns
+-- 5. Line 431: ROUND(double precision, integer) does not exist (needs ::numeric)
+--
+-- USE INSTEAD:
+-- - legacy_sota_queries_for_patients.sql (all errors fixed, comprehensive analysis)
+-- - cancer_specific_sota_queries.sql (simpler, cancer-specific queries)
+--
+-- See docs/SOTA_QUERIES_GUIDE.md for complete documentation
+--
+-- This file is retained for reference only. ALL USERS SHOULD USE THE FIXED VERSION.
+-- =====================================================================================================
+--
 -- =====================================
--- WORKING SOTA QUERIES FOR PATIENT DATABASES
+-- ORIGINAL (BROKEN) SOTA QUERIES FOR PATIENT DATABASES
 -- =====================================
--- These queries work with patient-specific databases that have actual expression fold-change data
--- Use these queries after creating patient databases with meaningful expression data
+-- These queries have PostgreSQL syntax errors and will fail
+-- Use legacy_sota_queries_for_patients.sql instead
 
 -- Connection template for patient databases:
 -- PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user -d mediabase_patient_DEMO_BREAST_HER2

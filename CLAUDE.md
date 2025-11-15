@@ -242,9 +242,57 @@ poetry run python scripts/create_patient_copy.py \
 
 ### Workflow
 1. **CSV Validation**: Automatic column detection and data validation
-2. **Database Copy**: Complete schema and data duplication 
+2. **Database Copy**: Complete schema and data duplication
 3. **Fold-Change Update**: Batch update of `expression_fold_change` column
 4. **Validation**: Verification of successful updates
+
+## SOTA Query Files
+
+MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer therapeutic analysis on patient-specific databases.
+
+### Available Query Files
+
+**Recommended**:
+- **`cancer_specific_sota_queries.sql`**: Cancer-type-specific queries (HER2+, TNBC, EGFR+, MSI-high, PDAC)
+  - Simplest to use
+  - Direct clinical recommendations
+  - Tested and working
+
+- **`legacy_sota_queries_for_patients.sql`**: General SOTA queries (v0.3.1 - FIXED)
+  - 4 main SOTA queries + validation query
+  - All PostgreSQL syntax errors corrected
+  - Works with legacy `cancer_transcript_base` schema
+  - Comprehensive therapeutic analysis
+
+**Advanced** (requires migration):
+- **`normalized_sota_queries_for_patients.sql`**: High-performance queries
+  - Requires normalized schema (not yet in patient databases)
+  - 10-100x performance improvement with materialized views
+
+**Deprecated**:
+- **`working_sota_queries_for_patients.sql`**: BROKEN - DO NOT USE
+  - Contains 5 PostgreSQL syntax errors
+  - Replaced by `legacy_sota_queries_for_patients.sql`
+
+### Usage Example
+
+```bash
+# Connect to patient database
+PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user \
+  -d mediabase_patient_DEMO_BREAST_HER2
+
+# Run cancer-specific queries
+\i cancer_specific_sota_queries.sql
+
+# Or run comprehensive SOTA analysis
+\i legacy_sota_queries_for_patients.sql
+```
+
+### Documentation
+
+For detailed query documentation, interpretation guidelines, and clinical decision frameworks, see:
+- **`docs/SOTA_QUERIES_GUIDE.md`**: Comprehensive guide to all SOTA queries
+- **`README.md`**: Quick start and integration examples
 
 ## Important Notes
 

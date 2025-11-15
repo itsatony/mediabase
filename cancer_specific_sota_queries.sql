@@ -1,5 +1,21 @@
+-- =====================================
 -- CANCER-SPECIFIC SOTA QUERY EXAMPLES
+-- =====================================
 -- These queries are optimized for different cancer types using patient databases
+--
+-- STATUS: ✅ TESTED AND WORKING (v0.3.1)
+-- Schema: Legacy cancer_transcript_base table
+--
+-- RECOMMENDED USE:
+-- This file provides the SIMPLEST and most CLINICALLY RELEVANT SOTA queries.
+-- Ideal for quick therapeutic assessment tailored to specific cancer types.
+--
+-- ALTERNATIVE FILES:
+-- - legacy_sota_queries_for_patients.sql: Comprehensive SOTA analysis (more complex, all cancer types)
+-- - normalized_sota_queries_for_patients.sql: High-performance queries (requires schema migration)
+--
+-- For detailed documentation, see: docs/SOTA_QUERIES_GUIDE.md
+-- =====================================
 
 -- =============================================================================
 -- BREAST CANCER HER2+ SPECIFIC QUERIES

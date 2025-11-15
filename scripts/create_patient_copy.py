@@ -276,6 +276,7 @@ class PatientDatabaseCreator:
 
         # Set the log2 fold column for later use
         self.log2_fold_column = deseq2_indicators["log2_fold_change"]
+        self.is_deseq2_format = True  # Flag to indicate DESeq2 format processing
 
         self.console.print(f"[blue]📊 DESeq2 Mapping:[/blue]")
         self.console.print(f"  Gene Symbol: {deseq2_indicators['symbol']}")

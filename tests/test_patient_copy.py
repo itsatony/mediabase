@@ -280,6 +280,7 @@ class TestPatientDatabaseCreator:
         assert mock_system.call_count == 2
         mock_remove.assert_called_once()
     
+    @pytest.mark.integration  # Requires patient database to exist
     @patch('src.db.database.get_db_manager')
     def test_update_fold_changes_success(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
         """Test successful fold-change updates."""
@@ -307,6 +308,7 @@ class TestPatientDatabaseCreator:
         assert creator.stats["updates_applied"] == 3
         assert creator.stats["transcripts_not_found"] == 0
     
+    @pytest.mark.integration  # Requires patient database to exist
     @patch('src.db.database.get_db_manager')
     def test_update_fold_changes_partial(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
         """Test fold-change updates with some transcripts not found."""
@@ -345,6 +347,7 @@ class TestPatientDatabaseCreator:
         with pytest.raises(FoldChangeUpdateError, match="Failed to update fold-change values"):
             creator.update_fold_changes()
     
+    @pytest.mark.integration  # Requires patient database to exist
     @patch('src.db.database.get_db_manager')
     def test_validate_result(self, mock_get_db: Mock, creator: PatientDatabaseCreator):
         """Test result validation."""

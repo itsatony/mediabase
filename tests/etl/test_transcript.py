@@ -58,7 +58,7 @@ def mock_gtf_data():
 def test_process_gtf(sample_gtf_data, test_config):
     """Test GTF processing functionality."""
     processor = TranscriptProcessor(test_config)
-    df = processor.process_gtf(sample_gtf_data)
+    df = processor.parse_gtf(sample_gtf_data)
     
     # Check basic DataFrame properties
     assert isinstance(df, pd.DataFrame)
@@ -97,7 +97,7 @@ def test_validate_transcript_data(test_config):
 def test_extract_alt_ids(mock_gtf_data):
     """Test extraction of alternative IDs from GTF attributes."""
     processor = TranscriptProcessor({'cache_dir': '/tmp'})
-    df = processor.process_gtf(mock_gtf_data)
+    df = processor.parse_gtf(mock_gtf_data)
     
     # Check first record's alternative IDs
     assert df.iloc[0]['alt_transcript_ids'] == {'refseq': 'NM_001'}

@@ -808,20 +808,41 @@ class ProductProcessor(BaseProcessor):
                                     self.logger.warning(f"Skipping gene {gene_symbol} due to error: {record_error}")
                                     continue
                         
-                        # Update from temp table to main table in the same transaction
+                        # Update normalized schema: create gene annotations
                         transaction.cursor.execute("""
-                            UPDATE cancer_transcript_base AS c
-                            SET 
-                                product_type = t.product_types,
-                                source_references = jsonb_set(
-                                    COALESCE(c.source_references, '{}'::jsonb),
-                                    '{uniprot}',
-                                    t.publications,
-                                    true
-                                )
-                            FROM temp_gene_types AS t
-                            WHERE c.gene_symbol = t.gene_symbol
+                            INSERT INTO gene_annotations (gene_id, annotation_type, annotation_value, source)
+                            SELECT
+                                g.gene_id,
+                                'product_type' as annotation_type,
+                                jsonb_array_elements_text(to_jsonb(t.product_types)) as annotation_value,
+                                'UniProt' as source
+                            FROM temp_gene_types t
+                            INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
+                            ON CONFLICT DO NOTHING
                         """)
+
+                        # Also update legacy table for backwards compatibility (if it exists)
+                        try:
+                            transaction.cursor.execute("""
+                                SELECT 1 FROM information_schema.tables
+                                WHERE table_name = 'cancer_transcript_base'
+                            """)
+                            if transaction.cursor.fetchone():
+                                transaction.cursor.execute("""
+                                    UPDATE cancer_transcript_base AS c
+                                    SET
+                                        product_type = t.product_types,
+                                        source_references = jsonb_set(
+                                            COALESCE(c.source_references, '{}'::jsonb),
+                                            '{uniprot}',
+                                            t.publications,
+                                            true
+                                        )
+                                    FROM temp_gene_types AS t
+                                    WHERE c.gene_symbol = t.gene_symbol
+                                """)
+                        except Exception as e:
+                            self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
                         
                         # The temporary table will be dropped automatically (ON COMMIT DROP)
                     

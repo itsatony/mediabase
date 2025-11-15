@@ -68,12 +68,56 @@ class SOTAAnalyzer:
         
         try:
             cursor = self.db_manager.cursor
+            # Use optimized materialized view for comprehensive analysis
             cursor.execute("""
-                SELECT 
-                    transcript_id, gene_symbol, gene_id, gene_type, chromosome,
-                    coordinates, product_type, go_terms, pathways, drugs,
-                    molecular_functions, cellular_location, expression_fold_change
-                FROM cancer_transcript_base
+                SELECT
+                    te.transcript_id,
+                    te.gene_symbol,
+                    te.gene_id,
+                    te.gene_type,
+                    te.chromosome,
+                    te.expression_fold_change,
+                    -- Aggregate enrichment data
+                    COALESCE(ga_products.product_types, ARRAY[]::text[]) as product_type,
+                    COALESCE(tgt.go_terms, '{}'::jsonb) as go_terms,
+                    COALESCE(gp.pathways, ARRAY[]::text[]) as pathways,
+                    COALESCE(gdi.drugs, '{}'::jsonb) as drugs,
+                    -- Coordinates from genes table
+                    jsonb_build_object(
+                        'start', g.start_position,
+                        'end', g.end_position,
+                        'strand', g.strand
+                    ) as coordinates,
+                    ARRAY[]::text[] as molecular_functions,
+                    ARRAY[]::text[] as cellular_location
+                FROM transcript_enrichment_view te
+                LEFT JOIN genes g ON te.gene_id = g.gene_id
+                LEFT JOIN (
+                    SELECT gene_id, array_agg(annotation_value) as product_types
+                    FROM gene_annotations
+                    WHERE annotation_type = 'product_type'
+                    GROUP BY gene_id
+                ) ga_products ON ga_products.gene_id = te.gene_id
+                LEFT JOIN (
+                    SELECT transcript_id, jsonb_agg(jsonb_build_object(
+                        'go_id', go_id, 'name', go_term, 'category', go_category
+                    )) as go_terms
+                    FROM transcript_go_terms
+                    GROUP BY transcript_id
+                ) tgt ON tgt.transcript_id = te.transcript_id
+                LEFT JOIN (
+                    SELECT gene_id, array_agg(pathway_name) as pathways
+                    FROM gene_pathways
+                    GROUP BY gene_id
+                ) gp ON gp.gene_id = te.gene_id
+                LEFT JOIN (
+                    SELECT gene_id, jsonb_object_agg(drug_name, jsonb_build_object(
+                        'drug_id', drug_id, 'interaction_type', interaction_type, 'source', source
+                    )) as drugs
+                    FROM gene_drug_interactions
+                    GROUP BY gene_id
+                ) gdi ON gdi.gene_id = te.gene_id
+                ORDER BY te.expression_fold_change DESC NULLS LAST
             """)
             
             columns = [desc[0] for desc in cursor.description]

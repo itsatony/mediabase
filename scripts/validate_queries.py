@@ -18,69 +18,73 @@ from typing import List, Dict, Any
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-# Query definitions from README.md
+# Query definitions for normalized schema
 DYNAMIC_QUERIES = {
     "upregulated_genes": """
-        SELECT 
-            transcript_id,
-            gene_symbol,
-            expression_fold_change,
-            product_type,
-            molecular_functions,
-            pathways[1:3] as top_pathways,
-            CASE 
-                WHEN jsonb_array_length(drugs) > 0 THEN 'Druggable'
+        SELECT
+            t.transcript_id,
+            g.gene_symbol,
+            t.expression_fold_change,
+            STRING_AGG(DISTINCT ga.annotation_value, '; ') as product_types,
+            STRING_AGG(DISTINCT gp.pathway_name, '; ') as top_pathways,
+            CASE
+                WHEN COUNT(gdi.drug_name) > 0 THEN 'Druggable (' || COUNT(gdi.drug_name) || ' drugs)'
                 ELSE 'No known drugs'
             END as drug_availability
-        FROM cancer_transcript_base 
-        WHERE expression_fold_change > 2.0 
-        ORDER BY expression_fold_change DESC 
+        FROM transcripts t
+        JOIN genes g ON t.gene_id = g.gene_id
+        LEFT JOIN gene_annotations ga ON g.gene_id = ga.gene_id AND ga.annotation_type = 'product_type'
+        LEFT JOIN gene_pathways gp ON g.gene_id = gp.gene_id
+        LEFT JOIN gene_drug_interactions gdi ON g.gene_id = gdi.gene_id
+        WHERE t.expression_fold_change > 2.0
+        GROUP BY t.transcript_id, g.gene_symbol, t.expression_fold_change
+        ORDER BY t.expression_fold_change DESC
         LIMIT 20;
     """,
-    
+
     "drug_targets": """
         SELECT DISTINCT
-            gene_symbol,
-            expression_fold_change,
-            drug_info->>'name' as drug_name,
-            drug_info->>'mechanism' as mechanism_of_action,
-            drug_info->>'clinical_status' as clinical_status,
-            drug_scores->>'overall_score' as drug_score
-        FROM cancer_transcript_base,
-             jsonb_array_elements(drugs) as drug_info
-        WHERE expression_fold_change > 1.5
-            AND jsonb_array_length(drugs) > 0
-            AND (drug_info->>'clinical_status' IN ('approved', 'phase_3', 'phase_2'))
-        ORDER BY expression_fold_change DESC, (drug_scores->>'overall_score')::float DESC;
+            g.gene_symbol,
+            t.expression_fold_change,
+            gdi.drug_name,
+            gdi.interaction_type as mechanism_of_action,
+            gdi.source as drug_source
+        FROM transcripts t
+        JOIN genes g ON t.gene_id = g.gene_id
+        JOIN gene_drug_interactions gdi ON g.gene_id = gdi.gene_id
+        WHERE t.expression_fold_change > 1.5
+        ORDER BY t.expression_fold_change DESC, gdi.drug_name;
     """,
     
     "pathway_analysis": """
         WITH pathway_analysis AS (
-            SELECT 
-                unnest(pathways) as pathway_name,
-                AVG(expression_fold_change) as avg_fold_change,
-                COUNT(*) as gene_count,
-                STDDEV(expression_fold_change) as expression_variance,
-                ARRAY_AGG(gene_symbol || ':' || expression_fold_change::text) as affected_genes
-            FROM cancer_transcript_base 
-            WHERE pathways IS NOT NULL 
-                AND array_length(pathways, 1) > 0
-                AND ABS(expression_fold_change - 1.0) > 0.5
-            GROUP BY pathway_name
-            HAVING COUNT(*) >= 3
+            SELECT
+                gp.pathway_name,
+                AVG(t.expression_fold_change) as avg_fold_change,
+                COUNT(DISTINCT t.transcript_id) as transcript_count,
+                COUNT(DISTINCT g.gene_id) as gene_count,
+                STDDEV(t.expression_fold_change) as expression_variance,
+                ARRAY_AGG(DISTINCT g.gene_symbol || ':' || t.expression_fold_change::text) as affected_genes
+            FROM gene_pathways gp
+            JOIN genes g ON gp.gene_id = g.gene_id
+            JOIN transcripts t ON g.gene_id = t.gene_id
+            WHERE ABS(t.expression_fold_change - 1.0) > 0.5
+            GROUP BY gp.pathway_name
+            HAVING COUNT(DISTINCT g.gene_id) >= 3
         )
-        SELECT 
+        SELECT
             pathway_name,
             ROUND(avg_fold_change, 2) as average_fold_change,
             gene_count,
+            transcript_count,
             ROUND(expression_variance, 2) as expression_variability,
-            CASE 
+            CASE
                 WHEN avg_fold_change > 1.5 THEN 'Activated'
                 WHEN avg_fold_change < 0.7 THEN 'Suppressed'
                 ELSE 'Mixed regulation'
             END as pathway_status,
             affected_genes[1:5] as sample_genes
-        FROM pathway_analysis 
+        FROM pathway_analysis
         ORDER BY ABS(avg_fold_change - 1.0) DESC, gene_count DESC;
     """,
     

@@ -546,12 +546,12 @@ def get_etl_logger(
     log_file: Optional[str] = None
 ) -> logging.Logger:
     """Get a logger specifically configured for ETL operations.
-    
+
     Args:
         module_name: Name of the ETL module
         log_level: Logging level
         log_file: Optional log file path
-        
+
     Returns:
         Configured logger for ETL operations
     """
@@ -561,14 +561,32 @@ def get_etl_logger(
         log_dir.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d")
         log_file = str(log_dir / f"etl_{module_name}_{timestamp}.log")
-    
+
     # Full module name for the logger
     full_module_name = f"etl.{module_name}"
-    
+
     return setup_logging(
         log_level=log_level,
         log_file=log_file,
         module_name=full_module_name,
         console_output=True,
         rich_output=False  # Use the custom formatter for ETL
+    )
+
+
+def get_logger(module_name: str, log_level: Union[int, str] = DEFAULT_LOG_LEVEL) -> logging.Logger:
+    """Get a logger for general use.
+
+    Args:
+        module_name: Name of the module requesting the logger
+        log_level: Logging level (default: INFO)
+
+    Returns:
+        Configured logger instance
+    """
+    return setup_logging(
+        log_level=log_level,
+        module_name=module_name,
+        console_output=True,
+        rich_output=True
     )

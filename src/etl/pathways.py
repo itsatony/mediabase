@@ -558,54 +558,77 @@ class PathwayProcessor(BaseProcessor):
             if updates:
                 self._update_pathway_batch(updates)
             
-            # Update main table from temp table using multiple ID types
+            # Update normalized schema: create gene pathway relationships
             with self.get_db_transaction() as transaction:
-                # First update by gene symbol
+                # Insert pathway data into normalized schema
                 transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base cb
-                    SET 
-                        pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
-                        features = COALESCE(cb.features, '{}'::jsonb) || 
-                                   jsonb_build_object('pathways', pw.pathway_details),
-                        source_references = jsonb_set(
-                            COALESCE(cb.source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{pathways}',
-                            pw.pathway_references,
-                            true
-                        )
+                    INSERT INTO gene_pathways (gene_id, pathway_id, pathway_name, pathway_source)
+                    SELECT
+                        g.gene_id,
+                        pathway_detail.key as pathway_id,
+                        pathway_detail.value->>'name' as pathway_name,
+                        COALESCE(pathway_detail.value->>'source', 'Reactome') as pathway_source
                     FROM temp_pathway_data pw
-                    WHERE cb.gene_symbol = pw.gene_symbol
+                    INNER JOIN genes g ON g.gene_symbol = pw.gene_symbol
+                    CROSS JOIN LATERAL jsonb_each(pw.pathway_details) as pathway_detail
+                    ON CONFLICT DO NOTHING
                 """)
-                
-                # Then update by UniProt IDs for better coverage
-                transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base cb
-                    SET 
-                        pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
-                        features = COALESCE(cb.features, '{}'::jsonb) || 
-                                   jsonb_build_object('pathways', pw.pathway_details),
-                        source_references = jsonb_set(
-                            COALESCE(cb.source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{pathways}',
-                            pw.pathway_references,
-                            true
-                        )
-                    FROM temp_pathway_data pw
-                    WHERE cb.uniprot_ids && pw.uniprot_ids
-                    AND cb.gene_symbol != pw.gene_symbol  -- Only update non-direct matches
-                    AND pw.uniprot_ids IS NOT NULL
-                    AND array_length(pw.uniprot_ids, 1) > 0
-                """)
+
+                # Update legacy table for backwards compatibility (if it exists)
+                try:
+                    transaction.cursor.execute("""
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'cancer_transcript_base'
+                    """)
+                    if transaction.cursor.fetchone():
+                        # First update by gene symbol
+                        transaction.cursor.execute("""
+                            UPDATE cancer_transcript_base cb
+                            SET
+                                pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
+                                features = COALESCE(cb.features, '{}'::jsonb) ||
+                                           jsonb_build_object('pathways', pw.pathway_details),
+                                source_references = jsonb_set(
+                                    COALESCE(cb.source_references, '{
+                                        "go_terms": [],
+                                        "uniprot": [],
+                                        "drugs": [],
+                                        "pathways": []
+                                    }'::jsonb),
+                                    '{pathways}',
+                                    pw.pathway_references,
+                                    true
+                                )
+                            FROM temp_pathway_data pw
+                            WHERE cb.gene_symbol = pw.gene_symbol
+                        """)
+
+                        # Then update by UniProt IDs for better coverage
+                        transaction.cursor.execute("""
+                            UPDATE cancer_transcript_base cb
+                            SET
+                                pathways = COALESCE(cb.pathways, '{}'::text[]) || pw.pathways,
+                                features = COALESCE(cb.features, '{}'::jsonb) ||
+                                           jsonb_build_object('pathways', pw.pathway_details),
+                                source_references = jsonb_set(
+                                    COALESCE(cb.source_references, '{
+                                        "go_terms": [],
+                                        "uniprot": [],
+                                        "drugs": [],
+                                        "pathways": []
+                                    }'::jsonb),
+                                    '{pathways}',
+                                    pw.pathway_references,
+                                    true
+                                )
+                            FROM temp_pathway_data pw
+                            WHERE cb.uniprot_ids && pw.uniprot_ids
+                            AND cb.gene_symbol != pw.gene_symbol  -- Only update non-direct matches
+                            AND pw.uniprot_ids IS NOT NULL
+                            AND array_length(pw.uniprot_ids, 1) > 0
+                        """)
+                except Exception as e:
+                    self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
                 
                 # Clean up
                 transaction.cursor.execute("DROP TABLE IF EXISTS temp_pathway_data")

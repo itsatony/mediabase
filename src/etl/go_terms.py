@@ -135,43 +135,45 @@ class GOTermProcessor(BaseProcessor):
     
     def get_ancestors(self, term_id: str, aspect: Optional[str] = None) -> Set[str]:
         """Get all ancestors of a GO term up to the root.
-        
+
         Args:
             term_id: GO term ID
             aspect: Optional aspect to filter ancestors
-            
+
         Returns:
             Set of ancestor term IDs
-            
+
         Raises:
             ProcessingError: If graph is not loaded
         """
         if not self.go_graph:
             raise ProcessingError("GO graph not loaded")
-            
+
         ancestors = set()
         to_visit = {term_id}
-        
+
         while to_visit:
             current = to_visit.pop()
             ancestors.add(current)
-            
-            # Get all parents through 'is_a' and 'part_of' relationships
+
+            # Get all parent terms via out_edges (obonet creates edges for is_a relationships)
+            # The edge data may contain a 'relation' key for part_of, but is_a edges have no data
             parents = set()
             for _, parent, data in self.go_graph.out_edges(current, data=True):
-                if data.get('relation') in {'is_a', 'part_of'}:
+                # Accept all edges (is_a relationships) and specifically marked part_of relationships
+                if not data or 'relation' not in data or data.get('relation') in {'is_a', 'part_of'}:
                     parents.add(parent)
-            
+
             # Add unvisited parents to the queue
             to_visit.update(parents - ancestors)
-        
+
         # Filter by aspect if specified
         if aspect and aspect in self.aspect_roots:
             root = self.aspect_roots[aspect]
             if root in ancestors:
-                return {a for a in ancestors if self.get_aspect(a) == aspect}
+                return {a for a in ancestors if self.get_aspect(a) == aspect} - {term_id}
             return set()
-            
+
         return ancestors - {term_id}  # Exclude the term itself
     
     def get_aspect(self, term_id: str) -> Optional[str]:
@@ -662,27 +664,78 @@ class GOTermProcessor(BaseProcessor):
                         (gene_symbol, go_terms_json, molecular_functions, cellular_location, publications)
                     )
                 
-                # Update from temp table to main table in same transaction
+                # Update normalized schema: create transcript GO term relationships
                 transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base c
-                    SET 
-                        go_terms = t.go_terms,
-                        molecular_functions = t.molecular_functions,
-                        cellular_location = t.cellular_location,
-                        source_references = jsonb_set(
-                            COALESCE(c.source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{go_terms}',
-                            COALESCE(t.publications, '[]'::jsonb),
-                            true
-                        )
+                    INSERT INTO transcript_go_terms (transcript_id, go_id, go_term, go_category, evidence_code)
+                    SELECT
+                        tr.transcript_id,
+                        go_entry.value->>'go_id' as go_id,
+                        go_entry.value->>'name' as go_term,
+                        go_entry.value->>'category' as go_category,
+                        COALESCE(go_entry.value->>'evidence', 'IEA') as evidence_code
                     FROM temp_go_terms t
-                    WHERE c.gene_symbol = t.gene_symbol
+                    INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
+                    INNER JOIN transcripts tr ON tr.gene_id = g.gene_id
+                    CROSS JOIN LATERAL jsonb_array_elements(t.go_terms) as go_entry
+                    ON CONFLICT DO NOTHING
                 """)
+
+                # Also create gene annotations for molecular functions and cellular location
+                transaction.cursor.execute("""
+                    INSERT INTO gene_annotations (gene_id, annotation_type, annotation_value, source)
+                    SELECT
+                        g.gene_id,
+                        'molecular_function' as annotation_type,
+                        unnest(t.molecular_functions) as annotation_value,
+                        'Gene Ontology' as source
+                    FROM temp_go_terms t
+                    INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
+                    WHERE array_length(t.molecular_functions, 1) > 0
+                    ON CONFLICT DO NOTHING
+                """)
+
+                transaction.cursor.execute("""
+                    INSERT INTO gene_annotations (gene_id, annotation_type, annotation_value, source)
+                    SELECT
+                        g.gene_id,
+                        'cellular_location' as annotation_type,
+                        unnest(t.cellular_location) as annotation_value,
+                        'Gene Ontology' as source
+                    FROM temp_go_terms t
+                    INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
+                    WHERE array_length(t.cellular_location, 1) > 0
+                    ON CONFLICT DO NOTHING
+                """)
+
+                # Update legacy table for backwards compatibility (if it exists)
+                try:
+                    transaction.cursor.execute("""
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'cancer_transcript_base'
+                    """)
+                    if transaction.cursor.fetchone():
+                        transaction.cursor.execute("""
+                            UPDATE cancer_transcript_base c
+                            SET
+                                go_terms = t.go_terms,
+                                molecular_functions = t.molecular_functions,
+                                cellular_location = t.cellular_location,
+                                source_references = jsonb_set(
+                                    COALESCE(c.source_references, '{
+                                        "go_terms": [],
+                                        "uniprot": [],
+                                        "drugs": [],
+                                        "pathways": []
+                                    }'::jsonb),
+                                    '{go_terms}',
+                                    COALESCE(t.publications, '[]'::jsonb),
+                                    true
+                                )
+                            FROM temp_go_terms t
+                            WHERE c.gene_symbol = t.gene_symbol
+                        """)
+                except Exception as e:
+                    self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
                 
                 # The temp table will be automatically dropped on COMMIT
         except Exception as e:

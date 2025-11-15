@@ -171,118 +171,181 @@ class TranscriptProcessor(BaseProcessor):
             raise ProcessingError(f"Failed to parse GTF file: {e}")
     
     def load_transcripts(self, transcripts: pd.DataFrame) -> None:
-        """Load transcript data into database.
-        
+        """Load transcript data into normalized database schema.
+
         Args:
             transcripts: DataFrame containing transcript data
-            
+
         Raises:
             DatabaseError: If database operations fail
         """
         if not self.ensure_connection():
             raise DatabaseError("Database connection failed")
-        
+
         try:
-            # Prepare batches for insertion
-            self.logger.info("Preparing transcript data for database insertion")
-            
+            self.logger.info("Preparing transcript data for normalized schema insertion")
+
+            # Separate gene and transcript data for normalized schema
+            gene_data = []
             transcript_data = []
+            cross_ref_data = []
+
+            # Track processed genes to avoid duplicates
+            processed_genes = set()
+
             for _, row in transcripts.iterrows():
                 transcript_id = row.get('transcript_id', '')
                 gene_id = row.get('gene_id', '')
-                gene_name = row.get('gene_name', '')
+                gene_symbol = row.get('gene_name', '')  # This is actually gene_symbol in GTF
                 gene_type = row.get('gene_type', '')
                 chromosome = row.get('seqname', '')
                 coordinates = row.get('coordinates', {})
-                
-                # Build default JSONB fields
-                expression_freq = json.dumps({'high': [], 'low': []})
-                
-                # Enhanced ID extraction - Extract ALL available GTF attributes
-                alt_transcript_ids = {}
-                alt_gene_ids = {}
-                transcript_metadata = {}
-                
-                # Comprehensive GTF attribute mapping
-                transcript_id_attrs = {
-                    'ccdsid': 'CCDS',
-                    'havana_transcript': 'HAVANA', 
-                    'protein_id': 'RefSeq_protein',
-                    'transcript_name': 'transcript_name'
-                }
-                
-                gene_id_attrs = {
-                    'havana_gene': 'HAVANA',
-                    'hgnc_id': 'HGNC'
-                }
-                
-                quality_attrs = {
-                    'transcript_support_level': 'TSL',
-                    'gene_version': 'gene_version',
-                    'transcript_version': 'transcript_version',
-                    'level': 'annotation_level',
-                    'tag': 'annotation_tags'
-                }
-                
-                # Extract transcript IDs
-                for attr, key in transcript_id_attrs.items():
-                    if attr in row and row[attr] and str(row[attr]) != 'nan':
-                        alt_transcript_ids[key] = str(row[attr])
-                
-                # Extract gene IDs 
-                for attr, key in gene_id_attrs.items():
-                    if attr in row and row[attr] and str(row[attr]) != 'nan':
-                        alt_gene_ids[key] = str(row[attr])
-                
-                # Extract quality/annotation metadata
-                for attr, key in quality_attrs.items():
-                    if attr in row and row[attr] and str(row[attr]) != 'nan':
-                        transcript_metadata[key] = str(row[attr])
-                
-                # Add versioned IDs to metadata for reference
-                if 'gene_id_versioned' in row and str(row['gene_id_versioned']) != 'nan':
-                    transcript_metadata['gene_id_versioned'] = str(row['gene_id_versioned'])
-                if 'transcript_id_versioned' in row and str(row['transcript_id_versioned']) != 'nan':
-                    transcript_metadata['transcript_id_versioned'] = str(row['transcript_id_versioned'])
-                
-                # Add to batch with enhanced metadata
+
+                # Extract coordinate details
+                start_pos = coordinates.get('start') if coordinates else None
+                end_pos = coordinates.get('end') if coordinates else None
+                strand = coordinates.get('strand') if coordinates else None
+
+                # Process gene data (deduplicated)
+                if gene_id not in processed_genes:
+                    gene_data.append((
+                        gene_id,
+                        gene_symbol,
+                        gene_symbol,  # gene_name = gene_symbol for now
+                        gene_type,
+                        chromosome,
+                        start_pos,
+                        end_pos,
+                        strand,
+                        'Extracted from GENCODE GTF'
+                    ))
+                    processed_genes.add(gene_id)
+
+                    # Add cross-references for genes
+                    if 'havana_gene' in row and row['havana_gene'] and str(row['havana_gene']) != 'nan':
+                        cross_ref_data.append((gene_id, 'HAVANA', str(row['havana_gene'])))
+                    if 'hgnc_id' in row and row['hgnc_id'] and str(row['hgnc_id']) != 'nan':
+                        cross_ref_data.append((gene_id, 'HGNC', str(row['hgnc_id'])))
+
+                # Process transcript data
+                transcript_support_level = 1  # Default
+                if 'transcript_support_level' in row and str(row['transcript_support_level']) != 'nan':
+                    try:
+                        transcript_support_level = int(row['transcript_support_level'])
+                    except:
+                        transcript_support_level = 1
+
                 transcript_data.append((
                     transcript_id,
-                    gene_name,
                     gene_id,
-                    gene_type,
-                    chromosome,
-                    json.dumps(coordinates),
-                    expression_freq,
-                    json.dumps(alt_transcript_ids),
-                    json.dumps(alt_gene_ids),
-                    json.dumps(transcript_metadata)  # Store quality/annotation data
+                    transcript_id,  # transcript_name = transcript_id for now
+                    gene_type,  # Use gene_type as transcript_type
+                    transcript_support_level,
+                    1.0  # Default expression_fold_change
                 ))
-            
-            # Use BaseProcessor execute_batch method
-            self.logger.info(f"Loading {len(transcript_data)} transcripts into database")
-            self.execute_batch(
-                """
-                INSERT INTO cancer_transcript_base (
-                    transcript_id, gene_symbol, gene_id, gene_type, 
-                    chromosome, coordinates, expression_freq,
-                    alt_transcript_ids, alt_gene_ids, features
-                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
-                ON CONFLICT (transcript_id) DO UPDATE SET
-                    gene_symbol = EXCLUDED.gene_symbol,
-                    gene_id = EXCLUDED.gene_id,
-                    gene_type = EXCLUDED.gene_type,
-                    chromosome = EXCLUDED.chromosome,
-                    coordinates = EXCLUDED.coordinates,
-                    alt_transcript_ids = EXCLUDED.alt_transcript_ids,
-                    alt_gene_ids = EXCLUDED.alt_gene_ids,
-                    features = EXCLUDED.features
-                """, 
-                transcript_data
-            )
-            
-            self.logger.info("Transcript data loaded successfully")
-            
+
+            # Insert genes first
+            self.logger.info(f"Loading {len(gene_data)} genes into normalized schema")
+            if gene_data:
+                self.execute_batch(
+                    """
+                    INSERT INTO genes (gene_id, gene_symbol, gene_name, gene_type, chromosome,
+                                     start_position, end_position, strand, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gene_id) DO UPDATE SET
+                        gene_symbol = EXCLUDED.gene_symbol,
+                        gene_name = EXCLUDED.gene_name,
+                        gene_type = EXCLUDED.gene_type,
+                        chromosome = EXCLUDED.chromosome,
+                        start_position = EXCLUDED.start_position,
+                        end_position = EXCLUDED.end_position,
+                        strand = EXCLUDED.strand,
+                        description = EXCLUDED.description
+                    """,
+                    gene_data
+                )
+
+            # Insert transcripts
+            self.logger.info(f"Loading {len(transcript_data)} transcripts into normalized schema")
+            if transcript_data:
+                self.execute_batch(
+                    """
+                    INSERT INTO transcripts (transcript_id, gene_id, transcript_name, transcript_type,
+                                           transcript_support_level, expression_fold_change)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (transcript_id) DO UPDATE SET
+                        gene_id = EXCLUDED.gene_id,
+                        transcript_name = EXCLUDED.transcript_name,
+                        transcript_type = EXCLUDED.transcript_type,
+                        transcript_support_level = EXCLUDED.transcript_support_level,
+                        expression_fold_change = EXCLUDED.expression_fold_change
+                    """,
+                    transcript_data
+                )
+
+            # Insert cross-references
+            self.logger.info(f"Loading {len(cross_ref_data)} cross-references")
+            if cross_ref_data:
+                self.execute_batch(
+                    """
+                    INSERT INTO gene_cross_references (gene_id, external_db, external_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    cross_ref_data
+                )
+
+            self.logger.info("Transcript data loaded successfully into normalized schema")
+
+            # Update legacy table for backwards compatibility (if it exists)
+            try:
+                self.db_manager.cursor.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'cancer_transcript_base'")
+                if self.db_manager.cursor.fetchone():
+                    self.logger.info("Updating legacy cancer_transcript_base table for backwards compatibility")
+
+                    legacy_data = []
+                    for _, row in transcripts.iterrows():
+                        transcript_id = row.get('transcript_id', '')
+                        gene_symbol = row.get('gene_name', '')
+                        gene_id = row.get('gene_id', '')
+                        gene_type = row.get('gene_type', '')
+                        chromosome = row.get('seqname', '')
+                        coordinates = row.get('coordinates', {})
+
+                        # Build minimal legacy record
+                        legacy_data.append((
+                            transcript_id,
+                            gene_symbol,
+                            gene_id,
+                            gene_type,
+                            chromosome,
+                            json.dumps(coordinates),
+                            json.dumps({'high': [], 'low': []}),  # expression_freq
+                            json.dumps({}),  # alt_transcript_ids
+                            json.dumps({}),  # alt_gene_ids
+                            json.dumps({})   # features
+                        ))
+
+                    if legacy_data:
+                        self.execute_batch(
+                            """
+                            INSERT INTO cancer_transcript_base (
+                                transcript_id, gene_symbol, gene_id, gene_type,
+                                chromosome, coordinates, expression_freq,
+                                alt_transcript_ids, alt_gene_ids, features
+                            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb)
+                            ON CONFLICT (transcript_id) DO UPDATE SET
+                                gene_symbol = EXCLUDED.gene_symbol,
+                                gene_id = EXCLUDED.gene_id,
+                                gene_type = EXCLUDED.gene_type,
+                                chromosome = EXCLUDED.chromosome,
+                                coordinates = EXCLUDED.coordinates
+                            """,
+                            legacy_data
+                        )
+            except Exception as e:
+                self.logger.warning(f"Failed to update legacy table (this is normal after migration): {e}")
+
         except Exception as e:
             raise DatabaseError(f"Failed to load transcripts: {e}")
     

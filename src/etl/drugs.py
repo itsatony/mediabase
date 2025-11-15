@@ -754,25 +754,50 @@ class DrugProcessor(BaseProcessor):
                             (gene_symbol, uniprot_ids, json.dumps(drug_data), json.dumps(drug_refs))
                         )
                 
-                # Update the main table from the temp table in the same transaction
+                # Update normalized schema: create gene drug interactions
                 transaction.cursor.execute("""
-                    UPDATE cancer_transcript_base AS c
-                    SET 
-                        drugs = COALESCE(c.drugs, '{}'::jsonb) || t.drug_data,
-                        source_references = jsonb_set(
-                            COALESCE(c.source_references, '{
-                                "go_terms": [],
-                                "uniprot": [],
-                                "drugs": [],
-                                "pathways": []
-                            }'::jsonb),
-                            '{drugs}',
-                            t.drug_references,
-                            true
-                        )
+                    INSERT INTO gene_drug_interactions (gene_id, drug_name, drug_id, interaction_type, evidence_level, source, pmid)
+                    SELECT
+                        g.gene_id,
+                        drug_entry.key as drug_name,
+                        drug_entry.value->>'drug_id' as drug_id,
+                        COALESCE(drug_entry.value->>'interaction_type', 'unknown') as interaction_type,
+                        COALESCE(drug_entry.value->>'evidence', 'computational') as evidence_level,
+                        COALESCE(drug_entry.value->>'source', 'DrugCentral') as source,
+                        drug_entry.value->>'pmid' as pmid
                     FROM temp_drug_data t
-                    WHERE c.gene_symbol = t.gene_symbol
+                    INNER JOIN genes g ON g.gene_symbol = t.gene_symbol
+                    CROSS JOIN LATERAL jsonb_each(t.drug_data) as drug_entry
+                    ON CONFLICT DO NOTHING
                 """)
+
+                # Update legacy table for backwards compatibility (if it exists)
+                try:
+                    transaction.cursor.execute("""
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'cancer_transcript_base'
+                    """)
+                    if transaction.cursor.fetchone():
+                        transaction.cursor.execute("""
+                            UPDATE cancer_transcript_base AS c
+                            SET
+                                drugs = COALESCE(c.drugs, '{}'::jsonb) || t.drug_data,
+                                source_references = jsonb_set(
+                                    COALESCE(c.source_references, '{
+                                        "go_terms": [],
+                                        "uniprot": [],
+                                        "drugs": [],
+                                        "pathways": []
+                                    }'::jsonb),
+                                    '{drugs}',
+                                    t.drug_references,
+                                    true
+                                )
+                            FROM temp_drug_data t
+                            WHERE c.gene_symbol = t.gene_symbol
+                        """)
+                except Exception as e:
+                    self.logger.info(f"Legacy table update skipped (normal after migration): {e}")
         except Exception as e:
             self.logger.error(f"Drug batch update failed: {e}")
             raise DatabaseError(f"Failed to update drug batch: {e}")

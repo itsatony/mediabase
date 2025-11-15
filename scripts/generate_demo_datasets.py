@@ -158,19 +158,38 @@ class DemoDatasetGenerator:
 
             cursor = db_manager.cursor
 
-            # Load gene symbols with transcript IDs, pathways, products, and drugs
+            # Load gene symbols with transcript IDs, pathways, products, and drugs from normalized schema
             cursor.execute("""
                 SELECT DISTINCT
-                    gene_symbol,
-                    transcript_id,
-                    pathways,
-                    product_type,
-                    molecular_functions,
-                    drugs
-                FROM cancer_transcript_base
-                WHERE gene_symbol IS NOT NULL
-                AND gene_symbol != ''
-                ORDER BY gene_symbol
+                    g.gene_symbol,
+                    t.transcript_id,
+                    COALESCE(gp_agg.pathways, ARRAY[]::text[]) as pathways,
+                    COALESCE(ga_agg.product_types, ARRAY[]::text[]) as product_type,
+                    ARRAY[]::text[] as molecular_functions,  -- Placeholder for now
+                    COALESCE(gdi_agg.drugs, '{}'::jsonb) as drugs
+                FROM genes g
+                JOIN transcripts t ON g.gene_id = t.gene_id
+                LEFT JOIN (
+                    SELECT gene_id, array_agg(pathway_name) as pathways
+                    FROM gene_pathways
+                    GROUP BY gene_id
+                ) gp_agg ON g.gene_id = gp_agg.gene_id
+                LEFT JOIN (
+                    SELECT gene_id, array_agg(annotation_value) as product_types
+                    FROM gene_annotations
+                    WHERE annotation_type = 'product_type'
+                    GROUP BY gene_id
+                ) ga_agg ON g.gene_id = ga_agg.gene_id
+                LEFT JOIN (
+                    SELECT gene_id, jsonb_object_agg(drug_name, jsonb_build_object(
+                        'drug_id', drug_id, 'interaction_type', interaction_type, 'source', source
+                    )) as drugs
+                    FROM gene_drug_interactions
+                    GROUP BY gene_id
+                ) gdi_agg ON g.gene_id = gdi_agg.gene_id
+                WHERE g.gene_symbol IS NOT NULL
+                AND g.gene_symbol != ''
+                ORDER BY g.gene_symbol
             """)
 
             for row in cursor.fetchall():

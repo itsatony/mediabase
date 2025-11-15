@@ -155,17 +155,53 @@ async def search_transcripts(
             else:
                 where_conditions.append("(pathways IS NULL OR array_length(pathways, 1) = 0)")
         
-        # Construct final query
+        # Construct final query using materialized views for better performance
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
-        
+
+        # Use transcript_enrichment_view for optimized queries
         sql_query = f"""
-            SELECT 
-                transcript_id, gene_symbol, gene_id, gene_type, chromosome,
-                expression_fold_change, product_type, go_terms, pathways, drugs,
-                molecular_functions, cellular_location, source_references
-            FROM cancer_transcript_base
+            SELECT
+                te.transcript_id,
+                te.gene_symbol,
+                te.gene_id,
+                te.gene_type,
+                te.chromosome,
+                te.expression_fold_change,
+                COALESCE(ga_product.product_types, ARRAY[]::text[]) as product_type,
+                COALESCE(tgt.go_terms, '{{}}'::jsonb) as go_terms,
+                COALESCE(gp.pathways, ARRAY[]::text[]) as pathways,
+                COALESCE(gdi.drugs, '{{}}'::jsonb) as drugs,
+                ARRAY[]::text[] as molecular_functions,
+                ARRAY[]::text[] as cellular_location,
+                '{{}}'::jsonb as source_references
+            FROM transcript_enrichment_view te
+            LEFT JOIN (
+                SELECT gene_id, array_agg(annotation_value) as product_types
+                FROM gene_annotations
+                WHERE annotation_type = 'product_type'
+                GROUP BY gene_id
+            ) ga_product ON ga_product.gene_id = te.gene_id
+            LEFT JOIN (
+                SELECT transcript_id, jsonb_agg(jsonb_build_object(
+                    'go_id', go_id, 'name', go_term, 'category', go_category
+                )) as go_terms
+                FROM transcript_go_terms
+                GROUP BY transcript_id
+            ) tgt ON tgt.transcript_id = te.transcript_id
+            LEFT JOIN (
+                SELECT gene_id, array_agg(pathway_name) as pathways
+                FROM gene_pathways
+                GROUP BY gene_id
+            ) gp ON gp.gene_id = te.gene_id
+            LEFT JOIN (
+                SELECT gene_id, jsonb_object_agg(drug_name, jsonb_build_object(
+                    'drug_id', drug_id, 'interaction_type', interaction_type, 'source', source
+                )) as drugs
+                FROM gene_drug_interactions
+                GROUP BY gene_id
+            ) gdi ON gdi.gene_id = te.gene_id
             WHERE {where_clause}
-            ORDER BY expression_fold_change DESC NULLS LAST
+            ORDER BY te.expression_fold_change DESC NULLS LAST
             LIMIT %s OFFSET %s
         """
         
@@ -197,13 +233,49 @@ async def get_transcript(
     """Get detailed transcript information by ID."""
     try:
         cursor = db.cursor
+        # Use the same optimized query structure as the search endpoint
         cursor.execute("""
-            SELECT 
-                transcript_id, gene_symbol, gene_id, gene_type, chromosome,
-                expression_fold_change, product_type, go_terms, pathways, drugs,
-                molecular_functions, cellular_location, source_references
-            FROM cancer_transcript_base
-            WHERE transcript_id = %s
+            SELECT
+                te.transcript_id,
+                te.gene_symbol,
+                te.gene_id,
+                te.gene_type,
+                te.chromosome,
+                te.expression_fold_change,
+                COALESCE(ga_product.product_types, ARRAY[]::text[]) as product_type,
+                COALESCE(tgt.go_terms, '{}'::jsonb) as go_terms,
+                COALESCE(gp.pathways, ARRAY[]::text[]) as pathways,
+                COALESCE(gdi.drugs, '{}'::jsonb) as drugs,
+                ARRAY[]::text[] as molecular_functions,
+                ARRAY[]::text[] as cellular_location,
+                '{}'::jsonb as source_references
+            FROM transcript_enrichment_view te
+            LEFT JOIN (
+                SELECT gene_id, array_agg(annotation_value) as product_types
+                FROM gene_annotations
+                WHERE annotation_type = 'product_type'
+                GROUP BY gene_id
+            ) ga_product ON ga_product.gene_id = te.gene_id
+            LEFT JOIN (
+                SELECT transcript_id, jsonb_agg(jsonb_build_object(
+                    'go_id', go_id, 'name', go_term, 'category', go_category
+                )) as go_terms
+                FROM transcript_go_terms
+                GROUP BY transcript_id
+            ) tgt ON tgt.transcript_id = te.transcript_id
+            LEFT JOIN (
+                SELECT gene_id, array_agg(pathway_name) as pathways
+                FROM gene_pathways
+                GROUP BY gene_id
+            ) gp ON gp.gene_id = te.gene_id
+            LEFT JOIN (
+                SELECT gene_id, jsonb_object_agg(drug_name, jsonb_build_object(
+                    'drug_id', drug_id, 'interaction_type', interaction_type, 'source', source
+                )) as drugs
+                FROM gene_drug_interactions
+                GROUP BY gene_id
+            ) gdi ON gdi.gene_id = te.gene_id
+            WHERE te.transcript_id = %s
         """, (transcript_id,))
         
         result = cursor.fetchone()
@@ -224,30 +296,47 @@ async def get_transcript(
 
 @app.get("/api/v1/stats")
 async def get_database_stats(db: DatabaseManager = Depends(get_database)):
-    """Get database statistics."""
+    """Get database statistics from normalized schema."""
     try:
         cursor = db.cursor
-        
-        # Get basic counts
-        cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
+
+        # Get basic counts from normalized schema
+        cursor.execute("SELECT COUNT(*) FROM transcripts")
         total_transcripts = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base WHERE drugs IS NOT NULL AND drugs != '{}'::jsonb")
-        transcripts_with_drugs = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base WHERE pathways IS NOT NULL AND array_length(pathways, 1) > 0")
-        transcripts_with_pathways = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(DISTINCT gene_symbol) FROM cancer_transcript_base WHERE gene_symbol IS NOT NULL")
+
+        cursor.execute("SELECT COUNT(*) FROM genes")
         unique_genes = cursor.fetchone()[0]
-        
+
+        # Get enrichment statistics
+        cursor.execute("SELECT COUNT(DISTINCT gene_id) FROM gene_drug_interactions")
+        genes_with_drugs = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(DISTINCT gene_id) FROM gene_pathways")
+        genes_with_pathways = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(DISTINCT gene_id) FROM gene_annotations WHERE annotation_type = 'product_type'")
+        genes_with_product_types = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(DISTINCT transcript_id) FROM transcript_go_terms")
+        transcripts_with_go_terms = cursor.fetchone()[0]
+
+        # Get materialized view statistics
+        cursor.execute("SELECT COUNT(*) FROM gene_summary_view")
+        materialized_view_genes = cursor.fetchone()[0]
+
         stats = {
             "total_transcripts": total_transcripts,
-            "transcripts_with_drugs": transcripts_with_drugs,
-            "transcripts_with_pathways": transcripts_with_pathways,
             "unique_genes": unique_genes,
-            "drug_coverage": (transcripts_with_drugs / total_transcripts * 100) if total_transcripts > 0 else 0,
-            "pathway_coverage": (transcripts_with_pathways / total_transcripts * 100) if total_transcripts > 0 else 0
+            "genes_with_drugs": genes_with_drugs,
+            "genes_with_pathways": genes_with_pathways,
+            "genes_with_product_types": genes_with_product_types,
+            "transcripts_with_go_terms": transcripts_with_go_terms,
+            "materialized_view_genes": materialized_view_genes,
+            "drug_coverage": (genes_with_drugs / unique_genes * 100) if unique_genes > 0 else 0,
+            "pathway_coverage": (genes_with_pathways / unique_genes * 100) if unique_genes > 0 else 0,
+            "product_type_coverage": (genes_with_product_types / unique_genes * 100) if unique_genes > 0 else 0,
+            "go_term_coverage": (transcripts_with_go_terms / total_transcripts * 100) if total_transcripts > 0 else 0,
+            "architecture": "normalized_schema_v1.0"
         }
         
         logger.info("Retrieved database statistics")

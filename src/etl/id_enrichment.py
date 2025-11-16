@@ -522,7 +522,7 @@ class IDEnrichmentProcessor(BaseProcessor):
                     self.db_manager.cursor.executemany(
                         """
                         UPDATE cancer_transcript_base
-                        SET 
+                        SET
                             uniprot_ids = %s::text[],
                             ncbi_ids = %s::text[],
                             refseq_ids = %s::text[],
@@ -532,11 +532,35 @@ class IDEnrichmentProcessor(BaseProcessor):
                         """,
                         updates
                     )
-                    
+
+                    # ALSO populate normalized gene_cross_references table with NCBI IDs
+                    # This is critical for pathways module which queries gene_cross_references
+                    cross_ref_inserts = []
+                    for update in updates:
+                        uniprot_ids, ncbi_ids, refseq_ids, _, _, gene_symbol = update
+                        if ncbi_ids:  # ncbi_ids is a list
+                            for ncbi_id in ncbi_ids:
+                                if ncbi_id:  # Skip empty strings
+                                    # FIXED: Correct parameter order - (external_db, external_id, gene_symbol)
+                                    cross_ref_inserts.append(('GeneID', ncbi_id, gene_symbol))
+
+                    if cross_ref_inserts:
+                        self.logger.info(f"Inserting {len(cross_ref_inserts)} NCBI cross-references into gene_cross_references")
+                        self.db_manager.cursor.executemany(
+                            """
+                            INSERT INTO gene_cross_references (gene_id, external_db, external_id)
+                            SELECT g.gene_id, %s, %s
+                            FROM genes g
+                            WHERE g.gene_symbol = %s
+                            ON CONFLICT DO NOTHING
+                            """,
+                            cross_ref_inserts
+                        )
+
                     # Only commit if the connection is not in autocommit mode already
                     if not self.db_manager.conn.autocommit:
                         self.db_manager.conn.commit()
-                        self.logger.debug(f"Committed batch update of {len(updates)} records")
+                        self.logger.debug(f"Committed batch update of {len(updates)} records and {len(cross_ref_inserts)} cross-references")
                     
                 except Exception as e:
                     # Rollback only if not in autocommit mode

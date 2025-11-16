@@ -221,28 +221,58 @@ class PathwayProcessor(BaseProcessor):
 
         try:
             # Query gene_cross_references table for NCBI ID mappings (normalized schema)
+            # FIXED: Added 'GeneID' to the filter - this is what transcript.py actually writes
             self.db_manager.cursor.execute("""
                 SELECT DISTINCT
                     g.gene_symbol,
-                    gcr.external_id as ncbi_id
+                    gcr.external_id as ncbi_id,
+                    gcr.external_db
                 FROM gene_cross_references gcr
                 INNER JOIN genes g ON gcr.gene_id = g.gene_id
-                WHERE gcr.external_db IN ('NCBI', 'EntrezGene')
+                WHERE gcr.external_db IN ('GeneID', 'NCBI', 'EntrezGene')
                     AND gcr.external_id IS NOT NULL
+                    AND gcr.external_id ~ '^[0-9]+$'
             """)
 
-            # Build mapping dictionary with normalized keys for case-insensitive lookup
-            mapping = {}
-            for row in self.db_manager.cursor.fetchall():
-                gene_symbol, ncbi_id = row
+            # Build bidirectional mapping dictionary (NCBI→Symbol and Symbol→NCBI)
+            ncbi_to_symbol = {}
+            symbol_to_ncbi = {}
+            db_type_counts = {}
+
+            rows = self.db_manager.cursor.fetchall()
+            self.logger.info(f"Found {len(rows)} NCBI ID mappings in gene_cross_references")
+
+            for row in rows:
+                gene_symbol, ncbi_id, external_db = row
+
+                # Track which external_db types we're seeing
+                db_type_counts[external_db] = db_type_counts.get(external_db, 0) + 1
+
                 if ncbi_id and gene_symbol:
-                    # Add both normalized and original versions of the NCBI ID
-                    mapping[ncbi_id] = gene_symbol
-                    mapping[ncbi_id.upper()] = gene_symbol
+                    # NCBI → Symbol mapping
+                    ncbi_to_symbol[ncbi_id] = gene_symbol
+                    ncbi_to_symbol[ncbi_id.upper()] = gene_symbol
+
+                    # Symbol → NCBI mapping (for reverse lookups)
+                    symbol_to_ncbi[gene_symbol] = ncbi_id
+                    symbol_to_ncbi[normalize_gene_symbol(gene_symbol)] = ncbi_id
+
+            # Diagnostic logging
+            self.logger.info(f"External DB type distribution: {db_type_counts}")
+            if ncbi_to_symbol:
+                sample_mappings = list(ncbi_to_symbol.items())[:5]
+                self.logger.info(f"Sample NCBI mappings: {sample_mappings}")
+
+            # Combine both mapping directions into single dictionary
+            mapping = {**ncbi_to_symbol, **symbol_to_ncbi}
 
             # If no mappings found in gene_cross_references, use direct gene symbol mapping
             if not mapping:
-                self.logger.warning("No NCBI ID mappings found in gene_cross_references, using direct symbol mapping")
+                self.logger.warning(
+                    "No NCBI ID mappings found in gene_cross_references with external_db in "
+                    "('GeneID', 'NCBI', 'EntrezGene'). This likely means transcript data was not "
+                    "loaded with NCBI cross-references. Using direct symbol mapping as fallback."
+                )
 
                 # Query genes table for gene symbols to use for direct mapping
                 self.db_manager.cursor.execute("""
@@ -250,19 +280,25 @@ class PathwayProcessor(BaseProcessor):
                     FROM genes
                     WHERE gene_symbol IS NOT NULL
                 """)
-                
-                # Create a self-mapping for known gene symbols with normalize keys
+
+                # Create a self-mapping for known gene symbols with normalized keys
                 for row in self.db_manager.cursor.fetchall():
                     gene_symbol = row[0]
                     if gene_symbol:
                         mapping[gene_symbol] = gene_symbol
                         mapping[normalize_gene_symbol(gene_symbol)] = gene_symbol
-            
-            self.logger.info(f"Retrieved {len(mapping)} NCBI ID to gene symbol mappings")
+
+                self.logger.info(f"Using {len(mapping)} gene symbols for direct mapping")
+            else:
+                self.logger.info(
+                    f"Retrieved {len(ncbi_to_symbol)} NCBI→Symbol and {len(symbol_to_ncbi)} "
+                    f"Symbol→NCBI mappings (total {len(mapping)} entries)"
+                )
+
             return mapping
-            
+
         except Exception as e:
-            self.logger.error(f"Failed to get NCBI mappings: {e}")
+            self.logger.error(f"Failed to get NCBI mappings: {e}", exc_info=True)
             return {}
     
     def enrich_transcripts(self, gene_to_pathways: Dict[str, Set[str]]) -> None:

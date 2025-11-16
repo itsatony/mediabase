@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cancer-transcriptome-base"
-version = "0.3.0"
+version = "0.4.0"
 description = "A comprehensive cancer transcriptomics platform with working SOTA queries and patient-specific databases"
 authors = ["Your Name <toni.wagner@vaudience.ai>"]
 readme = "README.md"

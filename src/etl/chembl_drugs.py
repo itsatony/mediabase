@@ -131,15 +131,234 @@ class ChemblDrugProcessor(BaseProcessor):
         except Exception as e:
             raise DownloadError(f"Failed to download ChEMBL data: {e}")
 
-    def extract_chembl_dump(self, dump_file: Path) -> Path:
-        """Extract the necessary tables from the ChEMBL database dump.
-        
+    def _create_temp_database(self, db_name: str) -> bool:
+        """Create a temporary PostgreSQL database for ChEMBL data extraction.
+
         Args:
-            dump_file: Path to the downloaded ChEMBL database dump
-            
+            db_name: Name of the temporary database to create
+
         Returns:
-            Path to the directory containing extracted tables
-            
+            True if successful, False otherwise
+        """
+        import subprocess
+
+        try:
+            # Use postgres connection to create new database
+            host = os.environ.get('MB_POSTGRES_HOST', 'localhost')
+            port = os.environ.get('MB_POSTGRES_PORT', '5432')
+            user = os.environ.get('MB_POSTGRES_USER', 'postgres')
+            password = os.environ.get('MB_POSTGRES_PASSWORD', '')
+
+            # Set environment for subprocess
+            env = os.environ.copy()
+            env['PGPASSWORD'] = password
+
+            # Drop database if it exists (cleanup from previous runs)
+            drop_cmd = [
+                'psql',
+                '-h', host,
+                '-p', port,
+                '-U', user,
+                '-d', 'postgres',
+                '-c', f'DROP DATABASE IF EXISTS {db_name}'
+            ]
+
+            self.logger.info(f"Dropping existing temporary database {db_name} if present")
+            subprocess.run(drop_cmd, env=env, check=False, capture_output=True)
+
+            # Create new database
+            create_cmd = [
+                'psql',
+                '-h', host,
+                '-p', port,
+                '-U', user,
+                '-d', 'postgres',
+                '-c', f'CREATE DATABASE {db_name}'
+            ]
+
+            self.logger.info(f"Creating temporary database {db_name}")
+            result = subprocess.run(create_cmd, env=env, check=True, capture_output=True, text=True)
+
+            self.logger.info(f"Temporary database {db_name} created successfully")
+            return True
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to create temporary database: {e.stderr}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to create temporary database: {e}")
+            return False
+
+    def _restore_dump_to_temp_db(self, dump_file: Path, temp_db_name: str) -> bool:
+        """Restore ChEMBL .dmp file to temporary database using pg_restore.
+
+        Args:
+            dump_file: Path to the .dmp file extracted from the archive
+            temp_db_name: Name of the temporary database
+
+        Returns:
+            True if successful, False otherwise
+        """
+        import subprocess
+
+        try:
+            host = os.environ.get('MB_POSTGRES_HOST', 'localhost')
+            port = os.environ.get('MB_POSTGRES_PORT', '5432')
+            user = os.environ.get('MB_POSTGRES_USER', 'postgres')
+            password = os.environ.get('MB_POSTGRES_PASSWORD', '')
+
+            # Set environment for subprocess
+            env = os.environ.copy()
+            env['PGPASSWORD'] = password
+
+            # Use pg_restore with custom format
+            restore_cmd = [
+                'pg_restore',
+                '-h', host,
+                '-p', port,
+                '-U', user,
+                '-d', temp_db_name,
+                '--no-owner',
+                '--no-privileges',
+                '--clean',
+                '--if-exists',
+                '--verbose',
+                str(dump_file)
+            ]
+
+            self.logger.info(f"Restoring ChEMBL dump {dump_file} to {temp_db_name} (this may take several minutes)")
+
+            # Run pg_restore with progress indication
+            result = subprocess.run(
+                restore_cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=3600  # 1 hour timeout
+            )
+
+            # pg_restore may return non-zero even on success due to warnings
+            # Check stderr for actual errors
+            if result.returncode != 0:
+                stderr_lower = result.stderr.lower()
+                # Only fail on actual errors, not warnings
+                if 'error:' in stderr_lower or 'fatal:' in stderr_lower:
+                    self.logger.error(f"pg_restore failed with errors: {result.stderr[:500]}")
+                    return False
+                else:
+                    self.logger.warning(f"pg_restore completed with warnings: {result.stderr[:200]}")
+
+            self.logger.info(f"ChEMBL dump restored successfully to {temp_db_name}")
+            return True
+
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"pg_restore timed out after 1 hour")
+            return False
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"pg_restore failed: {e.stderr}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to restore dump: {e}")
+            return False
+
+    def _query_temp_database(self, temp_db_name: str, query: str, params: Optional[tuple] = None) -> Optional[pd.DataFrame]:
+        """Query the temporary ChEMBL database and return results as DataFrame.
+
+        Args:
+            temp_db_name: Name of the temporary database
+            query: SQL query to execute
+            params: Optional query parameters
+
+        Returns:
+            DataFrame with query results, or None if query fails
+        """
+        try:
+            host = os.environ.get('MB_POSTGRES_HOST', 'localhost')
+            port = os.environ.get('MB_POSTGRES_PORT', '5432')
+            user = os.environ.get('MB_POSTGRES_USER', 'postgres')
+            password = os.environ.get('MB_POSTGRES_PASSWORD', '')
+
+            # Create connection to temporary database
+            conn_str = f"postgresql://{user}:{password}@{host}:{port}/{temp_db_name}"
+
+            # Use pandas to execute query and return DataFrame
+            df = pd.read_sql_query(query, conn_str, params=params)
+
+            return df
+
+        except Exception as e:
+            self.logger.error(f"Failed to query temporary database: {e}")
+            return None
+
+    def _drop_temp_database(self, db_name: str) -> bool:
+        """Drop the temporary PostgreSQL database.
+
+        Args:
+            db_name: Name of the temporary database to drop
+
+        Returns:
+            True if successful, False otherwise
+        """
+        import subprocess
+
+        try:
+            host = os.environ.get('MB_POSTGRES_HOST', 'localhost')
+            port = os.environ.get('MB_POSTGRES_PORT', '5432')
+            user = os.environ.get('MB_POSTGRES_USER', 'postgres')
+            password = os.environ.get('MB_POSTGRES_PASSWORD', '')
+
+            # Set environment for subprocess
+            env = os.environ.copy()
+            env['PGPASSWORD'] = password
+
+            # Terminate connections to the database first
+            terminate_cmd = [
+                'psql',
+                '-h', host,
+                '-p', port,
+                '-U', user,
+                '-d', 'postgres',
+                '-c', f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db_name}'"
+            ]
+
+            subprocess.run(terminate_cmd, env=env, check=False, capture_output=True)
+
+            # Drop database
+            drop_cmd = [
+                'psql',
+                '-h', host,
+                '-p', port,
+                '-U', user,
+                '-d', 'postgres',
+                '-c', f'DROP DATABASE IF EXISTS {db_name}'
+            ]
+
+            self.logger.info(f"Dropping temporary database {db_name}")
+            subprocess.run(drop_cmd, env=env, check=True, capture_output=True)
+
+            self.logger.info(f"Temporary database {db_name} dropped successfully")
+            return True
+
+        except subprocess.CalledProcessError as e:
+            self.logger.warning(f"Failed to drop temporary database: {e.stderr}")
+            return False
+        except Exception as e:
+            self.logger.warning(f"Failed to drop temporary database: {e}")
+            return False
+
+    def extract_chembl_dump(self, dump_file: Path) -> Path:
+        """Extract the necessary tables from the ChEMBL database dump using pg_restore.
+
+        ChEMBL v35 changed from SQL files to PostgreSQL custom dump format (.dmp).
+        This method creates a temporary database, restores the dump, queries the tables,
+        and saves the results as CSV files for further processing.
+
+        Args:
+            dump_file: Path to the downloaded ChEMBL database dump (tar.gz containing .dmp)
+
+        Returns:
+            Path to the directory containing extracted table data (CSV files)
+
         Raises:
             ProcessingError: If extraction fails
         """
@@ -149,36 +368,34 @@ class ChemblDrugProcessor(BaseProcessor):
             if extraction_marker.exists() and not self.force_download:
                 self.logger.info("Using previously extracted ChEMBL data.")
                 return self.extracted_dir
-            
+
             # Clear previous extraction if force_download is True
             if self.force_download and self.extracted_dir.exists():
                 self.logger.info(f"Clearing previous extractions at {self.extracted_dir}")
-                for file in self.extracted_dir.glob("*.sql"):
+                for file in self.extracted_dir.glob("*.csv"):
                     file.unlink()
-            
-            # Extract the tar.gz file
+                for file in self.extracted_dir.glob("*.parquet"):
+                    file.unlink()
+
+            # Extract the tar.gz file to find the .dmp file
             self.logger.info(f"Extracting ChEMBL database dump from {dump_file}")
-            
-            # Extract tables of interest based on schema documentation
-            tables_of_interest = [
-                "molecule_dictionary",  # Basic drug information
-                "compound_structures",  # Chemical structures
-                "compound_properties",  # Chemical properties
-                "target_dictionary",    # Target information
-                "target_components",    # Target components
-                "component_sequences",  # Protein sequence information
-                "drug_mechanism",       # Drug mechanism of action
-                "drug_indication",      # Drug indications
-                "activities",           # Drug activity data
-                "docs",                 # Publication information
-                "action_type",          # Action type descriptions
-                "assays",               # Assay information
-                "confidence_score_lookup",  # Confidence score descriptions
-                "molecule_synonyms",    # Drug name synonyms
-                "binding_sites",        # Binding site information
-                "atc_classification"    # ATC codes
-            ]
-            
+
+            # Tables of interest for drug data extraction
+            tables_of_interest = {
+                "molecule_dictionary": ["molregno", "chembl_id", "pref_name", "max_phase", "molecule_type", "therapeutic_flag"],
+                "compound_structures": ["molregno", "canonical_smiles", "standard_inchi", "standard_inchi_key"],
+                "compound_properties": ["molregno", "mw_freebase", "alogp", "hba", "hbd", "psa", "rtb", "ro3_pass", "num_ro5_violations"],
+                "target_dictionary": ["tid", "chembl_id", "pref_name", "target_type", "organism"],
+                "target_components": ["tid", "component_id"],
+                "component_sequences": ["component_id", "accession", "component_type", "description", "organism"],
+                "drug_mechanism": ["mec_id", "molregno", "mechanism_of_action", "action_type", "tid"],
+                "drug_indication": ["drugind_id", "molregno", "efo_id", "mesh_id", "max_phase_for_ind"],
+                "activities": ["activity_id", "molregno", "toid", "standard_type", "standard_value", "standard_units"],
+                "docs": ["doc_id", "pubmed_id", "doi", "title", "year", "journal"],
+                "molecule_synonyms": ["molregno", "synonyms"],
+                "atc_classification": ["level1", "level2", "level3", "level4", "level5"]
+            }
+
             # Create a temporary directory for extraction
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Extract the main archive first
@@ -187,50 +404,67 @@ class ChemblDrugProcessor(BaseProcessor):
                     shutil.unpack_archive(dump_file, temp_dir)
                 except Exception as e:
                     raise ProcessingError(f"Failed to extract ChEMBL archive: {e}")
-                
-                # Find the SQL dump files
-                sql_files = []
-                for root, dirs, files in os.walk(temp_dir):
-                    for file in files:
-                        if file.endswith(".sql"):
-                            sql_files.append(os.path.join(root, file))
-                
-                self.logger.info(f"Found {len(sql_files)} SQL files in the archive")
-                
-                # Create target directory if it doesn't exist
-                self.extracted_dir.mkdir(exist_ok=True, parents=True)
-                
-                # Extract tables into CSV format for easier processing
-                for table in tables_of_interest:
-                    target_file = self.extracted_dir / f"{table}.sql"
-                    found = False  # Initialize found variable outside the loop
-                    
-                    # Find the SQL definition for this table
-                    for sql_file in sql_files:
+
+                # Find the .dmp file in the extracted archive
+                dmp_files = list(Path(temp_dir).glob("**/*.dmp"))
+
+                if not dmp_files:
+                    raise ProcessingError("No .dmp file found in ChEMBL archive. Expected PostgreSQL custom format dump.")
+
+                dmp_file = dmp_files[0]
+                self.logger.info(f"Found ChEMBL dump file: {dmp_file}")
+
+                # Create temporary database name
+                temp_db_name = f"chembl_temp_{CHEMBL_VERSION}_{int(datetime.now().timestamp())}"
+
+                try:
+                    # Create temporary database
+                    if not self._create_temp_database(temp_db_name):
+                        raise ProcessingError("Failed to create temporary database for ChEMBL extraction")
+
+                    # Restore dump to temporary database
+                    if not self._restore_dump_to_temp_db(dmp_file, temp_db_name):
+                        raise ProcessingError("Failed to restore ChEMBL dump to temporary database")
+
+                    # Create target directory if it doesn't exist
+                    self.extracted_dir.mkdir(exist_ok=True, parents=True)
+
+                    # Extract each table from temporary database
+                    self.logger.info(f"Extracting {len(tables_of_interest)} tables from temporary database")
+
+                    for table_name, columns in tables_of_interest.items():
                         try:
-                            with open(sql_file, 'r', encoding='utf-8', errors='ignore') as f:
-                                content = f.read()
-                                # Look for CREATE TABLE statements
-                                table_pattern = f"CREATE TABLE (?:public\\.)?{table}"
-                                if re.search(table_pattern, content, re.IGNORECASE):
-                                    with open(target_file, 'w', encoding='utf-8') as out_f:
-                                        out_f.write(content)
-                                    found = True
-                                    self.logger.info(f"Extracted {table} table definition")
-                                    break
+                            # Build query to extract table data
+                            column_list = ", ".join(columns) if columns else "*"
+                            query = f"SELECT {column_list} FROM {table_name}"
+
+                            # Query and save as CSV
+                            df = self._query_temp_database(temp_db_name, query)
+
+                            if df is not None and not df.empty:
+                                output_file = self.extracted_dir / f"{table_name}.csv"
+                                df.to_csv(output_file, index=False)
+                                self.logger.info(f"Extracted {table_name}: {len(df)} rows → {output_file}")
+                            else:
+                                self.logger.warning(f"Table {table_name} is empty or query failed")
+
                         except Exception as e:
-                            self.logger.warning(f"Error processing SQL file {sql_file}: {e}")
+                            self.logger.warning(f"Failed to extract {table_name}: {e}")
                             continue
-                    
-                    if not found:
-                        self.logger.warning(f"Could not find {table} table in SQL files")
-            
+
+                finally:
+                    # Clean up temporary database
+                    self._drop_temp_database(temp_db_name)
+
             # Create a marker file indicating extraction is complete
             with open(extraction_marker, 'w') as f:
-                f.write(f"Extraction completed at {datetime.now().isoformat()}")
-            
+                f.write(f"Extraction completed at {datetime.now().isoformat()}\n")
+                f.write(f"ChEMBL version: {CHEMBL_VERSION}\n")
+                f.write(f"Extraction method: pg_restore to temporary database\n")
+
+            self.logger.info(f"ChEMBL data extraction completed successfully")
             return self.extracted_dir
-        
+
         except Exception as e:
             raise ProcessingError(f"Failed to extract ChEMBL dump: {e}")
 
@@ -420,446 +654,530 @@ class ChemblDrugProcessor(BaseProcessor):
             raise DatabaseError(f"Failed to create ChEMBL tables: {e}")
 
     def _process_molecule_dictionary(self, extracted_dir: Path) -> None:
-        """Process molecule_dictionary table to extract drug information.
-        
+        """Process molecule_dictionary table from extracted CSV files.
+
+        Reads molecule_dictionary.csv, compound_structures.csv, compound_properties.csv
+        and merges them to create comprehensive drug records.
+
         Args:
-            extracted_dir: Path to extracted SQL files
-            
+            extracted_dir: Path to directory containing extracted CSV files
+
         Raises:
             ProcessingError: If processing fails
         """
         schema_name = self.chembl_schema
-        self.logger.info("Processing ChEMBL molecule_dictionary table")
-        
-        # Process directly from API using ChEMBL API if available
+        self.logger.info("Processing ChEMBL molecule_dictionary from CSV files")
+
         try:
-            # Check if we need to create temp tables for extraction
             if not self.ensure_connection() or not self.db_manager.cursor:
                 raise DatabaseError("Database connection failed")
-            
-            # Create a temporary table for molecule extraction
-            self.db_manager.cursor.execute(f"""
-            CREATE TEMP TABLE IF NOT EXISTS molecule_temp (
-                molregno INTEGER,
-                pref_name TEXT,
-                chembl_id TEXT,
-                max_phase FLOAT,
-                first_approval SMALLINT,
-                oral BOOLEAN,
-                parenteral BOOLEAN,
-                topical BOOLEAN,
-                black_box_warning SMALLINT,
-                natural_product SMALLINT,
-                first_in_class SMALLINT,
-                chirality SMALLINT,
-                polymer_flag BOOLEAN,
-                therapeutic_flag BOOLEAN,
-                dosed_ingredient BOOLEAN,
-                structure_type TEXT,
-                chebi_par_id INTEGER,
-                molecule_type TEXT
-            ) ON COMMIT DROP
-            """)
-            
-            # For real implementation, we'd read CSV dumps or use API
-            # For now, use a simpler approach with a subset of important molecules
-            
-            # Get molecules from ChEMBL with max_phase filtering
-            max_phase_cutoff = self.max_phase_cutoff
-            
-            # Use batched processing for drug integration
-            self.logger.info(f"Querying molecules with max_phase >= {max_phase_cutoff}")
-            
-            # For each molecule, gather related data
-            batch_size = 100  # Process in small batches
-            offset = 0
-            
-            # Count existing drugs to check our progress
+
+            # Count existing drugs to check if we need to process
             existing_count = self._safe_fetch_count("drugs", schema_name)
-            
+
             if existing_count > 0 and not self.force_download:
                 self.logger.info(f"Found {existing_count} existing drugs. Use force_download=True to reimport.")
                 return
-            
-            # In a real implementation, we would use API or parse SQL dumps
-            # For demonstration purposes, we'll insert some common drugs directly
-            sample_drugs = [
-                {
-                    "chembl_id": "CHEMBL1173655",
-                    "name": "AFATINIB",
-                    "max_phase": 4.0,
-                    "molecule_type": "Small molecule",
-                    "therapeutic_flag": True,
-                    "first_approval": 2013,
-                    "atc_codes": ["L01EB03"],
-                    "synonyms": ["AFATINIB", "BIBW 2992", "GILOTRIF"],
-                    "structure_info": json.dumps({
-                        "smiles": "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1",
-                        "inchi_key": "ULXXDDBFHOBEHA-CWDCEQMOSA-N"
-                    }),
-                    "properties": json.dumps({
-                        "alogp": 4.39,
-                        "psa": 88.61,
-                        "hba": 7,
-                        "hbd": 2,
-                        "ro5_violations": 0
-                    }),
-                    "external_links": json.dumps({
-                        "drugbank": "DB08916",
-                        "pubchem": "10184653"
-                    })
-                },
-                {
-                    "chembl_id": "CHEMBL3137314",
-                    "name": "RIBOCICLIB",
-                    "max_phase": 4.0,
-                    "molecule_type": "Small molecule",
-                    "therapeutic_flag": True,
-                    "first_approval": 2017,
-                    "atc_codes": ["L01XE42"],
-                    "synonyms": ["RIBOCICLIB", "LEE011", "KISQALI"],
-                    "structure_info": json.dumps({
-                        "smiles": "CC1=CC(=C(C=C1C2=NC3=C(N2)C=CC(=C3)N4CCN(CC4)C)C(=O)NC5=CC=CC=C5)C",
-                        "inchi_key": "ZLJXGMFZEMRJCQ-UHFFFAOYSA-N"
-                    }),
-                    "properties": json.dumps({
-                        "alogp": 4.12,
-                        "psa": 65.77,
-                        "hba": 5,
-                        "hbd": 1,
-                        "ro5_violations": 0
-                    }),
-                    "external_links": json.dumps({
-                        "drugbank": "DB11730",
-                        "pubchem": "44631912"
-                    })
-                }
-            ]
-            
-            # Insert sample drugs into the database
-            for drug in sample_drugs:
-                self.db_manager.cursor.execute(f"""
-                INSERT INTO {schema_name}.drugs (
-                    chembl_id, name, synonyms, max_phase, drug_type, molecular_weight, atc_codes, 
-                    structure_info, properties, external_links
-                ) VALUES (
-                    %(chembl_id)s, %(name)s, %(synonyms)s, %(max_phase)s, %(molecule_type)s, NULL, %(atc_codes)s, 
-                    %(structure_info)s, %(properties)s, %(external_links)s
-                )
-                """, drug)
-            
-            self._safe_commit()
-            self.logger.info("Processed molecule_dictionary table successfully")
-            
+
+            # Read CSV files
+            molecule_dict_path = extracted_dir / "molecule_dictionary.csv"
+            if not molecule_dict_path.exists():
+                self.logger.warning("molecule_dictionary.csv not found, skipping drug processing")
+                return
+
+            self.logger.info(f"Reading molecule_dictionary from {molecule_dict_path}")
+            df_molecules = pd.read_csv(molecule_dict_path)
+
+            # Filter by max_phase if configured
+            if self.max_phase_cutoff > 0:
+                initial_count = len(df_molecules)
+                df_molecules = df_molecules[df_molecules['max_phase'] >= self.max_phase_cutoff]
+                self.logger.info(f"Filtered to {len(df_molecules)} molecules with max_phase >= {self.max_phase_cutoff} (from {initial_count})")
+
+            # Read and merge compound structures
+            structures_path = extracted_dir / "compound_structures.csv"
+            if structures_path.exists():
+                self.logger.info("Merging compound structures")
+                df_structures = pd.read_csv(structures_path)
+                df_molecules = df_molecules.merge(df_structures, on='molregno', how='left')
+
+            # Read and merge compound properties
+            properties_path = extracted_dir / "compound_properties.csv"
+            if properties_path.exists():
+                self.logger.info("Merging compound properties")
+                df_properties = pd.read_csv(properties_path)
+                df_molecules = df_molecules.merge(df_properties, on='molregno', how='left')
+
+            # Read molecule synonyms for drug names
+            synonyms_path = extracted_dir / "molecule_synonyms.csv"
+            synonyms_dict = {}
+            if synonyms_path.exists():
+                self.logger.info("Processing molecule synonyms")
+                df_synonyms = pd.read_csv(synonyms_path)
+                # Group synonyms by molregno
+                for molregno, group in df_synonyms.groupby('molregno'):
+                    synonyms_dict[molregno] = group['synonyms'].dropna().tolist()
+
+            self.logger.info(f"Processing {len(df_molecules)} molecules for insertion")
+
+            # Process molecules in batches
+            batch_size = 1000
+            inserted_count = 0
+
+            progress = get_progress_bar(
+                total=len(df_molecules),
+                desc="Inserting molecules",
+                module_name="chembl_drugs",
+                unit="molecules"
+            )
+
+            try:
+                for start_idx in range(0, len(df_molecules), batch_size):
+                    batch = df_molecules.iloc[start_idx:start_idx + batch_size]
+
+                    # Prepare batch data
+                    batch_data = []
+                    for _, row in batch.iterrows():
+                        # Build structure_info JSON
+                        structure_info = {}
+                        if 'canonical_smiles' in row and pd.notna(row['canonical_smiles']):
+                            structure_info['smiles'] = str(row['canonical_smiles'])
+                        if 'standard_inchi' in row and pd.notna(row['standard_inchi']):
+                            structure_info['inchi'] = str(row['standard_inchi'])
+                        if 'standard_inchi_key' in row and pd.notna(row['standard_inchi_key']):
+                            structure_info['inchi_key'] = str(row['standard_inchi_key'])
+
+                        # Build properties JSON
+                        properties = {}
+                        property_cols = ['mw_freebase', 'alogp', 'hba', 'hbd', 'psa', 'rtb', 'ro3_pass', 'num_ro5_violations']
+                        for col in property_cols:
+                            if col in row and pd.notna(row[col]):
+                                properties[col] = float(row[col]) if isinstance(row[col], (int, float)) else str(row[col])
+
+                        # Get synonyms
+                        molregno = row['molregno']
+                        synonyms = synonyms_dict.get(molregno, [])
+                        if pd.notna(row.get('pref_name')):
+                            synonyms.insert(0, str(row['pref_name']))
+
+                        batch_data.append({
+                            'chembl_id': str(row['chembl_id']) if pd.notna(row['chembl_id']) else None,
+                            'name': str(row['pref_name']) if pd.notna(row.get('pref_name')) else None,
+                            'synonyms': synonyms[:10],  # Limit to first 10 synonyms
+                            'max_phase': float(row['max_phase']) if pd.notna(row.get('max_phase')) else None,
+                            'drug_type': str(row['molecule_type']) if pd.notna(row.get('molecule_type')) else None,
+                            'molecular_weight': float(row['mw_freebase']) if 'mw_freebase' in row and pd.notna(row['mw_freebase']) else None,
+                            'atc_codes': [],  # Will be populated later if needed
+                            'structure_info': json.dumps(structure_info) if structure_info else None,
+                            'properties': json.dumps(properties) if properties else None,
+                            'external_links': None  # Can be populated from other sources later
+                        })
+
+                    # Insert batch
+                    if batch_data:
+                        self.db_manager.cursor.executemany(f"""
+                            INSERT INTO {schema_name}.drugs (
+                                chembl_id, name, synonyms, max_phase, drug_type, molecular_weight, atc_codes,
+                                structure_info, properties, external_links
+                            ) VALUES (
+                                %(chembl_id)s, %(name)s, %(synonyms)s, %(max_phase)s, %(drug_type)s, %(molecular_weight)s, %(atc_codes)s,
+                                %(structure_info)s::jsonb, %(properties)s::jsonb, %(external_links)s::jsonb
+                            )
+                            ON CONFLICT (chembl_id) DO NOTHING
+                        """, batch_data)
+
+                        inserted_count += len(batch_data)
+
+                    progress.update(len(batch))
+
+                self._safe_commit()
+                self.logger.info(f"Processed molecule_dictionary: inserted {inserted_count} drugs")
+
+            finally:
+                progress.close()
+
         except Exception as e:
             if self.db_manager and self.db_manager.conn and not getattr(self.db_manager.conn, 'closed', True):
                 self.db_manager.conn.rollback()
             raise ProcessingError(f"Failed to process molecule_dictionary: {e}")
 
     def _process_drug_targets(self, extracted_dir: Path) -> None:
-        """Process drug_targets table to extract drug-target information.
-        
+        """Process drug_targets table from extracted CSV files.
+
+        Reads target_dictionary.csv, target_components.csv, component_sequences.csv,
+        and drug_mechanism.csv to build comprehensive drug-target relationships.
+
         Args:
-            extracted_dir: Path to extracted SQL files
-            
+            extracted_dir: Path to directory containing extracted CSV files
+
         Raises:
             ProcessingError: If processing fails
         """
         schema_name = self.chembl_schema
-        self.logger.info("Processing ChEMBL drug_targets table")
-        
+        self.logger.info("Processing ChEMBL drug_targets from CSV files")
+
         try:
-            # Check if we need to create temp tables for extraction
             if not self.ensure_connection() or not self.db_manager.cursor:
                 raise DatabaseError("Database connection failed")
-            
-            # Create a temporary table for target extraction
-            self.db_manager.cursor.execute(f"""
-            CREATE TEMP TABLE IF NOT EXISTS target_temp (
-                target_id TEXT,
-                target_type TEXT,
-                target_name TEXT,
-                gene_symbol TEXT,
-                uniprot_id TEXT,
-                action_type TEXT,
-                mechanism_of_action TEXT,
-                binding_site TEXT,
-                confidence_score INTEGER
-            ) ON COMMIT DROP
-            """)
-            
-            # For real implementation, we'd read CSV dumps or use API
-            # For now, use a simpler approach with a subset of important targets
-            
-            # Get targets from ChEMBL with filtering
-            target_types = TARGET_TYPES_OF_INTEREST
-            
-            # Use batched processing for target integration
-            self.logger.info(f"Querying targets with types in {target_types}")
-            
-            # For each target, gather related data
-            batch_size = 100  # Process in small batches
-            offset = 0
-            
-            # Count existing targets to check our progress
+
+            # Count existing targets to check if we need to process
             existing_count = self._safe_fetch_count("drug_targets", schema_name)
-            
+
             if existing_count > 0 and not self.force_download:
                 self.logger.info(f"Found {existing_count} existing targets. Use force_download=True to reimport.")
                 return
-            
-            # In a real implementation, we would use API or parse SQL dumps
-            # For demonstration purposes, we'll insert some common targets directly
-            sample_targets = [
-                {
-                    "target_id": "CHEMBL2093860",
-                    "target_type": "SINGLE PROTEIN",
-                    "target_name": "Epidermal growth factor receptor",
-                    "gene_symbol": "EGFR",
-                    "uniprot_id": "P00533",
-                    "action_type": "INHIBITOR",
-                    "mechanism_of_action": "Tyrosine kinase inhibitor",
-                    "binding_site": "ATP binding site",
-                    "confidence_score": 9
-                },
-                {
-                    "target_id": "CHEMBL240",
-                    "target_type": "SINGLE PROTEIN",
-                    "target_name": "Cyclin-dependent kinase 4",
-                    "gene_symbol": "CDK4",
-                    "uniprot_id": "P11802",
-                    "action_type": "INHIBITOR",
-                    "mechanism_of_action": "Cyclin-dependent kinase inhibitor",
-                    "binding_site": "ATP binding site",
-                    "confidence_score": 8
-                }
-            ]
-            
-            # Insert sample targets into the database
-            for target in sample_targets:
-                self.db_manager.cursor.execute(f"""
-                INSERT INTO {schema_name}.drug_targets (
-                    chembl_id, target_id, target_type, target_name, gene_symbol, uniprot_id, 
-                    action_type, mechanism_of_action, binding_site, confidence_score
-                ) VALUES (
-                    'CHEMBL1173655', %(target_id)s, %(target_type)s, %(target_name)s, %(gene_symbol)s, %(uniprot_id)s, 
-                    %(action_type)s, %(mechanism_of_action)s, %(binding_site)s, %(confidence_score)s
+
+            # Read required CSV files
+            target_dict_path = extracted_dir / "target_dictionary.csv"
+            if not target_dict_path.exists():
+                self.logger.warning("target_dictionary.csv not found, skipping target processing")
+                return
+
+            self.logger.info(f"Reading target_dictionary from {target_dict_path}")
+            df_targets = pd.read_csv(target_dict_path)
+
+            # Filter by target type if configured
+            if TARGET_TYPES_OF_INTEREST:
+                initial_count = len(df_targets)
+                df_targets = df_targets[df_targets['target_type'].isin(TARGET_TYPES_OF_INTEREST)]
+                self.logger.info(f"Filtered to {len(df_targets)} targets of interest (from {initial_count})")
+
+            # Read target components to get component IDs
+            components_path = extracted_dir / "target_components.csv"
+            if components_path.exists():
+                self.logger.info("Merging target_components")
+                df_components = pd.read_csv(components_path)
+                df_targets = df_targets.merge(df_components, on='tid', how='left')
+
+            # Read component sequences to get gene symbols and UniProt IDs
+            sequences_path = extracted_dir / "component_sequences.csv"
+            if sequences_path.exists():
+                self.logger.info("Merging component_sequences for gene symbols")
+                df_sequences = pd.read_csv(sequences_path)
+                df_targets = df_targets.merge(df_sequences, on='component_id', how='left')
+
+            # Read drug mechanisms to link targets to molecules
+            mechanisms_path = extracted_dir / "drug_mechanism.csv"
+            if not mechanisms_path.exists():
+                self.logger.warning("drug_mechanism.csv not found, creating targets without drug links")
+                df_mechanisms = pd.DataFrame()
+            else:
+                self.logger.info("Reading drug_mechanism")
+                df_mechanisms = pd.read_csv(mechanisms_path)
+                # Merge with targets
+                df_targets = df_targets.merge(
+                    df_mechanisms[['molregno', 'tid', 'mechanism_of_action', 'action_type']],
+                    on='tid',
+                    how='left'
                 )
-                """, target)
-            
-            self._safe_commit()
-            self.logger.info("Processed drug_targets table successfully")
-            
+
+            # Get molecule ChEMBL IDs from the drugs table we already populated
+            self.logger.info("Mapping molregno to chembl_id from drugs table")
+            self.db_manager.cursor.execute(f"""
+                SELECT molregno, chembl_id FROM (
+                    SELECT
+                        CAST(SUBSTRING(chembl_id FROM '[0-9]+') AS INTEGER) as molregno,
+                        chembl_id
+                    FROM {schema_name}.drugs
+                    WHERE chembl_id ~ '^CHEMBL[0-9]+'
+                ) subq
+            """)
+            molregno_to_chembl = {row[0]: row[1] for row in self.db_manager.cursor.fetchall()}
+
+            self.logger.info(f"Processing {len(df_targets)} target records for insertion")
+
+            # Process targets in batches
+            batch_size = 1000
+            inserted_count = 0
+
+            progress = get_progress_bar(
+                total=len(df_targets),
+                desc="Inserting drug targets",
+                module_name="chembl_drugs",
+                unit="targets"
+            )
+
+            try:
+                for start_idx in range(0, len(df_targets), batch_size):
+                    batch = df_targets.iloc[start_idx:start_idx + batch_size]
+
+                    # Prepare batch data
+                    batch_data = []
+                    for _, row in batch.iterrows():
+                        # Get chembl_id from molregno
+                        chembl_id = None
+                        if 'molregno' in row and pd.notna(row['molregno']):
+                            chembl_id = molregno_to_chembl.get(int(row['molregno']))
+
+                        # Extract gene symbol (try description field patterns)
+                        gene_symbol = None
+                        if 'description' in row and pd.notna(row['description']):
+                            desc = str(row['description'])
+                            # Try to extract gene symbol from descriptions like "Gene symbol: EGFR"
+                            import re
+                            match = re.search(r'\b([A-Z][A-Z0-9]{1,10})\b', desc)
+                            if match:
+                                gene_symbol = match.group(1)
+
+                        batch_data.append({
+                            'chembl_id': chembl_id,
+                            'target_id': str(row['chembl_id']) if 'chembl_id' in row and pd.notna(row['chembl_id']) else None,
+                            'target_type': str(row['target_type']) if pd.notna(row.get('target_type')) else None,
+                            'target_name': str(row['pref_name']) if pd.notna(row.get('pref_name')) else None,
+                            'gene_symbol': gene_symbol,
+                            'uniprot_id': str(row['accession']) if 'accession' in row and pd.notna(row['accession']) else None,
+                            'action_type': str(row['action_type']) if 'action_type' in row and pd.notna(row['action_type']) else None,
+                            'mechanism_of_action': str(row['mechanism_of_action']) if 'mechanism_of_action' in row and pd.notna(row['mechanism_of_action']) else None,
+                            'binding_site': None,  # Not typically in ChEMBL exports
+                            'confidence_score': None  # Can be calculated/assigned based on evidence
+                        })
+
+                    # Insert batch (filter out entries without chembl_id)
+                    batch_data_valid = [d for d in batch_data if d['chembl_id'] is not None]
+
+                    if batch_data_valid:
+                        self.db_manager.cursor.executemany(f"""
+                            INSERT INTO {schema_name}.drug_targets (
+                                chembl_id, target_id, target_type, target_name, gene_symbol, uniprot_id,
+                                action_type, mechanism_of_action, binding_site, confidence_score
+                            ) VALUES (
+                                %(chembl_id)s, %(target_id)s, %(target_type)s, %(target_name)s, %(gene_symbol)s, %(uniprot_id)s,
+                                %(action_type)s, %(mechanism_of_action)s, %(binding_site)s, %(confidence_score)s
+                            )
+                            ON CONFLICT DO NOTHING
+                        """, batch_data_valid)
+
+                        inserted_count += len(batch_data_valid)
+
+                    progress.update(len(batch))
+
+                self._safe_commit()
+                self.logger.info(f"Processed drug_targets: inserted {inserted_count} target relationships")
+
+            finally:
+                progress.close()
+
         except Exception as e:
             if self.db_manager and self.db_manager.conn and not getattr(self.db_manager.conn, 'closed', True):
                 self.db_manager.conn.rollback()
             raise ProcessingError(f"Failed to process drug_targets: {e}")
 
     def _process_drug_indications(self, extracted_dir: Path) -> None:
-        """Process drug_indications table to extract drug indication information.
-        
+        """Process drug_indications table from extracted CSV files.
+
+        Reads drug_indication.csv and maps to drug ChEMBL IDs.
+
         Args:
-            extracted_dir: Path to extracted SQL files
-            
+            extracted_dir: Path to directory containing extracted CSV files
+
         Raises:
             ProcessingError: If processing fails
         """
         schema_name = self.chembl_schema
-        self.logger.info("Processing ChEMBL drug_indications table")
-        
+        self.logger.info("Processing ChEMBL drug_indications from CSV files")
+
         try:
-            # Check if we need to create temp tables for extraction
             if not self.ensure_connection() or not self.db_manager.cursor:
                 raise DatabaseError("Database connection failed")
-            
-            # Create a temporary table for indication extraction
-            self.db_manager.cursor.execute(f"""
-            CREATE TEMP TABLE IF NOT EXISTS indication_temp (
-                chembl_id TEXT,
-                indication TEXT,
-                max_phase_for_ind FLOAT,
-                mesh_id TEXT,
-                efo_id TEXT
-            ) ON COMMIT DROP
-            """)
-            
-            # For real implementation, we'd read CSV dumps or use API
-            # For now, use a simpler approach with a subset of important indications
-            
-            # Get indications from ChEMBL with filtering
-            max_phase_cutoff = self.max_phase_cutoff
-            
-            # Use batched processing for indication integration
-            self.logger.info(f"Querying indications with max_phase >= {max_phase_cutoff}")
-            
-            # For each indication, gather related data
-            batch_size = 100  # Process in small batches
-            offset = 0
-            
-            # Count existing indications to check our progress
+
+            # Count existing indications to check if we need to process
             existing_count = self._safe_fetch_count("drug_indications", schema_name)
-            
+
             if existing_count > 0 and not self.force_download:
                 self.logger.info(f"Found {existing_count} existing indications. Use force_download=True to reimport.")
                 return
-            
-            # In a real implementation, we would use API or parse SQL dumps
-            # For demonstration purposes, we'll insert some common indications directly
-            sample_indications = [
-                {
-                    "chembl_id": "CHEMBL1173655",
-                    "indication": "Non-small cell lung cancer",
-                    "max_phase_for_ind": 4.0,
-                    "mesh_id": "D002289",
-                    "efo_id": "EFO_0001071"
-                },
-                {
-                    "chembl_id": "CHEMBL3137314",
-                    "indication": "Breast cancer",
-                    "max_phase_for_ind": 4.0,
-                    "mesh_id": "D001943",
-                    "efo_id": "EFO_0000305"
-                }
-            ]
-            
-            # Insert sample indications into the database
-            for indication in sample_indications:
-                self.db_manager.cursor.execute(f"""
-                INSERT INTO {schema_name}.drug_indications (
-                    chembl_id, indication, max_phase_for_ind, mesh_id, efo_id
-                ) VALUES (
-                    %(chembl_id)s, %(indication)s, %(max_phase_for_ind)s, %(mesh_id)s, %(efo_id)s
-                )
-                """, indication)
-            
-            self._safe_commit()
-            self.logger.info("Processed drug_indications table successfully")
-            
+
+            # Read drug_indication CSV file
+            indication_path = extracted_dir / "drug_indication.csv"
+            if not indication_path.exists():
+                self.logger.warning("drug_indication.csv not found, skipping indication processing")
+                return
+
+            self.logger.info(f"Reading drug_indication from {indication_path}")
+            df_indications = pd.read_csv(indication_path)
+
+            # Filter by max_phase_for_ind if configured
+            if self.max_phase_cutoff > 0:
+                initial_count = len(df_indications)
+                df_indications = df_indications[df_indications['max_phase_for_ind'] >= self.max_phase_cutoff]
+                self.logger.info(f"Filtered to {len(df_indications)} indications with max_phase >= {self.max_phase_cutoff} (from {initial_count})")
+
+            # Get molecule ChEMBL IDs from the drugs table
+            self.logger.info("Mapping molregno to chembl_id from drugs table")
+            self.db_manager.cursor.execute(f"""
+                SELECT molregno, chembl_id FROM (
+                    SELECT
+                        CAST(SUBSTRING(chembl_id FROM '[0-9]+') AS INTEGER) as molregno,
+                        chembl_id
+                    FROM {schema_name}.drugs
+                    WHERE chembl_id ~ '^CHEMBL[0-9]+'
+                ) subq
+            """)
+            molregno_to_chembl = {row[0]: row[1] for row in self.db_manager.cursor.fetchall()}
+
+            self.logger.info(f"Processing {len(df_indications)} indication records for insertion")
+
+            # Process indications in batches
+            batch_size = 1000
+            inserted_count = 0
+
+            progress = get_progress_bar(
+                total=len(df_indications),
+                desc="Inserting drug indications",
+                module_name="chembl_drugs",
+                unit="indications"
+            )
+
+            try:
+                for start_idx in range(0, len(df_indications), batch_size):
+                    batch = df_indications.iloc[start_idx:start_idx + batch_size]
+
+                    # Prepare batch data
+                    batch_data = []
+                    for _, row in batch.iterrows():
+                        # Get chembl_id from molregno
+                        chembl_id = None
+                        if 'molregno' in row and pd.notna(row['molregno']):
+                            chembl_id = molregno_to_chembl.get(int(row['molregno']))
+
+                        if chembl_id:  # Only include if we have a valid chembl_id
+                            batch_data.append({
+                                'chembl_id': chembl_id,
+                                'indication': str(row['indication']) if 'indication' in row and pd.notna(row['indication']) else None,
+                                'max_phase_for_ind': float(row['max_phase_for_ind']) if pd.notna(row.get('max_phase_for_ind')) else None,
+                                'mesh_id': str(row['mesh_id']) if 'mesh_id' in row and pd.notna(row['mesh_id']) else None,
+                                'efo_id': str(row['efo_id']) if 'efo_id' in row and pd.notna(row['efo_id']) else None
+                            })
+
+                    # Insert batch
+                    if batch_data:
+                        self.db_manager.cursor.executemany(f"""
+                            INSERT INTO {schema_name}.drug_indications (
+                                chembl_id, indication, max_phase_for_ind, mesh_id, efo_id
+                            ) VALUES (
+                                %(chembl_id)s, %(indication)s, %(max_phase_for_ind)s, %(mesh_id)s, %(efo_id)s
+                            )
+                        """, batch_data)
+
+                        inserted_count += len(batch_data)
+
+                    progress.update(len(batch))
+
+                self._safe_commit()
+                self.logger.info(f"Processed drug_indications: inserted {inserted_count} indications")
+
+            finally:
+                progress.close()
+
         except Exception as e:
             if self.db_manager and self.db_manager.conn and not getattr(self.db_manager.conn, 'closed', True):
                 self.db_manager.conn.rollback()
             raise ProcessingError(f"Failed to process drug_indications: {e}")
 
     def _process_drug_publications(self, extracted_dir: Path) -> None:
-        """Process drug_publications table to extract drug publication information.
-        
+        """Process drug_publications table from extracted CSV files.
+
+        Reads docs.csv and populates publication metadata.
+
         Args:
-            extracted_dir: Path to extracted SQL files
-            
+            extracted_dir: Path to directory containing extracted CSV files
+
         Raises:
             ProcessingError: If processing fails
         """
         schema_name = self.chembl_schema
-        self.logger.info("Processing ChEMBL drug_publications table")
-        
+        self.logger.info("Processing ChEMBL drug_publications from CSV files")
+
         try:
-            # Check if we need to create temp tables for extraction
             if not self.ensure_connection() or not self.db_manager.cursor:
                 raise DatabaseError("Database connection failed")
-            
-            # Create a temporary table for publication extraction
-            self.db_manager.cursor.execute(f"""
-            CREATE TEMP TABLE IF NOT EXISTS publication_temp (
-                chembl_id TEXT,
-                doc_id TEXT,
-                pubmed_id TEXT,
-                doi TEXT,
-                title TEXT,
-                year INTEGER,
-                journal TEXT,
-                authors TEXT
-            ) ON COMMIT DROP
-            """)
-            
-            # For real implementation, we'd read CSV dumps or use API
-            # For now, use a simpler approach with a subset of important publications
-            
-            # Get publications from ChEMBL with filtering
-            max_phase_cutoff = self.max_phase_cutoff
-            
-            # Use batched processing for publication integration
-            self.logger.info(f"Querying publications with max_phase >= {max_phase_cutoff}")
-            
-            # For each publication, gather related data
-            batch_size = 100  # Process in small batches
-            offset = 0
-            
-            # Count existing publications to check our progress
+
+            # Count existing publications to check if we need to process
             existing_count = self._safe_fetch_count("drug_publications", schema_name)
-            
+
             if existing_count > 0 and not self.force_download:
                 self.logger.info(f"Found {existing_count} existing publications. Use force_download=True to reimport.")
                 return
-            
-            # Populate from existing ChEMBL docs data or API
-            self._populate_publications_from_docs()
-            
-            # Insert additional sample publications for demonstration
-            sample_publications = [
-                {
-                    "chembl_id": "CHEMBL1173655",
-                    "doc_id": "CHEMBL1173655_DOC_1",
-                    "pubmed_id": "23633486",
-                    "doi": "10.1056/NEJMoa1214886",
-                    "title": "Afatinib versus cisplatin plus pemetrexed for patients with advanced lung adenocarcinoma and sensitive EGFR gene mutations",
-                    "abstract": "Background: Afatinib is an ErbB family blocker that irreversibly inhibits signaling from epidermal growth factor receptor (EGFR), HER2, and HER4. We compared afatinib with standard chemotherapy as first-line treatment for patients with advanced lung adenocarcinoma harboring EGFR mutations.",
-                    "year": 2013,
-                    "journal": "N Engl J Med",
-                    "journal_full_title": "New England Journal of Medicine",
-                    "authors": "Sequist LV, Yang JC, Yamamoto N, O'Byrne K, Hirsh V, Mok T, Geater SL, Orlov S, Tsai CM, Boyer M, Su WC, Bennouna J, Kato T, Gorbunova V, Lee KH, Shah R, Massey D, Zazulina V, Shahidi M, Schuler M",
-                    "volume": "368",
-                    "issue": "25",
-                    "first_page": "2385",
-                    "last_page": "2394"
-                },
-                {
-                    "chembl_id": "CHEMBL3137314",
-                    "doc_id": "CHEMBL3137314_DOC_1", 
-                    "pubmed_id": "27717303",
-                    "doi": "10.1056/NEJMoa1613174",
-                    "title": "Ribociclib plus letrozole versus letrozole for postmenopausal women with hormone-receptor-positive, HER2-negative, advanced breast cancer",
-                    "abstract": "Background: Ribociclib is an oral, selective cyclin-dependent kinase 4 and 6 (CDK4/6) inhibitor. We evaluated the efficacy and safety of ribociclib plus letrozole versus letrozole alone as first-line therapy for hormone-receptor-positive, HER2-negative, advanced breast cancer.",
-                    "year": 2016,
-                    "journal": "N Engl J Med",
-                    "journal_full_title": "New England Journal of Medicine", 
-                    "authors": "Hortobagyi GN, Stemmer SM, Burris HA, Yap YS, Sonke GS, Paluch-Shimon S, Campone M, Blackwell KL, André F, Winer EP, Janni W, Verma S, Conte P, Arteaga CL, Cameron DA, Petrakova K, Hart LL, Villanueva C, Chan A, Jakobsen E, Nusch A, Burdaeva O, Grischke EM, Alba E, Wist E, Marschner N, Favret AM, Yardley D, Bachelot T, Tseng LM, Blau S, Xuan F, Souami F, Miller M, Germa C, Hirawat S, O'Shaughnessy J",
-                    "volume": "375",
-                    "issue": "18", 
-                    "first_page": "1738",
-                    "last_page": "1748"
-                }
-            ]
-            
-            # Insert sample publications into the database
-            for publication in sample_publications:
-                self.db_manager.cursor.execute(f"""
-                INSERT INTO {schema_name}.drug_publications (
-                    chembl_id, doc_id, pubmed_id, doi, title, abstract, year, journal, authors,
-                    volume, issue, first_page, last_page, journal_full_title
-                ) VALUES (
-                    %(chembl_id)s, %(doc_id)s, %(pubmed_id)s, %(doi)s, %(title)s, %(abstract)s, 
-                    %(year)s, %(journal)s, %(authors)s, %(volume)s, %(issue)s, %(first_page)s, 
-                    %(last_page)s, %(journal_full_title)s
-                )
-                ON CONFLICT (doc_id) DO UPDATE SET
-                    chembl_id = EXCLUDED.chembl_id,
-                    pubmed_id = EXCLUDED.pubmed_id,
-                    doi = EXCLUDED.doi,
-                    title = EXCLUDED.title,
-                    abstract = EXCLUDED.abstract,
-                    year = EXCLUDED.year,
-                    journal = EXCLUDED.journal,
-                    authors = EXCLUDED.authors,
-                    volume = EXCLUDED.volume,
-                    issue = EXCLUDED.issue,
-                    first_page = EXCLUDED.first_page,
-                    last_page = EXCLUDED.last_page,
-                    journal_full_title = EXCLUDED.journal_full_title
-                """, publication)
-            
-            self._safe_commit()
-            self.logger.info("Processed drug_publications table successfully")
-            
+
+            # Read docs CSV file
+            docs_path = extracted_dir / "docs.csv"
+            if not docs_path.exists():
+                self.logger.warning("docs.csv not found, skipping publication processing")
+                return
+
+            self.logger.info(f"Reading docs from {docs_path}")
+            df_docs = pd.read_csv(docs_path)
+
+            # Filter to publications with PubMed IDs or DOIs
+            df_docs = df_docs[df_docs['pubmed_id'].notna() | df_docs['doi'].notna()]
+
+            self.logger.info(f"Processing {len(df_docs)} publication records for insertion")
+
+            # Process publications in batches
+            batch_size = 1000
+            inserted_count = 0
+
+            progress = get_progress_bar(
+                total=len(df_docs),
+                desc="Inserting publications",
+                module_name="chembl_drugs",
+                unit="publications"
+            )
+
+            try:
+                for start_idx in range(0, len(df_docs), batch_size):
+                    batch = df_docs.iloc[start_idx:start_idx + batch_size]
+
+                    # Prepare batch data
+                    batch_data = []
+                    for _, row in batch.iterrows():
+                        batch_data.append({
+                            'chembl_id': None,  # Will be populated when linking to drugs
+                            'doc_id': str(row['doc_id']) if pd.notna(row.get('doc_id')) else None,
+                            'pubmed_id': str(row['pubmed_id']) if pd.notna(row.get('pubmed_id')) else None,
+                            'doi': str(row['doi']) if pd.notna(row.get('doi')) else None,
+                            'title': str(row['title']) if pd.notna(row.get('title')) else None,
+                            'abstract': None,  # Not typically in base docs table
+                            'year': int(row['year']) if pd.notna(row.get('year')) else None,
+                            'journal': str(row['journal']) if pd.notna(row.get('journal')) else None,
+                            'authors': None,  # Not typically in base docs table
+                            'volume': None,
+                            'issue': None,
+                            'first_page': None,
+                            'last_page': None,
+                            'patent_id': None,
+                            'journal_full_title': None
+                        })
+
+                    # Insert batch
+                    if batch_data:
+                        self.db_manager.cursor.executemany(f"""
+                            INSERT INTO {schema_name}.drug_publications (
+                                chembl_id, doc_id, pubmed_id, doi, title, abstract, year, journal, authors,
+                                volume, issue, first_page, last_page, journal_full_title, patent_id
+                            ) VALUES (
+                                %(chembl_id)s, %(doc_id)s, %(pubmed_id)s, %(doi)s, %(title)s, %(abstract)s,
+                                %(year)s, %(journal)s, %(authors)s, %(volume)s, %(issue)s, %(first_page)s,
+                                %(last_page)s, %(journal_full_title)s, %(patent_id)s
+                            )
+                            ON CONFLICT (doc_id) DO UPDATE SET
+                                pubmed_id = EXCLUDED.pubmed_id,
+                                doi = EXCLUDED.doi,
+                                title = EXCLUDED.title,
+                                year = EXCLUDED.year,
+                                journal = EXCLUDED.journal
+                        """, batch_data)
+
+                        inserted_count += len(batch_data)
+
+                    progress.update(len(batch))
+
+                self._safe_commit()
+                self.logger.info(f"Processed drug_publications: inserted {inserted_count} publications")
+
+            finally:
+                progress.close()
+
         except Exception as e:
             if self.db_manager and self.db_manager.conn and not getattr(self.db_manager.conn, 'closed', True):
                 self.db_manager.conn.rollback()

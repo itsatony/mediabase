@@ -2,11 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🎯 PRIMARY USE CASE (CRITICAL CONTEXT)
+
+**Target Users**: Non-informatician oncologists in clinical practice
+
+**Workflow**:
+1. Oncologist uploads patient transcriptome data (DESeq2 results, RNA-seq data)
+2. System creates **patient-specific database copy** with integrated fold-change data
+3. Oncologist interacts with **LLM-based bioinformatics assistant**
+4. Assistant translates normal medical conversation into optimized SQL queries
+5. Assistant provides clinical insights based on query results
+
+**Design Imperatives**:
+- **Schema must be LLM-friendly**: Clear table/column names, intuitive relationships
+- **Documentation must be comprehensive**: Every data source, every relationship documented
+- **Queries must be SOTA**: State-of-the-art cancer bioinformatics queries as examples
+- **Database must be easily cloneable**: Patient-specific copies are core functionality
+- **ETL must be robust**: Download+cache pattern, reproducible, well-documented
+
+**This means ALL future work should prioritize**:
+1. Query accessibility for LLMs (clear schema, good examples)
+2. Clinical relevance (cancer-specific insights, therapeutic recommendations)
+3. Documentation quality (source attribution, data provenance, relationship explanations)
+4. Reproducibility (cached downloads, version tracking, consistent ETL patterns)
+
 ## Project Overview
 
 MEDIABASE is a comprehensive cancer transcriptomics database system that integrates biological data from multiple sources:
 - Gene transcript data from GENCODE
-- Gene product classification from UniProt  
+- Gene product classification from UniProt
 - GO terms from Gene Ontology
 - Pathway data from Reactome
 - Drug interactions from DrugCentral/ChEMBL
@@ -434,3 +458,178 @@ For detailed query documentation, interpretation guidelines, and clinical decisi
 - ETL processes include automatic retry logic for network operations
 - Database transactions are properly scoped to allow rollback on errors
 - Cache validation prevents use of corrupted cached files
+
+## Adding New Data Sources (v0.5.0+)
+
+### Requirements for New ETL Modules
+
+When adding new data sources, follow these requirements to support the LLM-assistant use case:
+
+#### 1. **ETL Pattern Compliance**
+```python
+# All ETL processors MUST:
+class NewSourceProcessor(BaseProcessor):
+    def download_source(self) -> Path:
+        """Download and cache source file"""
+        return self.download_file(url=SOURCE_URL, file_path=cache_path)
+
+    def process_source(self) -> Dict:
+        """Process cached file into structured data"""
+        pass
+
+    def integrate_source(self) -> None:
+        """Insert processed data into normalized tables"""
+        pass
+```
+
+#### 2. **Documentation Requirements**
+
+**README.md must include**:
+- Data source name, URL, and license
+- Update frequency and versioning
+- Table names and relationships
+- Example queries for common clinical questions
+
+**Schema comments required**:
+```sql
+COMMENT ON TABLE gene_publications IS
+  'Gene-publication links from PubTator Central.
+   Updated monthly.
+   Source: https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTatorCentral/';
+
+COMMENT ON COLUMN gene_publications.mention_count IS
+  'Number of times gene mentioned in abstract/full-text';
+```
+
+#### 3. **Query Examples Required**
+
+Every new data source MUST provide 3-5 example queries in `docs/QUERY_EXAMPLES.md`:
+
+```sql
+-- Example: Find publications linking overexpressed genes to drug resistance
+-- Clinical Question: "Which papers discuss resistance mechanisms for my patient's upregulated genes?"
+SELECT
+    ctb.gene_symbol,
+    ctb.expression_fold_change,
+    gp.pmid,
+    gp.mention_count
+FROM cancer_transcript_base ctb
+INNER JOIN gene_publications gp ON ctb.gene_id = gp.gene_id
+WHERE ctb.expression_fold_change > 3.0
+  AND gp.pmid IN (
+    SELECT pmid FROM pubmed_metadata
+    WHERE abstract ILIKE '%resistance%' OR abstract ILIKE '%refractory%'
+  )
+ORDER BY ctb.expression_fold_change DESC, gp.mention_count DESC
+LIMIT 20;
+```
+
+#### 4. **LLM-Friendly Schema Design**
+
+**Table naming**:
+- Use full words, not abbreviations: `gene_publications` not `gene_pubs`
+- Be explicit: `clinical_trial_gene_associations` not `trial_genes`
+- Follow pattern: `{entity}_{relationship}_{entity}` for join tables
+
+**Column naming**:
+- Use medical/biological terms oncologists know: `expression_fold_change` not `fc`
+- Include units in name where relevant: `tumor_size_mm`, `survival_months`
+- Be unambiguous: `therapeutic_target_priority` not `priority`
+
+#### 5. **Data Provenance Tracking**
+
+Every row MUST track its source:
+```sql
+CREATE TABLE gene_disease_associations (
+    -- ... data columns ...
+    source VARCHAR(50) NOT NULL,  -- 'Open Targets', 'DisGeNET', etc.
+    evidence_score FLOAT,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    source_version VARCHAR(20)  -- '2024.06', 'v7.3', etc.
+);
+```
+
+#### 6. **Clinical Relevance Priority**
+
+Prioritize data that answers clinical questions:
+- **HIGH**: Drug-gene interactions, clinical trials, treatment outcomes
+- **MEDIUM**: Pathways, gene-disease associations, biomarkers
+- **LOW**: Sequence features, technical annotations
+
+#### 7. **Test Queries for LLM Validation**
+
+Create test queries in `tests/test_queries/` that an LLM should be able to generate:
+
+```sql
+-- Test: LLM should generate this from "Show me targeted therapies for HER2+ breast cancer"
+SELECT
+    d.drug_name,
+    d.max_phase,
+    dm.mechanism_of_action,
+    di.indication
+FROM drugs d
+INNER JOIN drug_mechanisms dm ON d.drug_id = dm.drug_id
+INNER JOIN drug_indications di ON d.drug_id = di.drug_id
+WHERE di.indication ILIKE '%breast cancer%'
+  AND dm.target_gene_symbol = 'ERBB2'
+  AND d.max_phase >= 3;
+```
+
+### Data Source Integration Checklist
+
+Before submitting new data source integration:
+
+- [ ] ETL processor follows BaseProcessor pattern
+- [ ] Download+cache implemented (no API rate limits)
+- [ ] Schema has descriptive table/column names
+- [ ] All tables have COMMENT ON statements
+- [ ] 3-5 example queries written in docs/
+- [ ] Data provenance tracked (source, version, date)
+- [ ] README.md updated with source description
+- [ ] Tests verify data loading and basic queries
+- [ ] Validated on patient-specific database copy
+- [ ] Query examples tested with actual LLM (Claude/GPT-4)
+
+### Example: Well-Documented Table
+
+```sql
+CREATE TABLE clinical_trial_gene_associations (
+    nct_id VARCHAR(20) REFERENCES clinical_trials(nct_id),
+    gene_id VARCHAR(50) REFERENCES genes(gene_id),
+    association_type VARCHAR(50) NOT NULL,  -- 'target', 'biomarker', 'eligibility_criterion'
+    evidence_source VARCHAR(100),  -- How we linked this gene to trial
+    confidence_score FLOAT,  -- 0.0-1.0
+    PRIMARY KEY (nct_id, gene_id, association_type)
+);
+
+COMMENT ON TABLE clinical_trial_gene_associations IS
+  'Links clinical trials to genes based on trial descriptions, inclusion criteria, and molecular targets.
+   Source: ClinicalTrials.gov + Open Targets Platform evidence.
+   Updated: Monthly.
+   Use Case: Find relevant trials for patient"s aberrantly expressed genes.';
+
+COMMENT ON COLUMN clinical_trial_gene_associations.association_type IS
+  'How gene relates to trial:
+   - target: Gene/protein is therapeutic target
+   - biomarker: Gene expression used for patient selection
+   - eligibility_criterion: Gene mutation/expression required for enrollment';
+```
+
+## Version History & Migration
+
+### v0.5.0 (Planned) - Publications & Clinical Trials
+- PubTator Central gene-publication links
+- ClinicalTrials.gov integration
+- Open Targets disease associations
+- WikiPathways expansion
+- Enhanced query examples
+
+### v0.4.1 - Pathway Persistence Fix
+- Fixed pathway database saving bug
+- 4,740 pathway mappings restored
+- 43.5% gene coverage achieved
+
+### v0.4.0 - ChEMBL v35 & Pathway Fixes
+- ChEMBL v35 integration via pg_restore
+- Fixed NCBI ID mapping for pathways
+- Comprehensive SOTA query library

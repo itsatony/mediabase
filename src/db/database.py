@@ -985,171 +985,60 @@ class DatabaseManager:
         ]
 
     def reset_database(self) -> bool:
-        """Reset the database to the latest schema version directly.
-        
-        This method drops all tables and applies the full v0.1.9 schema in one step,
-        without going through incremental migrations.
-        
+        """Reset the database using the comprehensive bootstrap schema.
+
+        This method drops the entire public schema and recreates it from scratch
+        using the bootstrap_schema.sql file, which includes the complete v0.3.0 schema
+        with all normalized tables, views, indexes, and functions.
+
         Returns:
             bool: True if successful, False otherwise
         """
         if not self.ensure_connection():
             self.logger.error("Cannot reset database: no connection")
             return False
-            
+
         try:
             self.logger.warning("Resetting database - all data will be lost!")
-            
+
+            # Locate bootstrap SQL file
+            bootstrap_path = Path(__file__).parent / "bootstrap_schema.sql"
+
+            if not bootstrap_path.exists():
+                self.logger.error(f"Bootstrap SQL not found: {bootstrap_path}")
+                return False
+
+            # Read bootstrap SQL
+            self.logger.info(f"Reading bootstrap schema from {bootstrap_path}")
+            with open(bootstrap_path, 'r', encoding='utf-8') as f:
+                bootstrap_sql = f.read()
+
             # Start a fresh transaction
             if self.conn:
                 self.conn.autocommit = False
-                
-            # Drop all database objects in a clean sweep
-            if self.cursor:
-                # Drop everything first
-                self.cursor.execute("""
-                    DO $$ 
-                    DECLARE
-                        r RECORD;
-                    BEGIN
-                        -- Disable triggers
-                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
-                            EXECUTE 'ALTER TABLE IF EXISTS ' || quote_ident(r.tablename) || ' DISABLE TRIGGER ALL';
-                        END LOOP;
-                        
-                        -- Drop tables with cascade
-                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
-                            EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
-                        END LOOP;
-                        
-                        -- Drop custom types
-                        FOR r IN (SELECT typname FROM pg_type WHERE typtype = 'c' AND typnamespace = current_schema()::regnamespace) LOOP
-                            EXECUTE 'DROP TYPE IF EXISTS ' || quote_ident(r.typname) || ' CASCADE';
-                        END LOOP;
-                        
-                        -- Drop views
-                        FOR r IN (SELECT viewname FROM pg_views WHERE schemaname = current_schema()) LOOP
-                            EXECUTE 'DROP VIEW IF EXISTS ' || quote_ident(r.viewname) || ' CASCADE';
-                        END LOOP;
-                    END $$;
-                """)
-                
-                self.logger.info("Successfully dropped all database objects")
-                
-                # Create the target database structure in one go
-                # First, create the base structure for v0.1.0
-                self.logger.info("Creating base database schema (v0.1.0)")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.0"])
-                
-                # Add the schema v0.1.1 changes
-                self.logger.info("Applying schema changes for v0.1.1")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.1"])
-                
-                # Add the schema v0.1.2 changes
-                self.logger.info("Applying schema changes for v0.1.2")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.2"])
-                
-                # Add the schema v0.1.3 changes
-                self.logger.info("Applying schema changes for v0.1.3")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.3"])
-                
-                # Add the schema v0.1.4 changes
-                self.logger.info("Applying schema changes for v0.1.4")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.4"])
-                
-                # Add the schema v0.1.5 changes, handling the DO block separately
-                self.logger.info("Applying schema changes for v0.1.5")
-                
-                # Apply standard SQL statements first
-                self.cursor.execute("""
-                    -- Set proper default for source_references
-                    ALTER TABLE cancer_transcript_base
-                    ALTER COLUMN source_references SET DEFAULT jsonb_build_object(
-                        'go_terms', jsonb_build_array(),
-                        'uniprot', jsonb_build_array(),
-                        'drugs', jsonb_build_array(),
-                        'pathways', jsonb_build_array()
-                    );
 
-                    -- Update any existing NULL source_references to the proper default structure
-                    UPDATE cancer_transcript_base
-                    SET source_references = jsonb_build_object(
-                        'go_terms', jsonb_build_array(),
-                        'uniprot', jsonb_build_array(),
-                        'drugs', jsonb_build_array(),
-                        'pathways', jsonb_build_array()
-                    )
-                    WHERE source_references IS NULL;
-                """)
-                
-                # Apply the DO block separately since it contains exception handling
-                self.cursor.execute("""
-                    DO $$ BEGIN
-                        CREATE TYPE publication_reference AS (
-                            pmid text,
-                            evidence_type text,
-                            source_db text,
-                            title text,
-                            abstract text,
-                            year integer,
-                            journal text,
-                            authors text[],
-                            citation_count integer,
-                            doi text,
-                            url text
-                        );
-                    EXCEPTION
-                        WHEN duplicate_object THEN null;
-                    END $$;
-                """)
-                
-                # Apply the schema v0.1.6 changes
-                self.logger.info("Applying schema changes for v0.1.6")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.6"])
-                
-                # Apply the schema v0.1.7 changes (PharmGKB pathways)
-                self.logger.info("Applying schema changes for v0.1.7")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.7"])
-                
-                # Apply the schema v0.1.8 changes (Evidence scoring)
-                self.logger.info("Applying schema changes for v0.1.8")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.8"])
-                
-                # Apply the schema v0.1.9 changes (PharmGKB variants)
-                self.logger.info("Applying schema changes for v0.1.9")
-                self.cursor.execute(SCHEMA_VERSIONS["v0.1.9"])
-                
-                # Create schema_version table and record that we're at v0.1.9
-                self.logger.info("Creating schema_version table with v0.1.9")
-                self.cursor.execute("""
-                    CREATE TABLE schema_version (
-                        version_name TEXT PRIMARY KEY,
-                        applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        description TEXT
-                    );
-                    
-                    -- Insert the schema version record directly as v0.1.9
-                    INSERT INTO schema_version (version_name, description) 
-                    VALUES ('v0.1.9', 'Direct schema reset to v0.1.9 with PharmGKB variant annotations');
-                """)
-                
+            # Execute complete bootstrap in one transaction
+            if self.cursor:
+                self.logger.info("Executing bootstrap schema (this may take a moment)...")
+                self.cursor.execute(bootstrap_sql)
+
                 # Commit all changes
                 if self.conn:
                     self.conn.commit()
                     self.conn.autocommit = True
-                    
+
                 # Verify the schema is correctly set up
                 current_version = self.get_current_version()
-                if current_version != LATEST_SCHEMA_VERSION:
-                    self.logger.error(f"Schema version mismatch after reset: {current_version} != {LATEST_SCHEMA_VERSION}")
+                if current_version != "v0.3.0":
+                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.3.0")
                     return False
-                    
-                self.logger.info(f"Database reset completed successfully with schema {LATEST_SCHEMA_VERSION}")
+
+                self.logger.info("Database reset completed successfully with schema v0.3.0")
                 return True
             else:
                 self.logger.error("Database cursor is None, cannot reset database")
                 return False
-                    
+
         except Exception as e:
             self.logger.error(f"Database reset failed: {e}")
             if self.conn:

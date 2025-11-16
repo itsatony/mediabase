@@ -68,93 +68,109 @@ class PathwayProcessor(BaseProcessor):
     
     def process_pathways(self) -> Dict[str, Set[str]]:
         """Process Reactome pathway data into gene-to-pathway mappings.
-        
+
         Returns:
             Dictionary mapping gene symbols to sets of pathway identifiers
-            
+
         Raises:
             ProcessingError: If pathway processing fails
         """
         try:
             # First download the Reactome data
             reactome_file = self.download_reactome()
-            
+
             self.logger.info(f"Processing Reactome pathway data from {reactome_file}")
-            
+
             # Initialize gene to pathway mapping
             gene_to_pathways: Dict[str, Set[str]] = {}
-            
+            pathway_to_genes: Dict[str, Set[str]] = {}
+
             # Handle specific mappings between gene IDs and symbols
             ncbi_to_symbol = self._get_ncbi_mapping()
-            
+
             # Parse file and extract pathway information
             with open(reactome_file, 'r') as f:
                 # Skip header if present
                 first_line = f.readline()
                 if not first_line.startswith('NCBI'):
                     f.seek(0)  # Reset to beginning if no header
-                
+
                 # Process each line
                 for line in tqdm(f, desc="Processing pathway data"):
                     parts = line.strip().split('\t')
-                    
+
                     # Check if line has required fields
                     if len(parts) < 6:
                         continue
-                    
+
                     gene_id = parts[0]
                     pathway_name = parts[3]
                     pathway_id = parts[1]
                     species = parts[5]
-                    
+
                     # Skip non-human pathways
                     if species != HUMAN_SPECIES:
                         continue
-                    
+
                     # Map gene ID to symbol if available
                     gene_symbol = ncbi_to_symbol.get(gene_id)
                     if not gene_symbol:
                         continue
-                    
+
                     # Format pathway string: "Pathway Name [Reactome:ID]"
                     pathway_string = f"{pathway_name} [Reactome:{pathway_id}]"
-                    
+
                     # Add to gene mappings
                     if gene_symbol not in gene_to_pathways:
                         gene_to_pathways[gene_symbol] = set()
-                    
+
                     gene_to_pathways[gene_symbol].add(pathway_string)
-            
+
+                    # Track genes per pathway for publication extraction
+                    if pathway_id not in pathway_to_genes:
+                        pathway_to_genes[pathway_id] = set()
+                    pathway_to_genes[pathway_id].add(gene_symbol)
+
             # Log statistics
             total_genes = len(gene_to_pathways)
             avg_pathways = sum(len(pathways) for pathways in gene_to_pathways.values()) / max(1, total_genes)
-            
+
             self.logger.info(
                 f"Processed Reactome pathways:\n"
                 f"- Total genes with pathways: {total_genes:,}\n"
-                f"- Average pathways per gene: {avg_pathways:.1f}"
+                f"- Average pathways per gene: {avg_pathways:.1f}\n"
+                f"- Total pathways: {len(pathway_to_genes):,}"
             )
-            
+
+            # Extract pathway publications using Reactome API
+            self.logger.info("Extracting pathway publication references from Reactome API")
+            pathway_publications = self._fetch_reactome_publications(pathway_to_genes)
+
+            # Save pathway publications for use in enrichment
+            if pathway_publications:
+                self._save_pathway_publications(pathway_publications)
+                self.logger.info(f"Saved publication data for {len(pathway_publications)} pathways")
+
             return gene_to_pathways
-            
+
         except Exception as e:
             raise ProcessingError(f"Failed to process pathway data: {e}")
     
     def _extract_pathway_publications(self, evidence: str, pathway_id: str) -> List[Publication]:
         """Extract publication references from pathway evidence.
-        
+
         Args:
             evidence: Evidence text from pathway data
             pathway_id: Reactome pathway ID
-            
+
         Returns:
             List of Publication references
         """
         publications: List[Publication] = []
-        
+
         # Extract PMIDs from evidence text
         pmids = extract_pmids_from_text(evidence)
-        
+
         # Create publication references for each PMID
         for pmid in pmids:
             publication = PublicationsProcessor.create_publication_reference(
@@ -164,8 +180,75 @@ class PathwayProcessor(BaseProcessor):
                 url=f"https://reactome.org/content/detail/{pathway_id}"
             )
             publications.append(publication)
-        
+
         return publications
+
+    def _fetch_reactome_publications(self, pathway_to_genes: Dict[str, Set[str]]) -> Dict[str, List[Publication]]:
+        """Fetch publication references from Reactome Content Service API.
+
+        Args:
+            pathway_to_genes: Dictionary mapping pathway IDs to gene symbols
+
+        Returns:
+            Dictionary mapping pathway IDs to publication references
+        """
+        pathway_publications: Dict[str, List[Publication]] = {}
+        api_base = "https://reactome.org/ContentService"
+
+        # Sample first 100 pathways to avoid overwhelming the API
+        # In production, you might want to cache this or use a different approach
+        pathway_ids = list(pathway_to_genes.keys())[:100]
+
+        self.logger.info(f"Fetching publications for {len(pathway_ids)} pathways from Reactome API")
+
+        for pathway_id in tqdm(pathway_ids, desc="Fetching pathway publications"):
+            try:
+                # Query Reactome API for pathway publications
+                url = f"{api_base}/data/pathway/{pathway_id}/literatureReferences"
+                response = requests.get(url, timeout=10)
+
+                if response.status_code == 200:
+                    lit_refs = response.json()
+                    publications = []
+
+                    # Extract PMIDs from literature references
+                    for ref in lit_refs:
+                        # Check if reference has a PubMed ID
+                        if 'pubMedIdentifier' in ref and ref['pubMedIdentifier']:
+                            pmid = str(ref['pubMedIdentifier'])
+                            publication = PublicationsProcessor.create_publication_reference(
+                                pmid=pmid,
+                                evidence_type="pathway_evidence",
+                                source_db="Reactome",
+                                url=f"https://reactome.org/content/detail/{pathway_id}"
+                            )
+                            publications.append(publication)
+
+                    if publications:
+                        pathway_publications[pathway_id] = publications
+
+                elif response.status_code == 404:
+                    # Pathway not found in API, skip silently
+                    continue
+                else:
+                    self.logger.warning(f"Failed to fetch publications for pathway {pathway_id}: HTTP {response.status_code}")
+
+            except requests.exceptions.Timeout:
+                self.logger.warning(f"Timeout fetching publications for pathway {pathway_id}")
+                continue
+            except Exception as e:
+                self.logger.warning(f"Error fetching publications for pathway {pathway_id}: {e}")
+                continue
+
+        total_pmids = sum(len(pubs) for pubs in pathway_publications.values())
+        self.logger.info(
+            f"Extracted pathway publications:\n"
+            f"- Pathways with publications: {len(pathway_publications):,}\n"
+            f"- Total PMIDs: {total_pmids:,}\n"
+            f"- Average PMIDs per pathway: {total_pmids/max(1, len(pathway_publications)):.1f}"
+        )
+
+        return pathway_publications
     
     def _save_pathway_publications(self, pathway_publications: Dict[str, List[Publication]]) -> None:
         """Save pathway publication references to cache.
@@ -440,9 +523,7 @@ class PathwayProcessor(BaseProcessor):
     def _update_batch(self, updates: List[Tuple[List[str], str, str]]) -> None:
         """Update a batch of transcript records with pathway data.
 
-        NOTE: Legacy table UPDATE removed - pathway data is written to gene_pathways table
-        in the integrate_pathways() method. This method is kept for backwards compatibility
-        but no longer performs database operations.
+        Writes pathway data to the gene_pathways normalized table.
 
         Args:
             updates: List of tuples with (pathways, publications_json, gene_symbol)
@@ -450,9 +531,53 @@ class PathwayProcessor(BaseProcessor):
         Raises:
             DatabaseError: If batch update fails
         """
-        # Legacy table update removed - using normalized schema only
-        # Pathway data is written to gene_pathways table in integrate_pathways()
-        self.logger.debug(f"Processed batch of {len(updates)} genes (legacy UPDATE skipped)")
+        if not self.db_manager.cursor:
+            raise DatabaseError("No database cursor available")
+
+        try:
+            # Prepare batch inserts for gene_pathways table
+            pathway_inserts = []
+
+            for pathways_list, publications_json, gene_symbol in updates:
+                # For each pathway string, extract ID and name
+                for pathway_string in pathways_list:
+                    # Parse pathway string format: "Pathway Name [Reactome:ID]"
+                    match = re.search(r'^(.+)\s+\[Reactome:(R-[A-Z]+-\d+)\]$', pathway_string)
+                    if match:
+                        pathway_name = match.group(1).strip()
+                        pathway_id = match.group(2)
+
+                        pathway_inserts.append((
+                            gene_symbol,
+                            pathway_id,
+                            pathway_name,
+                            'Reactome'
+                        ))
+
+            if pathway_inserts:
+                # Insert into gene_pathways table
+                self.db_manager.cursor.execute("""
+                    INSERT INTO gene_pathways (gene_id, pathway_id, pathway_name, pathway_source)
+                    SELECT
+                        g.gene_id,
+                        data.pathway_id,
+                        data.pathway_name,
+                        data.pathway_source
+                    FROM (VALUES %s) AS data(gene_symbol, pathway_id, pathway_name, pathway_source)
+                    INNER JOIN genes g ON g.gene_symbol = data.gene_symbol
+                    ON CONFLICT (gene_id, pathway_id, pathway_source) DO NOTHING
+                """ % ','.join([
+                    self.db_manager.cursor.mogrify("(%s,%s,%s,%s)", row).decode('utf-8')
+                    for row in pathway_inserts
+                ]))
+
+                self.db_manager.conn.commit()
+                self.logger.debug(f"Inserted {len(pathway_inserts)} pathway mappings from batch of {len(updates)} genes")
+
+        except Exception as e:
+            if self.db_manager.conn:
+                self.db_manager.conn.rollback()
+            raise DatabaseError(f"Failed to update pathway batch: {e}")
     
     def extract_pathway_references(self, pathway_data: Dict[str, Any]) -> List[Publication]:
         """Extract publication references from pathway data.

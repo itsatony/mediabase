@@ -455,12 +455,13 @@ def main() -> int:  # Change return type to int for clarity
             finally:
                 if db_manager and db_manager.conn:
                     db_manager.close()
-        
+
+        # Pass reset_db=False to run_pipeline since reset was already done above if needed
         run_pipeline(
-            config, 
-            args.modules, 
+            config,
+            args.modules,
             args.limit_transcripts,
-            reset_db=args.reset_db
+            reset_db=False  # Already handled above if args.reset_db was True
         )
         return 0  # Explicit successful return
     except KeyboardInterrupt:

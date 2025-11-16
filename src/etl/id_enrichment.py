@@ -909,7 +909,7 @@ class IDEnrichmentProcessor(BaseProcessor):
                 # Add Gene2Ensembl data
                 if ensembl_gene_id in gene2ensembl_mapping:
                     gene2ensembl_data = gene2ensembl_mapping[ensembl_gene_id]
-                    comprehensive_mapping[gene_symbol]['ncbi_gene_id'].append(gene2ensembl_data['ncbi_gene_id'])
+                    comprehensive_mapping[gene_symbol]['ncbi_id'].append(gene2ensembl_data['ncbi_gene_id'])
                     if gene2ensembl_data['ensembl_transcript_id']:
                         comprehensive_mapping[gene_symbol]['ensembl_transcript_id'].append(gene2ensembl_data['ensembl_transcript_id'])
                     if gene2ensembl_data['rna_accession']:

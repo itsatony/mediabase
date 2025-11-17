@@ -416,36 +416,41 @@ class BaseProcessor:
 
     def check_schema_version(self, required_version: str) -> bool:
         """Check if database schema version meets requirements.
-        
+
         Args:
             required_version: Minimum required schema version (e.g., 'v0.1.4')
-            
+
         Returns:
             True if schema version is compatible, False otherwise
-            
+
         Raises:
             DatabaseError: If schema version check fails
         """
         if not self.ensure_connection():
             raise DatabaseError("Cannot check schema version: no database connection")
-        
+
         try:
-            # Extract version number without 'v' prefix for numeric comparison
-            required_num = int(required_version.lstrip('v').replace('.', ''))
-            
             # Get current schema version from database
             current_version_str = self.db_manager.get_current_version()
             if not current_version_str:
                 self.logger.warning(f"No current schema version found, need to migrate to {required_version}")
                 return False
-                
+
+            # Baseline schema (v1.0.0_baseline or similar) is always compatible with all previous versions
+            # since it includes all features from the migration history
+            if 'baseline' in current_version_str.lower():
+                self.logger.debug(f"Baseline schema {current_version_str} is compatible with all previous versions including {required_version}")
+                return True
+
+            # Extract version number without 'v' prefix for numeric comparison
+            required_num = int(required_version.lstrip('v').replace('.', ''))
             current_num = int(current_version_str.lstrip('v').replace('.', ''))
-            
+
             # Check if current version is sufficient
             if current_num < required_num:
                 self.logger.warning(f"Current schema version {current_version_str} is below required {required_version}")
                 return False
-                
+
             return True
         except Exception as e:
             self.logger.error(f"Failed to check schema version: {e}")

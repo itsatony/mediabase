@@ -31,6 +31,8 @@ from src.etl.transcript import TranscriptProcessor
 from src.etl.products import ProductProcessor
 from src.etl.go_terms import GOTermProcessor
 from src.etl.pathways import PathwayProcessor
+from src.etl.pubtator import PubTatorProcessor
+from src.etl.opentargets import OpenTargetsProcessor
 from src.etl.drugs import DrugProcessor
 from src.etl.publications import PublicationsProcessor
 from src.etl.id_enrichment import IDEnrichmentProcessor
@@ -126,6 +128,10 @@ def run_module(
             processor = ProductProcessor(config)
         elif module_name == 'pathways':
             processor = PathwayProcessor(config)
+        elif module_name == 'pubtator':
+            processor = PubTatorProcessor(config)
+        elif module_name == 'opentargets':
+            processor = OpenTargetsProcessor(config)
         elif module_name == 'drugs':
             # Check if we should use ChEMBL instead of DrugCentral
             if config.get('use_chembl', True):
@@ -181,6 +187,8 @@ def run_pipeline(
         'go_terms',
         'products',
         'pathways',
+        'pubtator',  # Add gene-publication associations from PubTator Central
+        'opentargets',  # Add Open Targets disease-gene associations and drug data
         'drugs',
         'drug_repurposing_hub',  # Add drug repurposing hub after drugs
         'pharmgkb_annotations',  # Add PharmGKB annotations after repurposing hub
@@ -296,7 +304,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--module",
         type=str,
-        help="Comma-separated list of modules to run (transcripts,id_enrichment,go_terms,products,pathways,drugs,publications,chembl_drugs)"
+        help="Comma-separated list of modules to run (transcripts,id_enrichment,go_terms,products,pathways,pubtator,drugs,publications,chembl_drugs)"
     )
     parser.add_argument(
         "--limit-transcripts",
@@ -373,7 +381,7 @@ def main() -> int:  # Change return type to int for clarity
     parser.add_argument(
         "--modules",
         nargs="+",
-        choices=['transcripts', 'id_enrichment', 'products', 'go_terms', 'pathways', 'drugs', 'chembl_drugs', 'drug_repurposing_hub', 'pharmgkb_annotations', 'publications'],
+        choices=['transcripts', 'id_enrichment', 'products', 'go_terms', 'pathways', 'pubtator', 'opentargets', 'drugs', 'chembl_drugs', 'drug_repurposing_hub', 'pharmgkb_annotations', 'publications'],
         help="Specific modules to run"
     )
     parser.add_argument(

@@ -294,7 +294,7 @@ SCHEMA_VERSIONS = {
 
 # Schema version constants
 MIN_SUPPORTED_VERSION = "v0.1.8"
-LATEST_SCHEMA_VERSION = "v0.1.9"
+LATEST_SCHEMA_VERSION = "v0.5.0"
 
 class DatabaseManager:
     """Manages database operations including connection, schema, and migrations."""

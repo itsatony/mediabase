@@ -14,6 +14,8 @@ MODULE_DEPENDENCIES = {
     'go_terms': ['transcript'],  # Needs transcript data
     'products': ['transcript', 'id_enrichment'],  # Needs transcript and ID data
     'pathways': ['transcript', 'id_enrichment'],  # Needs transcript and ID data
+    'pubtator': ['transcript', 'id_enrichment'],  # Needs transcript and NCBI Gene ID mappings
+    'opentargets': ['transcript', 'id_enrichment'],  # Needs transcript and Ensembl Gene ID mappings
     'drugs': ['transcript', 'id_enrichment', 'go_terms', 'pathways', 'products'],  # Needs many dependencies
     'publications': ['transcript', 'go_terms', 'products', 'pathways', 'drugs'],  # Needs all sources of PMIDs
     'evidence_scoring': ['transcript', 'drugs', 'pathways', 'go_terms', 'publications'],  # Needs all evidence sources
@@ -29,11 +31,13 @@ DEFAULT_SEQUENCE = [
     'go_terms',               # Third - adds GO terms and molecular functions
     'products',               # Fourth - classifies gene products
     'pathways',               # Fifth - adds pathway data
-    'drugs',                  # Sixth - adds drug interaction data
-    'pharmgkb_annotations',   # Seventh - adds pharmacogenomic annotations
-    'chembl_drugs',           # Eighth - adds ChEMBL drug data
-    'drug_repurposing_hub',   # Ninth - adds drug repurposing data
-    'publications',           # Tenth - enriches publication references from all modules
+    'pubtator',               # Sixth - adds gene-publication associations from PubTator Central
+    'opentargets',            # Seventh - adds disease-gene associations and drug-target evidence
+    'drugs',                  # Eighth - adds drug interaction data
+    'pharmgkb_annotations',   # Ninth - adds pharmacogenomic annotations
+    'chembl_drugs',           # Tenth - adds ChEMBL drug data
+    'drug_repurposing_hub',   # Eleventh - adds drug repurposing data
+    'publications',           # Twelfth - enriches publication references from all modules
     'evidence_scoring'        # Last - generates comprehensive evidence scores
 ]
 

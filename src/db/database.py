@@ -985,11 +985,12 @@ class DatabaseManager:
         ]
 
     def reset_database(self) -> bool:
-        """Reset the database using the comprehensive bootstrap schema.
+        """Reset the database using the comprehensive baseline schema v1.0.0.
 
         This method drops the entire public schema and recreates it from scratch
-        using the bootstrap_schema.sql file, which includes the complete v0.3.0 schema
-        with all normalized tables, views, indexes, and functions.
+        using the schema_baseline_v1.0.0.sql file, which includes the complete
+        flattened schema with all normalized tables, PubTator Central, Open Targets,
+        views, indexes, and functions. No migrations required.
 
         Returns:
             bool: True if successful, False otherwise
@@ -1001,26 +1002,26 @@ class DatabaseManager:
         try:
             self.logger.warning("Resetting database - all data will be lost!")
 
-            # Locate bootstrap SQL file
-            bootstrap_path = Path(__file__).parent / "bootstrap_schema.sql"
+            # Locate baseline schema SQL file
+            baseline_path = Path(__file__).parent / "schema_baseline_v1.0.0.sql"
 
-            if not bootstrap_path.exists():
-                self.logger.error(f"Bootstrap SQL not found: {bootstrap_path}")
+            if not baseline_path.exists():
+                self.logger.error(f"Baseline schema SQL not found: {baseline_path}")
                 return False
 
-            # Read bootstrap SQL
-            self.logger.info(f"Reading bootstrap schema from {bootstrap_path}")
-            with open(bootstrap_path, 'r', encoding='utf-8') as f:
-                bootstrap_sql = f.read()
+            # Read baseline schema SQL
+            self.logger.info(f"Reading baseline schema from {baseline_path}")
+            with open(baseline_path, 'r', encoding='utf-8') as f:
+                baseline_sql = f.read()
 
             # Start a fresh transaction
             if self.conn:
                 self.conn.autocommit = False
 
-            # Execute complete bootstrap in one transaction
+            # Execute complete baseline schema in one transaction
             if self.cursor:
-                self.logger.info("Executing bootstrap schema (this may take a moment)...")
-                self.cursor.execute(bootstrap_sql)
+                self.logger.info("Executing baseline schema (this may take a moment)...")
+                self.cursor.execute(baseline_sql)
 
                 # Commit all changes
                 if self.conn:
@@ -1029,11 +1030,11 @@ class DatabaseManager:
 
                 # Verify the schema is correctly set up
                 current_version = self.get_current_version()
-                if current_version != "v0.3.0":
-                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v0.3.0")
+                if current_version != "v1.0.0_baseline":
+                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v1.0.0_baseline")
                     return False
 
-                self.logger.info("Database reset completed successfully with schema v0.3.0")
+                self.logger.info("Database reset completed successfully with schema v1.0.0_baseline")
                 return True
             else:
                 self.logger.error("Database cursor is None, cannot reset database")

@@ -35,6 +35,12 @@ PUBMED_BATCH_SIZE = 200  # Max recommended by NCBI for single request
 PUBMED_RATE_LIMIT = 0.34  # ~3 requests per second (adjust to 0.1 with API key)
 DEFAULT_CACHE_TTL = 2592000  # 30 days in seconds for publications (much longer than other data)
 
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1.0  # seconds
+MAX_RETRY_DELAY = 60.0  # seconds
+RETRY_BACKOFF_FACTOR = 2.0  # exponential backoff multiplier
+
 class PublicationsProcessor(BaseProcessor):
     """Process and enrich publication references."""
     
@@ -78,6 +84,13 @@ class PublicationsProcessor(BaseProcessor):
         # Track hit/miss statistics
         self.cache_hits = 0
         self.cache_misses = 0
+
+        # Track failed PMIDs and metrics for production monitoring
+        self.failed_pmids: Set[str] = set()
+        self.retry_counts: Dict[str, int] = {}
+        self.fetch_errors: List[Dict[str, Any]] = []
+        self.pmids_fetched = 0
+        self.pmids_enriched = 0
     
     def _load_cache(self) -> Dict[str, Dict[str, Any]]:
         """Load publication cache from disk.
@@ -102,22 +115,96 @@ class PublicationsProcessor(BaseProcessor):
     
     def _save_cache(self, cache: Dict[str, Dict[str, Any]]) -> None:
         """Save publication cache to disk.
-        
+
         Args:
             cache: Dictionary mapping PMIDs to publication metadata
         """
         if not self.cache_modified:
             return
-            
+
         cache_path = self.pub_dir / "pubmed_cache.json"
-        
+
         try:
             with open(cache_path, 'w') as f:
                 json.dump(cache, f)
                 self.logger.info(f"Saved {len(cache)} publications to cache")
         except IOError as e:
             self.logger.warning(f"Failed to save publication cache: {e}")
-    
+
+    def _retry_with_backoff(
+        self,
+        func: Any,
+        *args: Any,
+        operation_name: str = "API request",
+        **kwargs: Any
+    ) -> Optional[Any]:
+        """Retry a function with exponential backoff.
+
+        Args:
+            func: Function to retry
+            *args: Positional arguments for the function
+            operation_name: Name of the operation for logging
+            **kwargs: Keyword arguments for the function
+
+        Returns:
+            Function result or None if all retries fail
+        """
+        last_exception = None
+        delay = INITIAL_RETRY_DELAY
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                return func(*args, **kwargs)
+            except requests.exceptions.HTTPError as e:
+                last_exception = e
+                status_code = e.response.status_code if e.response else None
+
+                # Don't retry on client errors (except 429 rate limit)
+                if status_code and 400 <= status_code < 500 and status_code != 429:
+                    self.logger.error(f"{operation_name} failed with status {status_code}: {e}")
+                    return None
+
+                # Log and retry on server errors or rate limits
+                self.logger.warning(
+                    f"{operation_name} attempt {attempt + 1}/{MAX_RETRIES} failed "
+                    f"(status: {status_code}): {e}"
+                )
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                self.logger.warning(
+                    f"{operation_name} attempt {attempt + 1}/{MAX_RETRIES} failed "
+                    f"(network error): {e}"
+                )
+
+            except Exception as e:
+                last_exception = e
+                self.logger.warning(
+                    f"{operation_name} attempt {attempt + 1}/{MAX_RETRIES} failed: {e}"
+                )
+
+            # Don't sleep after the last attempt
+            if attempt < MAX_RETRIES - 1:
+                sleep_time = min(delay, MAX_RETRY_DELAY)
+                self.logger.debug(f"Retrying in {sleep_time:.1f} seconds...")
+                time.sleep(sleep_time)
+                delay *= RETRY_BACKOFF_FACTOR
+
+        # All retries failed
+        self.logger.error(
+            f"{operation_name} failed after {MAX_RETRIES} attempts. "
+            f"Last error: {last_exception}"
+        )
+
+        # Track the error
+        self.fetch_errors.append({
+            'operation': operation_name,
+            'error': str(last_exception),
+            'timestamp': datetime.now().isoformat()
+        })
+
+        return None
+
     @staticmethod
     def create_publication_reference(
         pmid: str,
@@ -243,39 +330,55 @@ class PublicationsProcessor(BaseProcessor):
                 batch = valid_pmids[i:i+PUBMED_BATCH_SIZE]
                 
                 try:
-                    # Fetch summary data for the batch
-                    summary_data = self._fetch_pubmed_summary(batch)
-                    
-                    # Fetch abstract data for the batch
-                    abstract_data = self._fetch_pubmed_abstracts(batch)
-                    
+                    # Fetch summary data for the batch with retry logic
+                    summary_data = self._retry_with_backoff(
+                        self._fetch_pubmed_summary,
+                        batch,
+                        operation_name=f"PubMed summary batch {i//PUBMED_BATCH_SIZE + 1}"
+                    ) or {}
+
+                    # Fetch abstract data for the batch with retry logic
+                    abstract_data = self._retry_with_backoff(
+                        self._fetch_pubmed_abstracts,
+                        batch,
+                        operation_name=f"PubMed abstracts batch {i//PUBMED_BATCH_SIZE + 1}"
+                    ) or {}
+
                     # Merge summary and abstract data
                     for pmid in batch:
                         pub_data = {}
-                        
+
                         # Add summary data if available
                         if pmid in summary_data:
                             pub_data.update(summary_data[pmid])
-                            
+
                         # Add abstract data if available
                         if pmid in abstract_data:
                             pub_data.update(abstract_data[pmid])
-                        
+
                         # Only add if we have some data
                         if pub_data:
                             results[pmid] = pub_data
-                            
+                            self.pmids_fetched += 1
+
                             # Update the cache
                             self.publication_cache[pmid] = pub_data
                             self.cache_modified = True
-                    
+                        else:
+                            # Track failed PMIDs
+                            self.failed_pmids.add(pmid)
+                            self.logger.debug(f"No data fetched for PMID {pmid}")
+
                     # Update progress
                     pbar.update(len(batch))
-                    
+
                     # Rate limiting
                     time.sleep(self.rate_limit)
-                    
+
                 except Exception as e:
+                    # Track failed PMIDs in this batch
+                    for pmid in batch:
+                        self.failed_pmids.add(pmid)
                     self.logger.warning(f"Error fetching batch {i}-{i+PUBMED_BATCH_SIZE}: {e}")
                     continue
         
@@ -781,29 +884,123 @@ class PublicationsProcessor(BaseProcessor):
         except Exception as e:
             raise ProcessingError(f"Failed to enrich publications bulk: {e}")
 
+    def generate_production_report(self) -> Dict[str, Any]:
+        """Generate comprehensive production metrics report.
+
+        Returns:
+            Dictionary containing all production metrics and status
+        """
+        total_pmids = self.pmids_fetched + len(self.failed_pmids)
+        success_rate = (self.pmids_fetched / max(1, total_pmids)) * 100
+        cache_hit_rate = (self.cache_hits / max(1, self.cache_hits + self.cache_misses)) * 100
+
+        report = {
+            'fetch_stats': {
+                'total_pmids_requested': total_pmids,
+                'pmids_fetched_successfully': self.pmids_fetched,
+                'pmids_failed': len(self.failed_pmids),
+                'success_rate_percent': round(success_rate, 2)
+            },
+            'cache_stats': {
+                'cache_hits': self.cache_hits,
+                'cache_misses': self.cache_misses,
+                'hit_rate_percent': round(cache_hit_rate, 2),
+                'total_cached_publications': len(self.publication_cache)
+            },
+            'error_summary': {
+                'total_errors': len(self.fetch_errors),
+                'unique_failed_pmids': len(self.failed_pmids)
+            }
+        }
+
+        # Create detailed report table
+        table = Table(title="Publication Enrichment Production Report")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Total PMIDs Requested", f"{total_pmids:,}")
+        table.add_row("Successfully Fetched", f"{self.pmids_fetched:,}")
+        table.add_row("Failed to Fetch", f"{len(self.failed_pmids):,}")
+        table.add_row("Success Rate", f"{success_rate:.2f}%")
+        table.add_row("", "")  # Separator
+        table.add_row("Cache Hits", f"{self.cache_hits:,}")
+        table.add_row("Cache Misses", f"{self.cache_misses:,}")
+        table.add_row("Cache Hit Rate", f"{cache_hit_rate:.2f}%")
+        table.add_row("Total Cached", f"{len(self.publication_cache):,}")
+        table.add_row("", "")  # Separator
+        table.add_row("API Errors", f"{len(self.fetch_errors)}")
+
+        console = Console()
+        console.print(table)
+
+        # Save failed PMIDs to file for investigation
+        if self.failed_pmids:
+            failed_pmids_file = self.pub_dir / "failed_pmids.txt"
+            try:
+                with open(failed_pmids_file, 'w') as f:
+                    f.write(f"# Failed PMIDs - {datetime.now().isoformat()}\n")
+                    f.write(f"# Total: {len(self.failed_pmids)}\n\n")
+                    for pmid in sorted(self.failed_pmids):
+                        f.write(f"{pmid}\n")
+                self.logger.info(
+                    f"Saved {len(self.failed_pmids)} failed PMIDs to {failed_pmids_file}"
+                )
+            except IOError as e:
+                self.logger.warning(f"Failed to save failed PMIDs list: {e}")
+
+        # Save error log if there are errors
+        if self.fetch_errors:
+            error_log_file = self.pub_dir / f"fetch_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            try:
+                with open(error_log_file, 'w') as f:
+                    json.dump(self.fetch_errors, f, indent=2)
+                self.logger.info(f"Saved error log to {error_log_file}")
+            except IOError as e:
+                self.logger.warning(f"Failed to save error log: {e}")
+
+        return report
+
     def run(self) -> None:
         """Run the complete publication enrichment pipeline.
-        
+
         Raises:
             Various ETLError subclasses based on failure point
         """
         try:
             self.logger.info("Starting publication enrichment pipeline")
-            
+
             # Check if we have an email for PubMed API
             if not self.email:
                 self.logger.warning(
                     "No email configured for PubMed API. Set MB_PUBMED_EMAIL in environment. "
                     "Continuing with limited functionality."
                 )
-            
+
             # Enrich publication references
             self.enrich_publication_references()
-            
+
+            # Generate and display production report
+            self.logger.info("Generating production metrics report...")
+            production_report = self.generate_production_report()
+
             self.logger.info("Publication enrichment completed successfully")
-            
+
+            # Log warning if there were significant failures
+            if len(self.failed_pmids) > 0:
+                failure_rate = (len(self.failed_pmids) / max(1, self.pmids_fetched + len(self.failed_pmids))) * 100
+                if failure_rate > 10:
+                    self.logger.warning(
+                        f"High failure rate detected: {failure_rate:.2f}% of PMIDs failed to fetch. "
+                        f"Check failed_pmids.txt and error logs in {self.pub_dir}"
+                    )
+
         except Exception as e:
             self.logger.error(f"Publications enrichment failed: {e}")
+            # Still try to generate report even on failure
+            try:
+                self.generate_production_report()
+            except Exception:
+                pass
             raise
 
     def integrate_publications(self, publications_data: Dict[str, List[Dict[str, Any]]]) -> None:

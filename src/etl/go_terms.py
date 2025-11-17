@@ -285,34 +285,35 @@ class GOTermProcessor(BaseProcessor):
                     # Extract required fields with safe access
                     gene_symbol = fields[2] if len(fields) > 2 else ''
                     go_id = fields[4] if len(fields) > 4 else ''
-                    evidence = fields[6] if len(fields) > 6 else ''
+                    reference = fields[5] if len(fields) > 5 else ''  # DB:Reference field (where PMIDs are)
+                    evidence = fields[6] if len(fields) > 6 else ''  # Evidence code (IEA, IPI, etc.)
                     aspect = fields[8] if len(fields) > 8 else ''
-                    
+
                     if not (gene_symbol and go_id and evidence and aspect):
                         continue
-                    
+
                     # Use case-insensitive matching with the normalized map
                     norm_gene = normalize_gene_symbol(gene_symbol)
                     if norm_gene not in gene_matches or go_id not in self.go_graph:
                         continue
-                    
+
                     # Get matched database gene symbol
                     db_gene = gene_matches[norm_gene]
-                    
+
                     # Get GO term data with safe access
                     node_data = self.go_graph.nodes.get(go_id, {})
                     term_name = node_data.get('name', '')
                     if not term_name:  # Skip if no term name found
                         continue
-                    
+
                     # Initialize gene entry if needed
                     if db_gene not in gene_go_terms:
                         gene_go_terms[db_gene] = {}
-                    
-                    # Extract PMID from evidence code if present
+
+                    # Extract PMID from DB:Reference field (field 6, index 5)
                     pmid = None
-                    if evidence.startswith('PMID:'):
-                        pmid = evidence.replace('PMID:', '').strip()
+                    if reference.startswith('PMID:'):
+                        pmid = reference.replace('PMID:', '').strip()
                     
                     # Store GO term with safe type construction
                     gene_go_terms[db_gene][go_id] = {
@@ -704,8 +705,34 @@ class GOTermProcessor(BaseProcessor):
                     ON CONFLICT DO NOTHING
                 """)
 
-                # Legacy table update removed - using normalized schema only
-                self.logger.debug("Legacy table batch update skipped (normalized schema in use)")
+                # Update cancer_transcript_base source_references for backward compatibility
+                # This allows the publications module to query PMIDs from source_references
+                transaction.cursor.execute("""
+                    UPDATE cancer_transcript_base cb
+                    SET source_references = jsonb_set(
+                        COALESCE(cb.source_references, '{
+                            "go_terms": [],
+                            "uniprot": [],
+                            "drugs": [],
+                            "pathways": [],
+                            "publications": [],
+                            "pharmgkb_pathways": [],
+                            "evidence_scoring": []
+                        }'::jsonb),
+                        '{go_terms}',
+                        COALESCE(
+                            cb.source_references->'go_terms',
+                            '[]'::jsonb
+                        ) || COALESCE(t.publications, '[]'::jsonb),
+                        true
+                    )
+                    FROM temp_go_terms t
+                    WHERE cb.gene_symbol = t.gene_symbol
+                    AND t.publications IS NOT NULL
+                    AND t.publications != '[]'::jsonb
+                """)
+
+                self.logger.debug("Updated source_references with GO term publications for backward compatibility")
                 
                 # The temp table will be automatically dropped on COMMIT
         except Exception as e:

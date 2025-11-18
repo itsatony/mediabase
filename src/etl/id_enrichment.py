@@ -358,14 +358,14 @@ class IDEnrichmentProcessor(BaseProcessor):
         try:
             self.logger.info("Updating transcript records with alternative IDs")
             
-            # Get existing gene symbols from database
+            # Get existing gene symbols from database (normalized genes table)
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
-                
-            # Improved query to handle case-insensitive matching
+
+            # Improved query to handle case-insensitive matching from normalized schema
             self.db_manager.cursor.execute("""
-                SELECT DISTINCT gene_symbol 
-                FROM cancer_transcript_base 
+                SELECT DISTINCT gene_symbol
+                FROM genes
                 WHERE gene_symbol IS NOT NULL
             """)
             
@@ -878,13 +878,13 @@ class IDEnrichmentProcessor(BaseProcessor):
                 lambda: defaultdict(list)
             )
             
-            # Start with database gene symbols
+            # Start with database gene symbols from normalized genes table
             if not self.db_manager.cursor:
                 raise DatabaseError("No database cursor available")
-                
+
             self.db_manager.cursor.execute("""
-                SELECT DISTINCT gene_symbol, gene_id 
-                FROM cancer_transcript_base 
+                SELECT DISTINCT gene_symbol, gene_id
+                FROM genes
                 WHERE gene_symbol IS NOT NULL AND gene_id IS NOT NULL
             """)
             

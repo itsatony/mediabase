@@ -188,6 +188,9 @@ mediabase_exports/
 *_export_*.zip
 *_export_*.tar.gz
 
+# Database backups (large files should not be in git)
+backups/
+
 # Claude Code configuration (user-specific)
 .claude/
 

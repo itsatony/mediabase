@@ -116,9 +116,11 @@ class PubTatorProcessor(BaseProcessor):
                 ORDER BY gene_id
             """
 
-            with self.db_manager.get_cursor() as cursor:
-                cursor.execute(query)
-                results = cursor.fetchall()
+            if not self.ensure_connection() or not self.db_manager.cursor:
+                raise DatabaseError("Cannot load gene ID mapping: no database connection")
+
+            self.db_manager.cursor.execute(query)
+            results = self.db_manager.cursor.fetchall()
 
             # Build mapping dictionary: external_id (NCBI Gene ID) -> gene_id
             id_mapping = {row[0]: row[1] for row in results}

@@ -355,13 +355,17 @@ class PubTatorProcessor(BaseProcessor):
                 """
             }
 
+            # Ensure we have a valid connection and cursor
+            if not self.ensure_connection() or not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available for verification")
+
             results = {}
-            with self.db_manager.get_cursor() as cursor:
-                for metric, query in verification_queries.items():
-                    cursor.execute(query)
-                    result = cursor.fetchone()[0]
-                    results[metric] = result
-                    self.logger.info(f"{metric}: {result}")
+            cursor = self.db_manager.cursor
+            for metric, query in verification_queries.items():
+                cursor.execute(query)
+                result = cursor.fetchone()[0]
+                results[metric] = result
+                self.logger.info(f"{metric}: {result}")
 
             return results
 

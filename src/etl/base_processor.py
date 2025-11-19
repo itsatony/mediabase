@@ -182,68 +182,94 @@ class BaseProcessor:
         with open(meta_path, 'w') as f:
             json.dump(meta, f)
     
-    def download_file(self, url: str, file_path: Optional[Path] = None, 
-                    params: Optional[Dict[str, Any]] = None) -> Path:
-        """Download a file with caching.
-        
+    def download_file(self, url: str, file_path: Optional[Path] = None,
+                    params: Optional[Dict[str, Any]] = None, max_retries: int = 3) -> Path:
+        """Download a file with caching and retry logic.
+
         Args:
             url: URL to download
             file_path: Optional custom file path, if None a path is generated
             params: Optional parameters affecting cache key
-            
+            max_retries: Maximum number of retry attempts for transient errors
+
         Returns:
             Path to the downloaded file
-        
+
         Raises:
-            DownloadError: If download fails
+            DownloadError: If download fails after all retries
         """
         cache_key = self._get_cache_key(url, params)
-        
+
         if file_path is None:
             # Extract filename from URL or use cache key
             url_path = url.split('/')[-1]
             filename = url_path if '.' in url_path else f"download_{cache_key}"
             file_path = self.cache_dir / filename
-        
+
         # Check if cache is valid
         if file_path.exists() and self._is_cache_valid(cache_key):
             self.logger.info(f"Using cached file: {file_path}")
             return file_path
-        
+
         self.logger.info(f"Downloading {url}")
-        
-        try:
-            response = requests.get(url, stream=True, params=params)
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            
-            # Use tqdm with leave=False to ensure it updates in place
-            with open(file_path, 'wb') as f, tqdm(
-                desc=f"Downloading {file_path.name}",
-                total=total_size,
-                unit='B',
-                unit_scale=True,
-                position=0,
-                leave=False
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        size = f.write(chunk)
-                        pbar.update(size)
-            
-            # Update cache metadata
-            self._update_cache_meta(cache_key, file_path, params)
-            self.logger.info(f"Download completed: {file_path}")
-            
-            return file_path
-            
-        except Exception as e:
-            # Remove partial download if it exists
-            if file_path.exists():
-                file_path.unlink()
-                
-            raise DownloadError(f"Failed to download {url}: {e}")
+
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                # Add timeout to prevent hanging
+                response = requests.get(url, stream=True, params=params, timeout=30)
+                response.raise_for_status()
+
+                total_size = int(response.headers.get('content-length', 0))
+
+                # Use tqdm with leave=False to ensure it updates in place
+                with open(file_path, 'wb') as f, tqdm(
+                    desc=f"Downloading {file_path.name}",
+                    total=total_size,
+                    unit='B',
+                    unit_scale=True,
+                    position=0,
+                    leave=False
+                ) as pbar:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            size = f.write(chunk)
+                            pbar.update(size)
+
+                # Update cache metadata
+                self._update_cache_meta(cache_key, file_path, params)
+                self.logger.info(f"Download completed: {file_path}")
+
+                return file_path
+
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                    ConnectionResetError) as e:
+                last_exception = e
+
+                # Remove partial download if it exists
+                if file_path.exists():
+                    file_path.unlink()
+
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    self.logger.warning(
+                        f"Download attempt {attempt + 1}/{max_retries} failed: {e}. "
+                        f"Retrying in {wait_time} seconds..."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    self.logger.error(f"Download failed after {max_retries} attempts")
+
+            except Exception as e:
+                # For non-transient errors, fail immediately
+                if file_path.exists():
+                    file_path.unlink()
+
+                raise DownloadError(f"Failed to download {url}: {e}")
+
+        # If we get here, all retries failed with transient errors
+        raise DownloadError(f"Failed to download {url} after {max_retries} attempts: {last_exception}")
     
     def compress_file(self, input_path: Path, output_path: Optional[Path] = None) -> Path:
         """Compress a file using gzip.

@@ -153,10 +153,9 @@ class PubTatorProcessor(BaseProcessor):
         try:
             self.logger.info(f"Parsing PubTator Central file: {file_path}")
 
-            # Data structure: {(gene_id, pmid): {mention_count, mentions, methods}}
-            gene_publications: DefaultDict[Tuple[str, str], Dict[str, Any]] = defaultdict(
-                lambda: {'mention_count': 0, 'mentions': set(), 'methods': set()}
-            )
+            # Data structure: {(gene_id, pmid): mention_count}
+            # Memory optimization: Store only mention count (not unused mentions/methods sets)
+            gene_publications: DefaultDict[Tuple[str, str], int] = defaultdict(int)
 
             unmapped_genes: Set[str] = set()
             line_count = 0
@@ -168,16 +167,9 @@ class PubTatorProcessor(BaseProcessor):
                 file_size = file_path.stat().st_size
                 estimated_lines = file_size // 50
 
-                pbar = tqdm(
-                    desc="Parsing PubTator data",
-                    unit=" lines",
-                    unit_scale=True,
-                    total=estimated_lines
-                )
-
-                for line in f:
+                # Wrap the file iterator with tqdm for progress tracking
+                for line in tqdm(f, desc="Parsing PubTator data", total=estimated_lines, unit=" lines"):
                     line_count += 1
-                    pbar.update(1)
 
                     # Skip empty lines
                     if not line.strip():
@@ -207,13 +199,9 @@ class PubTatorProcessor(BaseProcessor):
 
                     # Aggregate data for this gene-publication pair
                     key = (internal_gene_id, pmid)
-                    gene_publications[key]['mention_count'] += 1
-                    gene_publications[key]['mentions'].add(mention)
-                    gene_publications[key]['methods'].add(method)
+                    gene_publications[key] += 1
 
                     self.stats['valid_entries'] += 1
-
-                pbar.close()
 
             self.stats['total_lines'] = line_count
             self.stats['unique_gene_pmid_pairs'] = len(gene_publications)
@@ -272,8 +260,7 @@ class PubTatorProcessor(BaseProcessor):
 
             # Prepare batch data
             batch_data = []
-            for (gene_id, pmid), metadata in gene_publications.items():
-                mention_count = metadata['mention_count']
+            for (gene_id, pmid), mention_count in gene_publications.items():
                 first_seen_year = self._extract_publication_year(pmid)
 
                 batch_data.append((
@@ -294,19 +281,23 @@ class PubTatorProcessor(BaseProcessor):
                     last_updated = CURRENT_TIMESTAMP
             """
 
-            with self.db_manager.get_cursor() as cursor:
-                # Use progress bar for batch inserts
-                total_batches = (len(batch_data) + self.batch_size - 1) // self.batch_size
+            # Ensure database connection is available
+            if not self.ensure_connection() or not self.db_manager.cursor:
+                raise DatabaseError("No database cursor available")
 
-                with tqdm(total=len(batch_data), desc="Inserting publications", unit=" records") as pbar:
-                    for i in range(0, len(batch_data), self.batch_size):
-                        batch = batch_data[i:i + self.batch_size]
+            # Use progress bar for batch inserts
+            total_batches = (len(batch_data) + self.batch_size - 1) // self.batch_size
 
-                        cursor.executemany(insert_query, batch)
+            with tqdm(total=len(batch_data), desc="Inserting publications", unit=" records") as pbar:
+                for i in range(0, len(batch_data), self.batch_size):
+                    batch = batch_data[i:i + self.batch_size]
+
+                    self.db_manager.cursor.executemany(insert_query, batch)
+                    if self.db_manager.conn and not self.db_manager.conn.closed:
                         self.db_manager.conn.commit()
 
-                        pbar.update(len(batch))
-                        self.stats['inserted_publications'] += len(batch)
+                    pbar.update(len(batch))
+                    self.stats['inserted_publications'] += len(batch)
 
             self.logger.info(f"Successfully inserted {self.stats['inserted_publications']:,} gene-publication associations")
 

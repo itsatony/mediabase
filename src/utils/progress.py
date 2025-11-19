@@ -61,7 +61,7 @@ def track_progress(
             # Ignore errors during completion
             pass
 
-# Replacement for tqdm that follows our formatting rules
+# Helper function for tqdm with logging (kept for any existing code that might reference it)
 def tqdm_with_logging(
     iterable: Iterable[T],
     desc: str = "Processing",
@@ -70,59 +70,20 @@ def tqdm_with_logging(
     unit: str = "it"
 ) -> Iterator[T]:
     """Drop-in replacement for tqdm that follows our logging format rules.
-    
-    This function is designed to be a direct replacement for tqdm,
-    but uses our unified logging progress bar format.
-    
+
+    This function uses our unified logging progress bar format.
+
     Args:
         iterable: Iterable to track progress for
         desc: Description of the progress operation
         module_name: Module name for logging prefix
         total: Total number of items (if None, attempts to determine from iterable)
         unit: Unit name for items
-        
+
     Yields:
         Items from the iterable
     """
     return track_progress(iterable, total, desc, module_name, unit)
-
-# Replace tqdm globally to ensure all modules use our unified format
-class tqdm_replacement:
-    """Wrapper class to replace tqdm with our logging-compatible version."""
-    
-    @staticmethod
-    def tqdm(
-        iterable: Iterable[T],
-        desc: str = "Processing",
-        total: Optional[int] = None,
-        **kwargs
-    ) -> Iterator[T]:
-        """Replace tqdm with our unified format version."""
-        # Get module name from stack if not provided
-        module_name = kwargs.get('module_name', 'mediabase')
-        unit = kwargs.get('unit', 'it')
-        
-        # Use our unified progress bar
-        return tqdm_with_logging(iterable, desc, module_name, total, unit)
-
-# Improved monkey patch function
-def patch_tqdm_globally():
-    """Monkey patch tqdm in imported modules to use our unified format."""
-    import tqdm as tqdm_module
-    import tqdm.notebook as tqdm_notebook
-    
-    # Replace tqdm in tqdm module
-    tqdm_module.tqdm = tqdm_replacement.tqdm
-    
-    # Also patch the notebook version for Jupyter integration
-    if hasattr(tqdm_notebook, 'tqdm'):
-        tqdm_notebook.tqdm = tqdm_replacement.tqdm
-    
-    # Also patch the tqdm function in the module
-    globals()['tqdm'] = tqdm_replacement.tqdm
-
-# Run the patch immediately
-patch_tqdm_globally()
 
 # Pandas warning suppression context manager
 class SuppressPandasWarnings:

@@ -127,9 +127,9 @@ cat backup.sql | podman exec -i mbase_postgres psql -U mbase_user -d mbase
 
 ## Schema Management
 
-### Version 0.1.4 Features
+### Current Schema Features
 
-The latest schema version (0.1.4) introduces:
+The current schema (v0.4.1) includes:
 
 1. Alternative ID Storage
    - Flexible JSONB storage for transcript and gene IDs
@@ -141,11 +141,11 @@ The latest schema version (0.1.4) introduces:
    - Organized by data source (GO terms, drugs, pathways, UniProt)
    - Enhanced evidence tracking with metadata
 
-### Upgrading to v0.1.4
+### Schema Migration
 
 1. Automatic migration:
    ```bash
-   poetry run python scripts/manage_db.py --migrate v0.1.4
+   poetry run python scripts/manage_db.py --apply-schema
    ```
 
 2. Manual migration:

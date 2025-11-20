@@ -270,7 +270,7 @@ poetry run python scripts/create_patient_copy.py \
 3. **Fold-Change Update**: Batch update of `expression_fold_change` column
 4. **Validation**: Verification of successful updates
 
-## ChEMBL v35 Integration (NEW in v0.4.0)
+## ChEMBL v35 Integration (NEW in v0.4.1)
 
 MEDIABASE now supports **ChEMBL v35** with a production-ready pg_restore architecture.
 
@@ -320,7 +320,7 @@ poetry run python scripts/run_etl.py --modules drugs --use-chembl
 
 **For comprehensive documentation**, see: `docs/CHEMBL_INTEGRATION_GUIDE.md`
 
-## Pathway Enrichment Fix (v0.4.0)
+## Pathway Enrichment Fix (v0.4.1)
 
 ### NCBI ID Mapping Fix
 
@@ -357,7 +357,7 @@ MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer therapeutic an
 
 ### Available Query Files
 
-**PRIMARY QUERY FILE** (NEW in v0.4.0):
+**PRIMARY QUERY FILE** (NEW in v0.4.1):
 - **`WORKING_QUERY_EXAMPLES.sql`**: Comprehensive verified query library ✅
   - **Status**: Fully tested and production-ready
   - **Size**: 433 lines with 15+ working queries
@@ -629,7 +629,7 @@ COMMENT ON COLUMN clinical_trial_gene_associations.association_type IS
 - 4,740 pathway mappings restored
 - 43.5% gene coverage achieved
 
-### v0.4.0 - ChEMBL v35 & Pathway Fixes
+### v0.4.1 - ChEMBL v35 & Pathway Fixes
 - ChEMBL v35 integration via pg_restore
 - Fixed NCBI ID mapping for pathways
 - Comprehensive SOTA query library

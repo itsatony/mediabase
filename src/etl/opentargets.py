@@ -396,7 +396,9 @@ class OpenTargetsProcessor(BaseProcessor):
         for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing diseases"):
             # Determine if cancer-related
             therapeutic_areas = row.get("therapeuticAreas", [])
-            if therapeutic_areas is None or (hasattr(therapeutic_areas, '__len__') and len(therapeutic_areas) == 0):
+            if therapeutic_areas is None:
+                therapeutic_areas = []
+            elif hasattr(therapeutic_areas, '__len__') and len(therapeutic_areas) == 0:
                 therapeutic_areas = []
             is_cancer = self._is_cancer_disease(
                 therapeutic_areas,

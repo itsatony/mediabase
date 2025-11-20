@@ -1,10 +1,10 @@
 # ChEMBL v35 Integration Guide
 
-**Version:** 0.4.0 | **Last Updated:** 2025-11-16
+**Version:** 0.4.1 | **Last Updated:** 2025-11-20
 
 ## Overview
 
-MEDIABASE v0.4.0 introduces comprehensive support for ChEMBL v35, the world's largest open-access bioactivity database. This guide provides complete documentation for integration, usage, and troubleshooting.
+MEDIABASE v0.4.1 introduces comprehensive support for ChEMBL v35, the world's largest open-access bioactivity database. This guide provides complete documentation for integration, usage, and troubleshooting.
 
 ### ChEMBL v35 Statistics (Verified)
 
@@ -502,7 +502,7 @@ ERROR: could not extend file: No space left on device
 - `activities.tid` → `activities.toid`
 - All other tables unchanged
 
-**Code Updates Required**: NONE (handled automatically in v0.4.0)
+**Code Updates Required**: NONE (handled automatically in v0.4.1)
 
 **Data Migration**:
 ```bash
@@ -515,7 +515,7 @@ poetry run python scripts/run_etl.py --modules drugs --use-chembl
 
 ### Backward Compatibility
 
-- v0.4.0+ automatically handles v35 schema
+- v0.4.1+ automatically handles v35 schema
 - v0.3.x and earlier: use DrugCentral or upgrade
 - No manual schema adjustments needed
 
@@ -583,5 +583,5 @@ DOI: 10.1093/nar/gkv352
 ---
 
 **Document Version**: 1.0
-**Last Validated**: 2025-11-16 with MEDIABASE v0.4.0
+**Last Validated**: 2025-11-20 with MEDIABASE v0.4.1
 **ChEMBL Version**: v35 (2024-2025 release)

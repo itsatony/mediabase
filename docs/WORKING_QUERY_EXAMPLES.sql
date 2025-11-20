@@ -4,8 +4,8 @@
 -- These queries have been tested and return meaningful results.
 -- Use these as templates for your own analysis.
 --
--- Generated: 2025-09-22
--- Version: v0.3.0
+-- Generated: 2025-11-20
+-- Version: v0.4.1
 -- Tested on: PostgreSQL 12+
 -- =====================================================================================
 

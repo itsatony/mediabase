@@ -8,6 +8,7 @@ into transcript records, providing evidence-based drug-gene interaction data wit
 import csv
 import json
 import re
+import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set, Tuple
 from datetime import datetime
@@ -27,9 +28,10 @@ from ..utils.publication_utils import extract_pmids_from_text, format_pmid_url
 from ..utils.logging import get_progress_bar
 
 # Constants
-PHARMGKB_CLINICAL_ANNOTATIONS_URL = "https://www.pharmgkb.org/downloads/clinicalAnnotations.tsv"
-PHARMGKB_VARIANT_ANNOTATIONS_URL = "https://www.pharmgkb.org/downloads/variantAnnotations.tsv"
-PHARMGKB_VIP_SUMMARIES_URL = "https://www.pharmgkb.org/downloads/vipSummaries.tsv"
+# Direct download URLs from PharmGKB API (no registration required)
+PHARMGKB_CLINICAL_ANNOTATIONS_URL = "https://api.pharmgkb.org/v1/download/file/data/clinicalAnnotations.zip"
+PHARMGKB_VARIANT_ANNOTATIONS_URL = "https://api.pharmgkb.org/v1/download/file/data/variantAnnotations.zip"
+PHARMGKB_VIP_SUMMARIES_URL = "https://www.pharmgkb.org/downloads/vipSummaries.tsv"  # Not available via API
 PHARMGKB_CACHE_TTL = 7 * 24 * 60 * 60  # 7 days in seconds
 
 # Evidence level mapping for scoring
@@ -81,56 +83,97 @@ class PharmGKBAnnotationsProcessor(BaseProcessor):
         self.required_schema_version = "v0.1.9"  # Minimum schema version required for PharmGKB variants
 
     def download_pharmgkb_data(self) -> Tuple[Path, Optional[Path], Optional[Path], Optional[Path]]:
-        """Use existing PharmGKB datasets from downloaded data.
-        
+        """Download and extract PharmGKB datasets from API (no registration required).
+
         Returns:
-            Tuple of paths to downloaded files (clinical_annotations, variant_annotations, vip_summaries, pathways_dir)
-            
+            Tuple of paths to extracted files (clinical_annotations, variant_annotations, vip_summaries, pathways_dir)
+
         Raises:
-            DownloadError: If files are not found
+            DownloadError: If download or extraction fails
         """
         try:
-            self.logger.info("Using existing PharmGKB datasets from downloaded data")
-            
-            # Use the existing clinical annotations file
-            clinical_file = self.pharmgkb_dir / "clinical_annotations" / "clinical_annotations.tsv"
+            self.logger.info("Downloading PharmGKB datasets from API (no registration required)")
+
+            # Create extraction directories
+            clinical_dir = self.pharmgkb_dir / "clinical_annotations"
+            variant_dir = self.pharmgkb_dir / "variant_annotations"
+            clinical_dir.mkdir(parents=True, exist_ok=True)
+            variant_dir.mkdir(parents=True, exist_ok=True)
+
+            # Download and extract clinical annotations
+            self.logger.info(f"Downloading clinical annotations from {self.clinical_annotations_url}")
+            clinical_zip = self.download_file(
+                self.clinical_annotations_url,
+                self.pharmgkb_dir / "clinicalAnnotations.zip"
+            )
+
+            self.logger.info("Extracting clinical annotations ZIP file")
+            with zipfile.ZipFile(clinical_zip, 'r') as zip_ref:
+                zip_ref.extractall(clinical_dir)
+
+            # Find the extracted clinical annotations TSV file
+            clinical_file = clinical_dir / "clinical_annotations.tsv"
             if not clinical_file.exists():
-                raise DownloadError(f"Clinical annotations file not found: {clinical_file}")
-            
-            # Use variant annotations if available
+                # Try to find any TSV file in the directory
+                tsv_files = list(clinical_dir.glob("*.tsv"))
+                if tsv_files:
+                    clinical_file = tsv_files[0]
+                    self.logger.info(f"Using clinical annotations file: {clinical_file.name}")
+                else:
+                    raise DownloadError("No TSV file found in clinical annotations ZIP")
+
+            # Download and extract variant annotations if enabled
             variant_file = None
             if self.include_variant_annotations:
-                variant_file_path = self.pharmgkb_dir / "variantAnnotations" / "var_drug_ann.tsv"
-                if variant_file_path.exists():
-                    variant_file = variant_file_path
-                    self.logger.info("Found variant annotations file")
+                self.logger.info(f"Downloading variant annotations from {self.variant_annotations_url}")
+                variant_zip = self.download_file(
+                    self.variant_annotations_url,
+                    self.pharmgkb_dir / "variantAnnotations.zip"
+                )
+
+                self.logger.info("Extracting variant annotations ZIP file")
+                with zipfile.ZipFile(variant_zip, 'r') as zip_ref:
+                    zip_ref.extractall(variant_dir)
+
+                # Find the main variant annotations TSV file
+                # The ZIP contains: var_drug_ann.tsv, var_fa_ann.tsv, var_pheno_ann.tsv
+                variant_drug_file = variant_dir / "var_drug_ann.tsv"
+                if variant_drug_file.exists():
+                    variant_file = variant_drug_file
+                    self.logger.info(f"Found variant annotations file: {variant_file.name}")
                 else:
-                    self.logger.warning("Variant annotations file not found, skipping")
-            
-            # For now, VIP summaries are not available in the downloaded data
+                    # Try to find any variant TSV file
+                    var_files = list(variant_dir.glob("var_*.tsv"))
+                    if var_files:
+                        variant_file = var_files[0]
+                        self.logger.info(f"Using variant annotations file: {variant_file.name}")
+                    else:
+                        self.logger.warning("No variant TSV files found, skipping variant annotations")
+
+            # VIP summaries not available via API (requires authentication)
             vip_file = None
             if self.include_vip_summaries:
-                self.logger.info("VIP summaries not available in downloaded data, using clinical data only")
-            
-            # Check for pathway data directory
+                self.logger.info("VIP summaries require authentication (skipping automated download)")
+
+            # Pathway data not available via API
             pathways_dir = None
             if self.include_pathways:
                 pathways_dir_path = self.pharmgkb_dir / "pathways"
                 if pathways_dir_path.exists() and pathways_dir_path.is_dir():
-                    # Count TSV files in pathways directory
                     pathway_files = list(pathways_dir_path.glob("*.tsv"))
                     if pathway_files:
                         pathways_dir = pathways_dir_path
                         self.logger.info(f"Found {len(pathway_files)} PharmGKB pathway files")
                     else:
-                        self.logger.warning("Pathways directory exists but contains no TSV files")
+                        self.logger.info("Pathway data not available via API (requires manual download)")
                 else:
-                    self.logger.warning("Pathways directory not found, skipping pathway integration")
-            
+                    self.logger.info("Pathway data not available via API (requires manual download)")
+
+            self.logger.info("PharmGKB data download and extraction completed successfully")
             return clinical_file, variant_file, vip_file, pathways_dir
-            
+
         except Exception as e:
-            raise DownloadError(f"Failed to locate PharmGKB data files: {e}")
+            raise DownloadError(f"Failed to download PharmGKB data: {e}")
 
     def parse_gene_symbols(self, gene_string: str) -> List[str]:
         """Parse gene symbols from PharmGKB gene field.

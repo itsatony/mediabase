@@ -32,6 +32,7 @@ from rich.table import Table
 
 console = Console()
 
+
 class DatabaseExporter:
     """Export MEDIABASE databases with compression and packaging."""
 
@@ -43,31 +44,40 @@ class DatabaseExporter:
 
         # Database connection parameters
         self.db_config = {
-            'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-            'port': os.getenv('MB_POSTGRES_PORT', '5435'),
-            'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
-            'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
+            "host": os.getenv("MB_POSTGRES_HOST", "localhost"),
+            "port": os.getenv("MB_POSTGRES_PORT", "5435"),
+            "user": os.getenv("MB_POSTGRES_USER", "mbase_user"),
+            "password": os.getenv("MB_POSTGRES_PASSWORD", "mbase_secret"),
         }
 
     def get_available_databases(self) -> List[str]:
         """Get list of all MEDIABASE-related databases."""
         try:
             cmd = [
-                'psql',
-                '-h', self.db_config['host'],
-                '-p', self.db_config['port'],
-                '-U', self.db_config['user'],
-                '-d', 'postgres',
-                '-t', '-c',
-                "SELECT datname FROM pg_database WHERE datname IN ('mbase', 'mediabase') OR datname LIKE 'mediabase_patient_%' ORDER BY datname;"
+                "psql",
+                "-h",
+                self.db_config["host"],
+                "-p",
+                self.db_config["port"],
+                "-U",
+                self.db_config["user"],
+                "-d",
+                "postgres",
+                "-t",
+                "-c",
+                "SELECT datname FROM pg_database WHERE datname IN ('mbase', 'mediabase') OR datname LIKE 'mediabase_patient_%' ORDER BY datname;",
             ]
 
             env = os.environ.copy()
-            env['PGPASSWORD'] = self.db_config['password']
+            env["PGPASSWORD"] = self.db_config["password"]
 
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                cmd, env=env, capture_output=True, text=True, check=True
+            )
 
-            databases = [db.strip() for db in result.stdout.strip().split('\n') if db.strip()]
+            databases = [
+                db.strip() for db in result.stdout.strip().split("\n") if db.strip()
+            ]
             return databases
 
         except subprocess.CalledProcessError as e:
@@ -78,22 +88,27 @@ class DatabaseExporter:
         """Export a single database using pg_dump with compression."""
         try:
             cmd = [
-                'pg_dump',
-                '-h', self.db_config['host'],
-                '-p', self.db_config['port'],
-                '-U', self.db_config['user'],
-                '-d', database_name,
-                '--no-password',
-                '--verbose',
-                '--clean',
-                '--if-exists',
-                '--create',
-                f'--compress={self.compress_level}',
-                '-f', str(output_file)
+                "pg_dump",
+                "-h",
+                self.db_config["host"],
+                "-p",
+                self.db_config["port"],
+                "-U",
+                self.db_config["user"],
+                "-d",
+                database_name,
+                "--no-password",
+                "--verbose",
+                "--clean",
+                "--if-exists",
+                "--create",
+                f"--compress={self.compress_level}",
+                "-f",
+                str(output_file),
             ]
 
             env = os.environ.copy()
-            env['PGPASSWORD'] = self.db_config['password']
+            env["PGPASSWORD"] = self.db_config["password"]
 
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
 
@@ -102,10 +117,14 @@ class DatabaseExporter:
                 if output_file.exists() and output_file.stat().st_size > 1000:
                     return True
                 else:
-                    console.print(f"[yellow]Warning: {database_name} dump file is suspiciously small[/yellow]")
+                    console.print(
+                        f"[yellow]Warning: {database_name} dump file is suspiciously small[/yellow]"
+                    )
                     return False
             else:
-                console.print(f"[red]pg_dump failed for {database_name}: {result.stderr}[/red]")
+                console.print(
+                    f"[red]pg_dump failed for {database_name}: {result.stderr}[/red]"
+                )
                 return False
 
         except Exception as e:
@@ -116,38 +135,58 @@ class DatabaseExporter:
         """Get basic statistics for a database."""
         try:
             # For normalized schema databases
-            if database_name in ['mbase', 'mediabase']:
+            if database_name in ["mbase", "mediabase"]:
                 queries = [
-                    ("Tables", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'"),
+                    (
+                        "Tables",
+                        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
+                    ),
                     ("Genes", "SELECT COUNT(*) FROM genes"),
                     ("Transcripts", "SELECT COUNT(*) FROM transcripts"),
-                    ("Drug Interactions", "SELECT COUNT(*) FROM gene_drug_interactions"),
-                    ("Pathways", "SELECT COUNT(*) FROM gene_pathways")
+                    (
+                        "Drug Interactions",
+                        "SELECT COUNT(*) FROM gene_drug_interactions",
+                    ),
+                    ("Pathways", "SELECT COUNT(*) FROM gene_pathways"),
                 ]
             else:
                 # For patient databases with old schema
                 queries = [
-                    ("Tables", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'"),
+                    (
+                        "Tables",
+                        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'",
+                    ),
                     ("Transcripts", "SELECT COUNT(*) FROM cancer_transcript_base"),
-                    ("Changed Expression", "SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change != 1.0")
+                    (
+                        "Changed Expression",
+                        "SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change != 1.0",
+                    ),
                 ]
 
             stats = {}
             for name, query in queries:
                 try:
                     cmd = [
-                        'psql',
-                        '-h', self.db_config['host'],
-                        '-p', self.db_config['port'],
-                        '-U', self.db_config['user'],
-                        '-d', database_name,
-                        '-t', '-c', query
+                        "psql",
+                        "-h",
+                        self.db_config["host"],
+                        "-p",
+                        self.db_config["port"],
+                        "-U",
+                        self.db_config["user"],
+                        "-d",
+                        database_name,
+                        "-t",
+                        "-c",
+                        query,
                     ]
 
                     env = os.environ.copy()
-                    env['PGPASSWORD'] = self.db_config['password']
+                    env["PGPASSWORD"] = self.db_config["password"]
 
-                    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+                    result = subprocess.run(
+                        cmd, env=env, capture_output=True, text=True
+                    )
                     if result.returncode == 0:
                         stats[name] = int(result.stdout.strip())
                     else:
@@ -158,7 +197,9 @@ class DatabaseExporter:
             return stats
 
         except Exception as e:
-            console.print(f"[yellow]Could not get stats for {database_name}: {e}[/yellow]")
+            console.print(
+                f"[yellow]Could not get stats for {database_name}: {e}[/yellow]"
+            )
             return {}
 
     def create_documentation(self, databases: List[str], export_info: Dict) -> str:
@@ -177,14 +218,16 @@ This package contains complete database exports for MEDIABASE, a comprehensive c
 """
 
         for db_name in databases:
-            stats = export_info.get('database_stats', {}).get(db_name, {})
+            stats = export_info.get("database_stats", {}).get(db_name, {})
             doc_content += f"**{db_name}**\n"
-            if 'patient' in db_name:
+            if "patient" in db_name:
                 doc_content += f"- Cancer-specific patient database\n"
                 doc_content += f"- Schema: Legacy (cancer_transcript_base table)\n"
             else:
                 doc_content += f"- Main MEDIABASE database\n"
-                doc_content += f"- Schema: Normalized (genes, transcripts, enrichment tables)\n"
+                doc_content += (
+                    f"- Schema: Normalized (genes, transcripts, enrichment tables)\n"
+                )
 
             for stat_name, value in stats.items():
                 doc_content += f"- {stat_name}: {value:,}\n"
@@ -291,7 +334,7 @@ For questions about this export package or MEDIABASE:
         console.print(f"[blue]Found {len(databases)} databases to export[/blue]")
 
         # Create export directory structure
-        export_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        export_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         export_dir = self.output_dir / f"mediabase_export_{export_timestamp}"
         export_dir.mkdir(exist_ok=True)
 
@@ -303,18 +346,17 @@ For questions about this export package or MEDIABASE:
             dir_path.mkdir(exist_ok=True)
 
         export_info = {
-            'timestamp': export_timestamp,
-            'version': 'v0.3.0',
-            'database_stats': {}
+            "timestamp": export_timestamp,
+            "version": "v0.3.0",
+            "database_stats": {},
         }
 
         # Export databases with progress tracking
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            console=console
+            console=console,
         ) as progress:
-
             successful_exports = []
             failed_exports = []
 
@@ -323,7 +365,7 @@ For questions about this export package or MEDIABASE:
 
                 # Get database statistics
                 stats = self.get_database_stats(db_name)
-                export_info['database_stats'][db_name] = stats
+                export_info["database_stats"][db_name] = stats
 
                 # Export database
                 output_file = databases_dir / f"{db_name}.sql.gz"
@@ -332,7 +374,9 @@ For questions about this export package or MEDIABASE:
                 if success:
                     successful_exports.append(db_name)
                     file_size_mb = output_file.stat().st_size / (1024 * 1024)
-                    progress.update(task, description=f"✓ {db_name} ({file_size_mb:.1f} MB)")
+                    progress.update(
+                        task, description=f"✓ {db_name} ({file_size_mb:.1f} MB)"
+                    )
                 else:
                     failed_exports.append(db_name)
                     progress.update(task, description=f"✗ {db_name} (failed)")
@@ -341,12 +385,13 @@ For questions about this export package or MEDIABASE:
         query_files = [
             project_root / "scripts" / "query_examples_normalized.py",
             project_root / "cancer_specific_sota_queries.sql",
-            project_root / "normalized_cancer_specific_sota_queries.sql"
+            project_root / "normalized_cancer_specific_sota_queries.sql",
         ]
 
         for query_file in query_files:
             if query_file.exists():
                 import shutil
+
                 shutil.copy2(query_file, queries_dir)
 
         # Create documentation
@@ -364,8 +409,8 @@ For questions about this export package or MEDIABASE:
             if db_name in successful_exports:
                 file_path = databases_dir / f"{db_name}.sql.gz"
                 size_mb = file_path.stat().st_size / (1024 * 1024)
-                stats = export_info['database_stats'].get(db_name, {})
-                table_count = stats.get('Tables', 0)
+                stats = export_info["database_stats"].get(db_name, {})
+                table_count = stats.get("Tables", 0)
                 table.add_row(db_name, "✓ Success", f"{size_mb:.1f}", str(table_count))
             else:
                 table.add_row(db_name, "✗ Failed", "-", "-")
@@ -374,16 +419,18 @@ For questions about this export package or MEDIABASE:
         console.print(table)
         console.print(f"\n[bold green]Export completed![/bold green]")
         console.print(f"[blue]Location: {export_dir}[/blue]")
-        console.print(f"[blue]Successful: {len(successful_exports)} | Failed: {len(failed_exports)}[/blue]")
+        console.print(
+            f"[blue]Successful: {len(successful_exports)} | Failed: {len(failed_exports)}[/blue]"
+        )
 
         return export_dir
 
     def create_zip_archive(self, export_dir: Path) -> Path:
         """Create compressed zip archive of the export package."""
-        zip_path = export_dir.with_suffix('.zip')
+        zip_path = export_dir.with_suffix(".zip")
 
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for file_path in export_dir.rglob('*'):
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in export_dir.rglob("*"):
                 if file_path.is_file():
                     arcname = file_path.relative_to(export_dir.parent)
                     zipf.write(file_path, arcname)
@@ -398,10 +445,18 @@ For questions about this export package or MEDIABASE:
 
 def main():
     """Main execution function."""
-    parser = argparse.ArgumentParser(description="Export MEDIABASE databases for sharing")
-    parser.add_argument("--output-dir", default="./exports", help="Output directory for exports")
-    parser.add_argument("--compress-level", type=int, default=6, help="Compression level (1-9)")
-    parser.add_argument("--create-zip", action="store_true", help="Create zip archive of export")
+    parser = argparse.ArgumentParser(
+        description="Export MEDIABASE databases for sharing"
+    )
+    parser.add_argument(
+        "--output-dir", default="./exports", help="Output directory for exports"
+    )
+    parser.add_argument(
+        "--compress-level", type=int, default=6, help="Compression level (1-9)"
+    )
+    parser.add_argument(
+        "--create-zip", action="store_true", help="Create zip archive of export"
+    )
 
     args = parser.parse_args()
 
@@ -422,7 +477,9 @@ def main():
         zip_path = exporter.create_zip_archive(export_dir)
         console.print(f"\n[bold]Final deliverable: {zip_path}[/bold]")
 
-    console.print("\n[bold green]✓ Database export package ready for sharing![/bold green]")
+    console.print(
+        "\n[bold green]✓ Database export package ready for sharing![/bold green]"
+    )
     return 0
 
 

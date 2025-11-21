@@ -19,7 +19,7 @@ from psycopg2.extensions import (
     cursor as pg_cursor,
     register_adapter,
     AsIs,
-    ISOLATION_LEVEL_AUTOCOMMIT
+    ISOLATION_LEVEL_AUTOCOMMIT,
 )
 from rich.console import Console
 from rich.table import Table
@@ -289,72 +289,73 @@ SCHEMA_VERSIONS = {
         UPDATE cancer_transcript_base
         SET source_references = source_references || '{"pharmgkb_variants": []}'::jsonb
         WHERE NOT (source_references ? 'pharmgkb_variants');
-    """
+    """,
 }
 
 # Schema version constants
 MIN_SUPPORTED_VERSION = "v0.1.8"
 LATEST_SCHEMA_VERSION = "v0.5.0"
 
+
 class DatabaseManager:
     """Manages database operations including connection, schema, and migrations."""
-    
+
     def __init__(self, config: Dict[str, Any]):
         """Initialize database manager with configuration.
-        
+
         Args:
             config: Database configuration dictionary with connection parameters
         """
         # Set up instance logger using our centralized logger
         self.logger = setup_logging(module_name=f"{__name__}.DatabaseManager")
-        
+
         # Ensure we have the required database configuration
         self.db_config = {
-            'host': config.get('host', 'localhost'),
-            'port': config.get('port', 5435),
-            'dbname': config.get('dbname', 'mediabase'),
-            'user': config.get('user', 'mbase_user'),
-            'password': config.get('password', 'mbase_secret')
+            "host": config.get("host", "localhost"),
+            "port": config.get("port", 5435),
+            "dbname": config.get("dbname", "mediabase"),
+            "user": config.get("user", "mbase_user"),
+            "password": config.get("password", "mbase_secret"),
         }
         # Store other config options separately
-        self.config = {k: v for k, v in config.items() 
-                      if k not in self.db_config}
+        self.config = {k: v for k, v in config.items() if k not in self.db_config}
         self.print_config()
         self.conn: Optional[pg_connection] = None
         self.cursor: Optional[pg_cursor] = None
         self._register_adapters()
-    
+
     def _register_adapters(self) -> None:
         """Register custom PostgreSQL adapters."""
+
         def adapt_dict(dict_value: dict) -> AsIs:
             """Adapt Python dict to PostgreSQL JSON."""
             return AsIs(f"'{json.dumps(dict_value)}'::jsonb")
-        
+
         # Register the dict adapter
         register_adapter(dict, adapt_dict)
-    
+
     def connect(self, db_name: Optional[str] = None) -> bool:
         """Establish database connection."""
         try:
             params = self.db_config.copy()
             if db_name:
-                params['dbname'] = db_name
-            
+                params["dbname"] = db_name
+
             # Only close if connection exists and is open
             if self.conn and not self.conn.closed:
                 self.close()
-            
+
             # Create new connection
             conn = cast(pg_connection, psycopg2.connect(**params))
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             self.conn = conn
             self.cursor = self.conn.cursor()
             return True
-            
+
         except psycopg2.Error as e:
             logger.error(f"Connection failed: {e}")
             return False
-    
+
     def close(self) -> None:
         """Close database connection and cursor."""
         if self.cursor is not None:
@@ -376,7 +377,9 @@ class DatabaseManager:
             # Start transaction by setting isolation level
             old_isolation = self.conn.isolation_level
             try:
-                self.conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
+                self.conn.set_isolation_level(
+                    psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED
+                )
                 yield
                 self.conn.commit()
             except Exception:
@@ -389,17 +392,15 @@ class DatabaseManager:
 
     def create_database(self) -> bool:
         """Create the database if it doesn't exist."""
-        dbname = self.config.get('dbname', 'mediabase')
+        dbname = self.config.get("dbname", "mediabase")
         try:
             if not self.cursor:
                 if not self.connect():
                     return False
             if not self.cursor:  # Double check after connect attempt
                 return False
-                
-            self.cursor.execute(
-                f"CREATE DATABASE {dbname}"
-            )
+
+            self.cursor.execute(f"CREATE DATABASE {dbname}")
             return True
         except psycopg2.Error as e:
             logger.error(f"Database creation failed: {e}")
@@ -407,27 +408,31 @@ class DatabaseManager:
 
     def drop_database(self) -> bool:
         """Drop the database with connection handling."""
-        dbname = self.config.get('dbname', 'mediabase')
+        dbname = self.config.get("dbname", "mediabase")
         try:
             # Connect to postgres database
             if not self.connect() or not self.cursor:
                 return False
 
             # Force close other connections
-            self.cursor.execute(f"""
+            self.cursor.execute(
+                f"""
                 SELECT pg_terminate_backend(pid) 
                 FROM pg_stat_activity 
                 WHERE datname = %s AND pid != pg_backend_pid()
-            """, (dbname,))
-            
+            """,
+                (dbname,),
+            )
+
             # Small delay to ensure connections are closed
             import time
+
             time.sleep(1)
-            
+
             # Drop the database
             self.cursor.execute(f"DROP DATABASE IF EXISTS {dbname}")
             return True
-            
+
         except psycopg2.Error as e:
             if "ERROR: database" in str(e) and "does not exist" in str(e):
                 return True
@@ -439,66 +444,74 @@ class DatabaseManager:
         try:
             if self.cursor is None:
                 return None
-                
+
             # First check if schema_version table exists at all
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_schema = 'public' 
                     AND table_name = 'schema_version'
                 )
-            """)
-            
+            """
+            )
+
             # Add null check before accessing result
             result = self.cursor.fetchone()
             if result is None:
                 return None
-            
+
             if not result[0]:
                 self.logger.info("Schema version table doesn't exist. Creating it...")
-                
+
                 # Create the schema_version table with the correct columns
-                self.cursor.execute("""
+                self.cursor.execute(
+                    """
                     CREATE TABLE schema_version (
                         version_name TEXT PRIMARY KEY,
                         applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         description TEXT
                     )
-                """)
-                
+                """
+                )
+
                 # Apply the initial version
-                self.cursor.execute("""
+                self.cursor.execute(
+                    """
                     INSERT INTO schema_version (version_name) VALUES ('v0.1.0')
-                """)
-                
-                return 'v0.1.0'
-            
+                """
+                )
+
+                return "v0.1.0"
+
             # Next check which version of the schema_version table we have
             # It could have different column names depending on how it was created
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT column_name 
                 FROM information_schema.columns 
                 WHERE table_name = 'schema_version'
-            """)
-            
+            """
+            )
+
             # Add null check for columns
             columns_result = self.cursor.fetchall()
             if columns_result is None:
                 return None
-            
+
             columns = [row[0] for row in columns_result if row is not None]
-            
+
             # Handle different column name possibilities
-            version_column = 'version_name' if 'version_name' in columns else 'version'
-            order_column = 'applied_at' if 'applied_at' in columns else 'id'
-            order_direction = 'DESC' if order_column == 'applied_at' else 'DESC'
-            
+            version_column = "version_name" if "version_name" in columns else "version"
+            order_column = "applied_at" if "applied_at" in columns else "id"
+            order_direction = "DESC" if order_column == "applied_at" else "DESC"
+
             query = f"SELECT {version_column} FROM schema_version ORDER BY {order_column} {order_direction} LIMIT 1"
             self.cursor.execute(query)
-            
+
             result = self.cursor.fetchone()
             return result[0] if result is not None else None
-            
+
         except psycopg2.Error as e:
             self.logger.error(f"Version check failed: {e}")
             return None
@@ -508,7 +521,7 @@ class DatabaseManager:
         current_version = self.get_current_version()
         if current_version:
             # Extract major, minor, patch from version string
-            parts = current_version.split('.')
+            parts = current_version.split(".")
             if len(parts) == 3:
                 major = int(parts[0][1:])
                 minor = int(parts[1])
@@ -526,69 +539,81 @@ class DatabaseManager:
 
     def migrate_to_version(self, target_version: str) -> bool:
         """Migrate schema to target version.
-        
+
         This method has been simplified to only support migrations from v0.1.5 onwards.
         For older versions, use reset_database() to create a fresh schema.
-        
+
         Args:
             target_version: Target schema version
-            
+
         Returns:
             bool: True if migration successful
         """
         try:
             current_version = self.get_current_version()
-            
+
             # If current version is below minimum supported, recommend reset
             if not current_version or current_version < MIN_SUPPORTED_VERSION:
-                self.logger.error(f"Current version {current_version} is below minimum supported version {MIN_SUPPORTED_VERSION}")
-                self.logger.error("Please use reset_database() to create a fresh schema")
+                self.logger.error(
+                    f"Current version {current_version} is below minimum supported version {MIN_SUPPORTED_VERSION}"
+                )
+                self.logger.error(
+                    "Please use reset_database() to create a fresh schema"
+                )
                 return False
-            
+
             if current_version == target_version:
                 self.logger.info(f"Already at version {target_version}")
                 return True
-                
+
             # Get ordered list of versions
             versions = list(SCHEMA_VERSIONS.keys())
-            
+
             if current_version not in versions:
-                self.logger.error(f"Current version {current_version} not in known versions")
+                self.logger.error(
+                    f"Current version {current_version} not in known versions"
+                )
                 return False
-                
+
             if target_version not in versions:
-                self.logger.error(f"Target version {target_version} not in known versions")
+                self.logger.error(
+                    f"Target version {target_version} not in known versions"
+                )
                 return False
-                
+
             current_idx = versions.index(current_version)
             target_idx = versions.index(target_version)
-            
+
             if current_idx >= target_idx:
-                self.logger.info(f"No migration needed: current {current_version} >= target {target_version}")
+                self.logger.info(
+                    f"No migration needed: current {current_version} >= target {target_version}"
+                )
                 return True
-            
+
             # Start a transaction for the migration
             if self.conn:
                 self.conn.autocommit = False
-                
+
             # Apply all migrations between current and target
             for i in range(current_idx + 1, target_idx + 1):
                 version = versions[i]
                 self.logger.info(f"Migrating to {version}")
-                
+
                 if self.cursor:
                     # Execute each statement in the migration
-                    statements = SCHEMA_VERSIONS[version].strip().split(';')
+                    statements = SCHEMA_VERSIONS[version].strip().split(";")
                     for stmt in statements:
                         if stmt.strip():  # Skip empty statements
                             try:
-                                self.cursor.execute(stmt + ';')
+                                self.cursor.execute(stmt + ";")
                             except psycopg2.Error as e:
                                 if "already exists" in str(e):
-                                    self.logger.warning(f"Ignoring 'already exists' error: {e}")
+                                    self.logger.warning(
+                                        f"Ignoring 'already exists' error: {e}"
+                                    )
                                 else:
                                     raise
-                    
+
                     # Record the applied migration
                     self.cursor.execute(
                         """
@@ -596,17 +621,19 @@ class DatabaseManager:
                         VALUES (%s)
                         ON CONFLICT (version_name) DO NOTHING
                         """,
-                        (version,)
+                        (version,),
                     )
-            
+
             # Commit the transaction
             if self.conn:
                 self.conn.commit()
                 self.conn.autocommit = True
-                
-            self.logger.info(f"Successfully migrated from {current_version} to {target_version}")
+
+            self.logger.info(
+                f"Successfully migrated from {current_version} to {target_version}"
+            )
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Migration failed: {e}")
             if self.conn:
@@ -619,41 +646,38 @@ class DatabaseManager:
         try:
             if self.cursor is None:
                 return {"row_count": 0, "size_mb": 0}
-            
+
             # Get row count
-            self.cursor.execute(
-                "SELECT COUNT(*) FROM cancer_transcript_base"
-            )
+            self.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
             # Add null check
             result = self.cursor.fetchone()
             row_count = result[0] if result is not None else 0
 
             # Get table size
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT pg_size_pretty(pg_total_relation_size('cancer_transcript_base')),
                        pg_total_relation_size('cancer_transcript_base') / 1024.0 / 1024.0
                 FROM pg_catalog.pg_tables
                 WHERE tablename = 'cancer_transcript_base'
-            """)
+            """
+            )
             # Add null check
             result = self.cursor.fetchone()
             size_mb = result[1] if result is not None else 0
 
-            return {
-                "row_count": row_count,
-                "size_mb": round(size_mb, 2)
-            }
+            return {"row_count": row_count, "size_mb": round(size_mb, 2)}
         except psycopg2.Error:
             return {"row_count": 0, "size_mb": 0}
 
     def reset(self) -> bool:
         """Reset database tables according to the latest schema version.
-        
+
         Instead of dropping and recreating the entire database, this method:
         1. Drops the tables if they exist
         2. Creates the schema version table
         3. Applies the latest schema version to create tables
-        
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -662,18 +686,20 @@ class DatabaseManager:
             if not self.conn or self.conn.closed:
                 if not self.connect():
                     return False
-            
+
             if not self.cursor:
                 logger.error("No database cursor available")
                 return False
-            
+
             # Drop tables if they exist
             logger.info("Dropping existing tables...")
             try:
-                self.cursor.execute("""
+                self.cursor.execute(
+                    """
                     DROP TABLE IF EXISTS cancer_transcript_base CASCADE;
                     DROP TABLE IF EXISTS schema_version CASCADE;
-                """)
+                """
+                )
                 if self.conn:  # Add check before accessing commit
                     self.conn.commit()
             except Exception as e:
@@ -681,37 +707,38 @@ class DatabaseManager:
                 if self.conn:  # Add check before accessing rollback
                     self.conn.rollback()
                 # Continue anyway - we'll try to create the tables
-                
+
             # Create schema_version table
             logger.info("Creating schema_version table")
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS schema_version (
                     id SERIAL PRIMARY KEY,
                     version TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
+            """
+            )
             if self.conn:  # Add check before accessing commit
                 self.conn.commit()
-            
+
             # Apply latest schema version
             latest_version = list(SCHEMA_VERSIONS.keys())[-1]
             logger.info(f"Applying schema version {latest_version}")
-            
+
             # Apply all schema versions in order
             for version in SCHEMA_VERSIONS.keys():
                 logger.info(f"Applying schema version {version}")
                 self.cursor.execute(SCHEMA_VERSIONS[version])
                 self.cursor.execute(
-                    "INSERT INTO schema_version (version) VALUES (%s)",
-                    (version,)
+                    "INSERT INTO schema_version (version) VALUES (%s)", (version,)
                 )
                 if self.conn:  # Add check before accessing commit
                     self.conn.commit()
-            
+
             logger.info("Database tables reset successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"Reset failed: {e}")
             if self.conn:  # Add check before accessing rollback
@@ -722,33 +749,32 @@ class DatabaseManager:
         """Display database status using rich tables."""
         current_version = self.get_current_version()
         stats = self.get_table_stats()
-        
+
         table = Table(title="Database Status")
         table.add_column("Component")
         table.add_column("Status")
-        
+
         table.add_row(
             "Connection",
-            "[green]Connected[/green]" if self.conn else "[red]Disconnected[/red]"
+            "[green]Connected[/green]" if self.conn else "[red]Disconnected[/red]",
         )
         table.add_row(
             "Schema Version",
-            str(current_version) if current_version else "[yellow]Unknown[/yellow]"
+            str(current_version) if current_version else "[yellow]Unknown[/yellow]",
         )
         table.add_row("Records", f"{stats['row_count']:,}")
         table.add_row("Table Size", f"{stats['size_mb']} MB")
-        
+
         console.print(table)
 
     def check_db_exists(self) -> bool:
         """Check if database exists."""
-        dbname = self.config.get('dbname', 'mediabase')
+        dbname = self.config.get("dbname", "mediabase")
         try:
             if self.cursor is None:
                 return False
             self.cursor.execute(
-                "SELECT 1 FROM pg_database WHERE datname = %s",
-                (dbname,)
+                "SELECT 1 FROM pg_database WHERE datname = %s", (dbname,)
             )
             result = self.cursor.fetchone()
             # Add null check before accessing result
@@ -759,97 +785,101 @@ class DatabaseManager:
 
     def dump_database(self, output_file: str) -> bool:
         """Dump database to a file using pg_dump.
-        
+
         Args:
             output_file: Path to output file
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
         try:
             import subprocess
-            
+
             # Create environment with PGPASSWORD
             env = os.environ.copy()
-            env['PGPASSWORD'] = self.db_config['password']
-            
+            env["PGPASSWORD"] = self.db_config["password"]
+
             # Construct pg_dump command
             cmd = [
-                'pg_dump',
-                '-h', self.db_config['host'],
-                '-p', str(self.db_config['port']),
-                '-U', self.db_config['user'],
-                '-F', 'c',  # Custom format
-                '-f', output_file,
-                self.db_config['dbname']
+                "pg_dump",
+                "-h",
+                self.db_config["host"],
+                "-p",
+                str(self.db_config["port"]),
+                "-U",
+                self.db_config["user"],
+                "-F",
+                "c",  # Custom format
+                "-f",
+                output_file,
+                self.db_config["dbname"],
             ]
-            
+
             # Run pg_dump with password in environment
-            result = subprocess.run(
-                cmd,
-                env=env,
-                capture_output=True,
-                text=True
-            )
-            
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+
             if result.returncode == 0:
                 logger.info(f"Database successfully backed up to {output_file}")
                 return True
-            
+
             logger.error(f"Dump failed: {result.stderr}")
             return False
-                
+
         except Exception as e:
             logger.error(f"Dump failed: {e}")
             return False
 
     def restore_database(self, input_file: str) -> bool:
         """Restore database from a dump file."""
-        dbname = self.config.get('dbname', 'mediabase')
-        dbhost = self.config.get('host', 'localhost')
-        dbport = self.config.get('port', 5432)
-        dbuser = self.config.get('user', 'postgres')
-        dbpass = self.config.get('password', 'postgres')
+        dbname = self.config.get("dbname", "mediabase")
+        dbhost = self.config.get("host", "localhost")
+        dbport = self.config.get("port", 5432)
+        dbuser = self.config.get("user", "postgres")
+        dbpass = self.config.get("password", "postgres")
         try:
             # First ensure we're starting fresh
             if not self.connect():
                 return False
-                
+
             self.drop_database()
             self.create_database()
-            
+
             import subprocess
-            
+
             env = os.environ.copy()
-            env['PGPASSWORD'] = dbpass
-            
+            env["PGPASSWORD"] = dbpass
+
             cmd = [
-                'pg_restore',
-                '-h', dbhost,
-                '-p', str(dbport),
-                '-U', dbuser,
-                '-d', dbname,
-                input_file
+                "pg_restore",
+                "-h",
+                dbhost,
+                "-p",
+                str(dbport),
+                "-U",
+                dbuser,
+                "-d",
+                dbname,
+                input_file,
             ]
-            
+
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-            
+
             if result.returncode == 0:
                 return True
             logger.error(f"Restore failed: {result.stderr}")
             return False
-                
+
         except Exception as e:
             logger.error(f"Restore failed: {e}")
             return False
 
     def check_column_exists(self, table: str, column: str) -> bool:
         """Check if a column exists in the specified table.
-        
+
         Args:
             table: Name of the table
             column: Name of the column
-            
+
         Returns:
             bool: True if column exists, False otherwise
         """
@@ -858,8 +888,9 @@ class DatabaseManager:
                 self.cursor = self.conn.cursor() if self.conn else None
                 if not self.cursor:
                     raise RuntimeError("Could not create database cursor")
-                    
-            self.cursor.execute("""
+
+            self.cursor.execute(
+                """
                 SELECT EXISTS (
                     SELECT 1 
                     FROM information_schema.columns 
@@ -867,11 +898,13 @@ class DatabaseManager:
                     AND table_name = %s 
                     AND column_name = %s
                 );
-            """, (table, column))
-            
+            """,
+                (table, column),
+            )
+
             result = self.cursor.fetchone()
             return bool(result and result[0])
-            
+
         except Exception as e:
             logger.error(f"Error checking column existence: {e}")
             return False
@@ -881,15 +914,15 @@ class DatabaseManager:
         table = Table(title="Database Configuration")
         table.add_column("Parameter")
         table.add_column("Value")
-        
+
         for key, value in self.db_config.items():
             table.add_row(key, str(value))
-        
+
         console.print(table)
 
     def ensure_connection(self) -> bool:
         """Ensure database connection is active and reconnect if needed.
-        
+
         Returns:
             bool: True if a valid connection is available, False otherwise
         """
@@ -898,26 +931,30 @@ class DatabaseManager:
             if not self.conn:
                 logger.info("No connection exists. Creating new connection.")
                 return self.connect()
-            
+
             # Check if connection is closed
             if self.conn.closed:
                 logger.info("Connection is closed. Reconnecting...")
                 return self.connect()
-            
+
             # Test if connection is still valid
             try:
                 # Create a new cursor if needed
                 if not self.cursor or self.cursor.closed:
                     self.cursor = self.conn.cursor()
-                
+
                 # Simple query to test connection - with timeout to prevent hanging
-                self.conn.set_isolation_level(0)  # Set to AUTOCOMMIT to avoid transaction blocks
+                self.conn.set_isolation_level(
+                    0
+                )  # Set to AUTOCOMMIT to avoid transaction blocks
                 self.cursor.execute("SET statement_timeout = 3000")  # 3 second timeout
                 self.cursor.execute("SELECT 1")
                 result = self.cursor.fetchone()
                 self.cursor.execute("RESET statement_timeout")  # Reset timeout
-                self.conn.set_isolation_level(2)  # Reset to normal transaction isolation
-                
+                self.conn.set_isolation_level(
+                    2
+                )  # Reset to normal transaction isolation
+
                 return bool(result and result[0] == 1)
             except psycopg2.Error as e:
                 logger.warning(f"Connection test failed: {e}. Reconnecting...")
@@ -926,7 +963,7 @@ class DatabaseManager:
                 except:
                     pass  # Ignore errors on closing
                 return self.connect()  # Try to reconnect
-                
+
         except Exception as e:
             logger.error(f"Error ensuring database connection: {e}")
             # Try one more time with a fresh connection
@@ -936,15 +973,16 @@ class DatabaseManager:
                 pass
             return self.connect()
 
-    def execute_safely(self, query: str, params: Optional[Tuple] = None, 
-                       commit: bool = True) -> Optional[pg_cursor]:
+    def execute_safely(
+        self, query: str, params: Optional[Tuple] = None, commit: bool = True
+    ) -> Optional[pg_cursor]:
         """Execute a query safely with proper error handling and transaction management.
-        
+
         Args:
             query: SQL query to execute
             params: Optional parameters for the query
             commit: Whether to commit after execution
-            
+
         Returns:
             Optional[pg_cursor]: Database cursor or None if operation failed
         """
@@ -952,7 +990,7 @@ class DatabaseManager:
         if not self.ensure_connection():
             logger.error("Failed to establish database connection")
             return None
-            
+
         try:
             if not self.cursor:
                 logger.error("Cursor is None, cannot execute query.")
@@ -962,10 +1000,10 @@ class DatabaseManager:
                 self.cursor.execute(query, params)
             else:
                 self.cursor.execute(query)
-                
+
             if commit and self.conn:
                 self.conn.commit()
-                
+
             return self.cursor
         except Exception as e:
             logger.error(f"Query execution failed: {e}")
@@ -976,12 +1014,12 @@ class DatabaseManager:
     def get_version_sequence(self) -> List[str]:
         """Get the sequence of schema versions."""
         return [
-            'v0.1.1',
-            'v0.1.2',
-            'v0.1.3',
-            'v0.1.4',
-            'v0.1.5',  # Add new version
-            'v0.1.6'
+            "v0.1.1",
+            "v0.1.2",
+            "v0.1.3",
+            "v0.1.4",
+            "v0.1.5",  # Add new version
+            "v0.1.6",
         ]
 
     def reset_database(self) -> bool:
@@ -1011,7 +1049,7 @@ class DatabaseManager:
 
             # Read baseline schema SQL
             self.logger.info(f"Reading baseline schema from {baseline_path}")
-            with open(baseline_path, 'r', encoding='utf-8') as f:
+            with open(baseline_path, "r", encoding="utf-8") as f:
                 baseline_sql = f.read()
 
             # Start a fresh transaction
@@ -1020,7 +1058,9 @@ class DatabaseManager:
 
             # Execute complete baseline schema in one transaction
             if self.cursor:
-                self.logger.info("Executing baseline schema (this may take a moment)...")
+                self.logger.info(
+                    "Executing baseline schema (this may take a moment)..."
+                )
                 self.cursor.execute(baseline_sql)
 
                 # Commit all changes
@@ -1031,10 +1071,14 @@ class DatabaseManager:
                 # Verify the schema is correctly set up
                 current_version = self.get_current_version()
                 if current_version != "v1.0.0_baseline":
-                    self.logger.error(f"Schema version mismatch after reset: {current_version} != v1.0.0_baseline")
+                    self.logger.error(
+                        f"Schema version mismatch after reset: {current_version} != v1.0.0_baseline"
+                    )
                     return False
 
-                self.logger.info("Database reset completed successfully with schema v1.0.0_baseline")
+                self.logger.info(
+                    "Database reset completed successfully with schema v1.0.0_baseline"
+                )
                 return True
             else:
                 self.logger.error("Database cursor is None, cannot reset database")
@@ -1049,10 +1093,10 @@ class DatabaseManager:
 
     def apply_full_schema(self) -> bool:
         """Apply the full schema in one step up to the latest version.
-        
+
         Instead of applying migrations incrementally, this method applies
         the entire schema in one go to ensure consistency.
-        
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -1060,47 +1104,47 @@ class DatabaseManager:
             if not self.cursor:
                 self.logger.error("No database cursor available")
                 return False
-                
+
             self.logger.info(f"Applying full schema up to {MIN_SUPPORTED_VERSION}")
-            
+
             # Apply each schema statement one by one
             # We'll build a combined schema SQL by concatenating all schema versions
             full_schema = ""
             versions = sorted(SCHEMA_VERSIONS.keys())
-            
+
             for version in versions:
                 full_schema += f"\n-- Schema version: {version}\n"
                 full_schema += SCHEMA_VERSIONS[version]
-            
+
             # Split the combined schema into individual statements
             statements = []
             current_statement = []
             in_do_block = False
-            
-            for line in full_schema.strip().split('\n'):
+
+            for line in full_schema.strip().split("\n"):
                 # Check if we're entering a DO block
-                if 'DO $$' in line and not in_do_block:
+                if "DO $$" in line and not in_do_block:
                     in_do_block = True
-                    
+
                 # Add current line to the statement
                 current_statement.append(line)
-                
+
                 # Check if we're exiting a DO block
-                if '$$;' in line and in_do_block:
+                if "$$;" in line and in_do_block:
                     in_do_block = False
-                    statements.append('\n'.join(current_statement))
+                    statements.append("\n".join(current_statement))
                     current_statement = []
                     continue
-                    
+
                 # For normal statements, split by semicolon
-                if ';' in line and not in_do_block and '$$;' not in line:
-                    statements.append('\n'.join(current_statement))
+                if ";" in line and not in_do_block and "$$;" not in line:
+                    statements.append("\n".join(current_statement))
                     current_statement = []
-            
+
             # Add any remaining statement
             if current_statement:
-                statements.append('\n'.join(current_statement))
-            
+                statements.append("\n".join(current_statement))
+
             # Execute each statement, ignoring "already exists" errors
             # These can happen when applying parts of schema more than once
             for stmt in statements:
@@ -1112,159 +1156,205 @@ class DatabaseManager:
                             self.logger.warning(f"Ignoring 'already exists' error: {e}")
                         else:
                             raise
-            
+
             # Record all schema versions as applied
             for version in versions:
-                self.cursor.execute("""
+                self.cursor.execute(
+                    """
                     INSERT INTO schema_version (version_name)
                     VALUES (%s)
                     ON CONFLICT (version_name) DO UPDATE 
                     SET applied_at = CURRENT_TIMESTAMP
-                """, (version,))
-            
+                """,
+                    (version,),
+                )
+
             # Validate schema to make sure all required columns exist
             if not self.validate_schema():
                 raise Exception("Schema validation failed after applying full schema")
-                
-            self.logger.info(f"Successfully applied full schema up to {MIN_SUPPORTED_VERSION}")
+
+            self.logger.info(
+                f"Successfully applied full schema up to {MIN_SUPPORTED_VERSION}"
+            )
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to apply full schema: {e}")
             return False
-    
+
     def validate_schema(self) -> bool:
         """Validate that the schema matches the expected structure.
-        
+
         This checks if all expected tables, columns, and indices exist.
-        
+
         Returns:
             bool: True if schema is valid, False otherwise
         """
         try:
             if not self.cursor:
                 return False
-                
+
             # Check if cancer_transcript_base table exists
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'cancer_transcript_base'
                 )
-            """)
+            """
+            )
             result = self.cursor.fetchone()
             if not result or not result[0]:
                 self.logger.error("cancer_transcript_base table does not exist")
                 return False
-                
+
             # Check if all expected columns exist
             expected_columns = [
-                'transcript_id', 'gene_symbol', 'gene_id', 'gene_type', 'chromosome', 
-                'coordinates', 'product_type', 'go_terms', 'pathways', 'drugs',
-                'expression_fold_change', 'expression_freq', 'cancer_types',
-                'features', 'molecular_functions', 'cellular_location', 'drug_scores',
-                'alt_transcript_ids', 'alt_gene_ids', 'uniprot_ids', 'ncbi_ids', 
-                'refseq_ids', 'source_references', 'pdb_ids'
+                "transcript_id",
+                "gene_symbol",
+                "gene_id",
+                "gene_type",
+                "chromosome",
+                "coordinates",
+                "product_type",
+                "go_terms",
+                "pathways",
+                "drugs",
+                "expression_fold_change",
+                "expression_freq",
+                "cancer_types",
+                "features",
+                "molecular_functions",
+                "cellular_location",
+                "drug_scores",
+                "alt_transcript_ids",
+                "alt_gene_ids",
+                "uniprot_ids",
+                "ncbi_ids",
+                "refseq_ids",
+                "source_references",
+                "pdb_ids",
             ]
-            
+
             missing_columns = []
             for column in expected_columns:
-                self.cursor.execute("""
+                self.cursor.execute(
+                    """
                     SELECT EXISTS (
                         SELECT FROM information_schema.columns 
                         WHERE table_name = 'cancer_transcript_base' 
                         AND column_name = %s
                     )
-                """, (column,))
+                """,
+                    (column,),
+                )
                 result = self.cursor.fetchone()
                 if not result or not result[0]:
                     missing_columns.append(column)
-            
+
             if missing_columns:
-                self.logger.error(f"Missing columns in cancer_transcript_base: {', '.join(missing_columns)}")
+                self.logger.error(
+                    f"Missing columns in cancer_transcript_base: {', '.join(missing_columns)}"
+                )
                 return False
-                
+
             # Check if schema_version table exists
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'schema_version'
                 )
-            """)
+            """
+            )
             result = self.cursor.fetchone()
             if not result or not result[0]:
                 self.logger.error("schema_version table does not exist")
                 return False
-                
+
             # Check if latest version is recorded
             current_version = self.get_current_version()
             if not current_version or current_version < MIN_SUPPORTED_VERSION:
-                self.logger.error(f"Schema version {current_version} is below minimum required {MIN_SUPPORTED_VERSION}")
+                self.logger.error(
+                    f"Schema version {current_version} is below minimum required {MIN_SUPPORTED_VERSION}"
+                )
                 return False
-                
-            self.logger.info(f"Schema validation successful - version {current_version}")
+
+            self.logger.info(
+                f"Schema validation successful - version {current_version}"
+            )
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Schema validation failed: {e}")
             return False
 
     def ensure_schema_version(self, required_version: str) -> bool:
         """Ensure the database schema is at least at the required version.
-        
+
         If the schema is older than the required version, attempt to migrate.
         If migration fails or the version is below v0.1.5, return False.
-        
+
         Args:
             required_version: Minimum required schema version
-            
+
         Returns:
             bool: True if schema version is at or above required version
         """
         try:
             current_version = self.get_current_version()
-            
+
             # Handle case where we can't determine the version
             if not current_version:
                 self.logger.error("Could not determine current schema version")
                 return False
-                
+
             # Check if current version is below minimum supported
             if current_version < MIN_SUPPORTED_VERSION:
-                self.logger.error(f"Current schema version {current_version} is below minimum supported version {MIN_SUPPORTED_VERSION}")
-                self.logger.error("Please use reset_database() to create a fresh schema")
+                self.logger.error(
+                    f"Current schema version {current_version} is below minimum supported version {MIN_SUPPORTED_VERSION}"
+                )
+                self.logger.error(
+                    "Please use reset_database() to create a fresh schema"
+                )
                 return False
-            
+
             # Compare versions
             versions = list(SCHEMA_VERSIONS.keys())
-            
+
             if current_version not in versions:
                 self.logger.error(f"Unknown schema version: {current_version}")
                 return False
-                
+
             if required_version not in versions:
                 self.logger.error(f"Unknown required version: {required_version}")
                 return False
-                
+
             current_idx = versions.index(current_version)
             required_idx = versions.index(required_version)
-            
+
             # If current version is already at or above required, we're good
             if current_idx >= required_idx:
-                self.logger.info(f"Schema version check passed: {current_version} >= {required_version}")
+                self.logger.info(
+                    f"Schema version check passed: {current_version} >= {required_version}"
+                )
                 return True
-                
+
             # Try to migrate to the required version
-            self.logger.warning(f"Current schema version {current_version} is below required {required_version}")
+            self.logger.warning(
+                f"Current schema version {current_version} is below required {required_version}"
+            )
             self.logger.info(f"Attempting to migrate schema to {required_version}")
-            
+
             if self.migrate_to_version(required_version):
                 self.logger.info(f"Migration to {required_version} succeeded")
                 return True
             else:
-                self.logger.error(f"Failed to migrate database schema to {required_version}")
+                self.logger.error(
+                    f"Failed to migrate database schema to {required_version}"
+                )
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"Schema version check failed: {e}")
             return False
@@ -1273,12 +1363,13 @@ class DatabaseManager:
         """Alias for print_config for backward compatibility."""
         self.print_config()
 
+
 def get_db_manager(config: Dict[str, Any]) -> DatabaseManager:
     """Create and initialize a database manager instance.
-    
+
     Args:
         config: Database configuration dictionary
-        
+
     Returns:
             DatabaseManager: Initialized database manager
     """

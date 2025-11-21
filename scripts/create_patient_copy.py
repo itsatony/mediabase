@@ -1,1145 +1,737 @@
 #!/usr/bin/env python3
-"""Create Patient-Specific MEDIABASE Copy.
+"""
+Create patient-specific schema in MEDIABASE shared core database.
 
-This script creates an independent copy of the MEDIABASE database for a specific patient
-and updates the expression_fold_change column with patient-specific transcriptome data
-from a CSV file.
+MEDIABASE v0.6.0 Shared Core Architecture:
+- Single mbase database with public schema (core transcriptome data)
+- Patient-specific schemas: patient_<PATIENT_ID>
+- Sparse storage: Only stores expression_fold_change != 1.0
+
+This script:
+1. Creates patient schema from template
+2. Imports expression data from CSV
+3. Populates metadata table with import statistics
+4. Validates data integrity
 
 Usage:
-    poetry run python scripts/create_patient_copy.py --patient-id PATIENT123 --csv-file patient_data.csv
+    poetry run python scripts/create_patient_copy.py \
+        --patient-id PATIENT123 \
+        --csv-file patient_transcriptome.csv
 
-The script will:
-1. Create a new database named mediabase_patient_PATIENT123
-2. Copy all schema and data from the source MEDIABASE
-3. Update fold-change values from the provided CSV file
-4. Validate data integrity throughout the process
+CSV Format:
+    Required columns: transcript_id, <fold_change_column>
+    Fold change column auto-detected (supports multiple formats):
+    - cancer_fold, expression_fold_change, fold_change, log2FoldChange, etc.
+
+Example:
+    poetry run python scripts/create_patient_copy.py \
+        --patient-id DEMO_HER2 \
+        --csv-file examples/synthetic/her2_patient.csv \
+        --cancer-type "Breast Cancer" \
+        --cancer-subtype "HER2+"
 """
 
 import argparse
 import csv
 import logging
+import math
 import sys
-import os
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Set, Any
-from datetime import datetime
+from typing import Dict, List, Tuple, Any, Optional
 
 import pandas as pd
-import psycopg2
-from psycopg2.extensions import connection as pg_connection
-from psycopg2.extras import execute_batch
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.table import Table
-from rich.prompt import Prompt, Confirm
-from rich.progress import Progress, TaskID
-from tqdm import tqdm
 
-# Add project root to Python path
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.db.database import get_db_manager, DatabaseManager
-from src.utils.logging import setup_logging, get_progress_bar
+from src.db.database import get_db_manager
+from src.db.patient_schema import (
+    create_patient_schema,
+    insert_metadata,
+    validate_patient_schema,
+    get_patient_statistics,
+    schema_exists,
+    get_schema_name,
+    InvalidPatientIDError,
+    SchemaExistsError,
+)
+from src.utils.logging import setup_logging
 
-# Constants
-REQUIRED_CSV_COLUMNS = {"transcript_id", "cancer_fold"}
-ALTERNATIVE_COLUMN_NAMES = {
-    "transcript_id": [
-        "transcript_id",
-        "transcript",
-        "id",
-        "gene_id",
-        "ensembl_id",
-        "symbol",
-    ],
-    "cancer_fold": [
-        "cancer_fold",
-        "fold_change",
-        "expression_fold_change",
-        "fold",
-        "fc",
-        "log2foldchange",
-        "logfc",
-    ],
-}
-
-# DESeq2 specific mappings
-DESEQ2_FORMAT_INDICATORS = {
-    "symbol": ["symbol", "gene_symbol", "gene_name"],
-    "log2_fold_change": ["log2foldchange", "log2fc", "logfc", "lfc"],
-}
-PATIENT_DB_PREFIX = "mediabase_patient_"
-BATCH_SIZE = 1000
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+console = Console()
+logger = logging.getLogger(__name__)
 
 
-class PatientCopyError(Exception):
-    """Base exception for patient copy operations."""
+# Column name mappings for fold change detection
+FOLD_CHANGE_COLUMNS = [
+    "cancer_fold",
+    "expression_fold_change",
+    "fold_change",
+    "fc",
+    "linear_fc",
+    "foldchange",
+]
+
+LOG2_FOLD_CHANGE_COLUMNS = [
+    "log2FoldChange",
+    "log2fc",
+    "log2_fold_change",
+    "log2_fc",
+    "l2fc",
+]
+
+
+class CSVValidationError(Exception):
+    """Raised when CSV validation fails."""
 
     pass
 
 
-class CSVValidationError(PatientCopyError):
-    """Exception raised when CSV validation fails."""
-
-    pass
-
-
-class DatabaseCopyError(PatientCopyError):
-    """Exception raised when database copying fails."""
-
-    pass
-
-
-class FoldChangeUpdateError(PatientCopyError):
-    """Exception raised when fold-change updates fail."""
-
-    pass
-
-
-class PatientDatabaseCreator:
-    """Creates patient-specific copies of MEDIABASE with custom fold-change data."""
+class PatientDataImporter:
+    """Import patient transcriptome data into patient schema."""
 
     def __init__(
-        self, patient_id: str, csv_file: Path, source_db_config: Dict[str, Any]
+        self,
+        patient_id: str,
+        csv_file: Path,
+        cancer_type: Optional[str] = None,
+        cancer_subtype: Optional[str] = None,
+        dry_run: bool = False,
+        overwrite: bool = False,
     ):
-        """Initialize the patient database creator.
+        """Initialize patient data importer.
 
         Args:
-            patient_id: Unique identifier for the patient
-            csv_file: Path to CSV file with fold-change data
-            source_db_config: Database configuration for source MEDIABASE
+            patient_id: Unique patient identifier
+            csv_file: Path to CSV file with expression data
+            cancer_type: Optional cancer type (e.g., "Breast Cancer")
+            cancer_subtype: Optional cancer subtype (e.g., "HER2+")
+            dry_run: If True, validate only without making changes
+            overwrite: If True, drop existing schema and recreate
         """
         self.patient_id = patient_id
-        self.csv_file = csv_file
-        self.source_db_config = source_db_config
-        self.target_db_name = f"{PATIENT_DB_PREFIX}{patient_id}"
+        self.csv_file = Path(csv_file)
+        self.cancer_type = cancer_type
+        self.cancer_subtype = cancer_subtype
+        self.dry_run = dry_run
+        self.overwrite = overwrite
 
-        self.console = Console()
-        self.logger = logging.getLogger(__name__)
+        # Initialize database manager
+        self.db_manager = get_db_manager(config={})
 
-        # Data storage
-        self.csv_data: Optional[pd.DataFrame] = None
-        self.column_mapping: Dict[str, str] = {}
-        self.transcript_updates: Dict[str, float] = {}
-        self.gene_symbol_mapping: Dict[str, str] = {}  # gene_symbol -> transcript_id
-        self.is_deseq2_format: bool = False
-        self.log2_fold_column: Optional[str] = None
+        # Schema name
+        self.schema_name = get_schema_name(patient_id)
 
-        # Statistics
+        # CSV data
+        self.csv_data: pd.DataFrame = None
+        self.transcript_id_column: str = None
+        self.fold_change_column: str = None
+        self.is_log2: bool = False
+
+        # Import statistics
         self.stats = {
-            "csv_rows_read": 0,
-            "valid_transcripts": 0,
-            "invalid_transcripts": 0,
-            "updates_applied": 0,
-            "transcripts_not_found": 0,
+            "total_rows": 0,
+            "transcripts_matched": 0,
+            "transcripts_unmatched": 0,
+            "transcripts_stored": 0,  # Only != 1.0
+            "transcripts_baseline": 0,  # = 1.0 (not stored)
+            "matching_success_rate": 0.0,
+            "storage_efficiency": 0.0,  # % not stored
         }
 
-    def validate_csv_file(self) -> None:
-        """Validate CSV file structure and prompt for column mapping if needed.
+    def validate_csv(self) -> None:
+        """Validate CSV file format and detect columns.
 
         Raises:
-            CSVValidationError: If CSV validation fails
+            CSVValidationError: If CSV is invalid
         """
+        console.print(f"\n[bold]Validating CSV file:[/bold] {self.csv_file}")
+
+        # Check file exists
+        if not self.csv_file.exists():
+            raise CSVValidationError(f"CSV file not found: {self.csv_file}")
+
+        # Read CSV
         try:
-            # Read CSV file
-            self.console.print(f"[blue]Reading CSV file: {self.csv_file}[/blue]")
             self.csv_data = pd.read_csv(self.csv_file)
-            self.stats["csv_rows_read"] = len(self.csv_data)
-
-            if self.csv_data.empty:
-                raise CSVValidationError("CSV file is empty")
-
-            # Display CSV structure
-            self._display_csv_info()
-
-            # Check for required columns
-            available_columns = set(self.csv_data.columns)
-            found_columns = self._find_column_mapping(available_columns)
-
-            if not found_columns:
-                # Interactive column mapping
-                self._interactive_column_mapping(available_columns)
-            else:
-                self.column_mapping = found_columns
-                self.console.print(
-                    "[green]✓ Required columns found automatically[/green]"
-                )
-
-            # Validate mapped columns
-            self._validate_mapped_columns()
-
         except Exception as e:
-            self.logger.error(f"CSV validation failed: {e}")
-            raise CSVValidationError(f"Failed to validate CSV file: {e}")
+            raise CSVValidationError(f"Failed to read CSV: {e}")
 
-    def _display_csv_info(self) -> None:
-        """Display information about the CSV file."""
-        table = Table(title="CSV File Information")
-        table.add_column("Property", style="cyan")
-        table.add_column("Value", style="green")
+        console.print(f"  Rows: {len(self.csv_data):,}")
+        console.print(f"  Columns: {', '.join(self.csv_data.columns)}")
 
-        table.add_row("File Path", str(self.csv_file))
-        table.add_row("Rows", str(len(self.csv_data)))
-        table.add_row("Columns", str(len(self.csv_data.columns)))
-        table.add_row("Available Columns", ", ".join(self.csv_data.columns))
+        # Detect transcript_id column
+        transcript_id_candidates = [
+            col
+            for col in self.csv_data.columns
+            if "transcript" in col.lower() and "id" in col.lower()
+        ]
 
-        self.console.print(table)
-
-        # Show first few rows
-        self.console.print("\n[blue]First 5 rows:[/blue]")
-        self.console.print(self.csv_data.head().to_string())
-
-    def _find_column_mapping(self, available_columns: Set[str]) -> Dict[str, str]:
-        """Attempt to automatically find column mapping with DESeq2 format detection.
-
-        Args:
-            available_columns: Set of available column names
-
-        Returns:
-            Dictionary mapping required columns to actual column names
-        """
-        mapping = {}
-
-        # Check for DESeq2 format indicators
-        deseq2_indicators = self._detect_deseq2_format(available_columns)
-        if deseq2_indicators:
-            self.is_deseq2_format = True
-            self.console.print(
-                "[green]🧬 Detected DESeq2 format! Applying specialized mapping...[/green]"
-            )
-            mapping = self._map_deseq2_columns(available_columns, deseq2_indicators)
-        else:
-            # Standard column mapping
-            for required_col, alternatives in ALTERNATIVE_COLUMN_NAMES.items():
-                for alt_name in alternatives:
-                    if alt_name.lower() in [col.lower() for col in available_columns]:
-                        # Find exact match (case-insensitive)
-                        for col in available_columns:
-                            if col.lower() == alt_name.lower():
-                                mapping[required_col] = col
-                                break
-                        break
-
-        return mapping if len(mapping) == len(REQUIRED_CSV_COLUMNS) else {}
-
-    def _detect_deseq2_format(self, available_columns: Set[str]) -> Dict[str, str]:
-        """Detect if CSV is in DESeq2 format and find key columns.
-
-        Args:
-            available_columns: Set of available column names
-
-        Returns:
-            Dictionary mapping DESeq2 column types to actual column names
-        """
-        deseq2_mapping = {}
-        available_lower = {col.lower(): col for col in available_columns}
-
-        # Check for gene symbol column
-        for symbol_variant in DESEQ2_FORMAT_INDICATORS["symbol"]:
-            if symbol_variant.lower() in available_lower:
-                deseq2_mapping["symbol"] = available_lower[symbol_variant.lower()]
-                break
-
-        # Check for log2 fold change column
-        for log2_variant in DESEQ2_FORMAT_INDICATORS["log2_fold_change"]:
-            if log2_variant.lower() in available_lower:
-                deseq2_mapping["log2_fold_change"] = available_lower[
-                    log2_variant.lower()
-                ]
-                self.log2_fold_column = available_lower[log2_variant.lower()]
-                break
-
-        # Must have both key columns to be considered DESeq2 format
-        return deseq2_mapping if len(deseq2_mapping) == 2 else {}
-
-    def _map_deseq2_columns(
-        self, available_columns: Set[str], deseq2_indicators: Dict[str, str]
-    ) -> Dict[str, str]:
-        """Map DESeq2 format columns to required format.
-
-        Args:
-            available_columns: Set of available column names
-            deseq2_indicators: Dictionary of detected DESeq2 columns
-
-        Returns:
-            Dictionary mapping required columns to actual column names
-        """
-        mapping = {
-            "transcript_id": deseq2_indicators[
-                "symbol"
-            ],  # Will be converted via gene symbol lookup
-            "cancer_fold": deseq2_indicators[
-                "log2_fold_change"
-            ],  # Will be converted from log2
-        }
-
-        # Set the log2 fold column for later use
-        self.log2_fold_column = deseq2_indicators["log2_fold_change"]
-        self.is_deseq2_format = True  # Flag to indicate DESeq2 format processing
-
-        self.console.print(f"[blue]📊 DESeq2 Mapping:[/blue]")
-        self.console.print(f"  Gene Symbol: {deseq2_indicators['symbol']}")
-        self.console.print(
-            f"  Log2 Fold Change: {deseq2_indicators['log2_fold_change']}"
-        )
-        self.console.print(
-            f"[yellow]Note: Gene symbols will be mapped to transcript IDs, log2 values converted to linear fold change[/yellow]"
-        )
-
-        return mapping
-
-    def _interactive_column_mapping(self, available_columns: Set[str]) -> None:
-        """Interactive column mapping when automatic detection fails.
-
-        Args:
-            available_columns: Set of available column names
-        """
-        self.console.print(
-            "\n[yellow]Could not automatically detect required columns.[/yellow]"
-        )
-        self.console.print("[yellow]Please map the following columns:[/yellow]")
-
-        for required_col in REQUIRED_CSV_COLUMNS:
-            self.console.print(f"\n[cyan]Required column: {required_col}[/cyan]")
-            self.console.print(
-                f"Expected content: {self._get_column_description(required_col)}"
-            )
-            self.console.print(
-                f"Available columns: {', '.join(sorted(available_columns))}"
+        if not transcript_id_candidates:
+            raise CSVValidationError(
+                "No transcript_id column found. Expected column name containing "
+                "'transcript' and 'id' (e.g., 'transcript_id', 'transcript_ID')"
             )
 
-            while True:
-                selected_col = Prompt.ask("Select column name")
-                if selected_col in available_columns:
-                    self.column_mapping[required_col] = selected_col
+        self.transcript_id_column = transcript_id_candidates[0]
+        console.print(
+            f"  ✓ Transcript ID column: [cyan]{self.transcript_id_column}[/cyan]"
+        )
+
+        # Detect fold change column
+        fold_change_candidates = []
+
+        # Check linear fold change columns
+        for col in self.csv_data.columns:
+            col_lower = col.lower().replace("_", "").replace(" ", "")
+            for fc_col in FOLD_CHANGE_COLUMNS:
+                fc_col_normalized = fc_col.lower().replace("_", "")
+                if fc_col_normalized in col_lower:
+                    fold_change_candidates.append((col, False))  # (column, is_log2)
                     break
-                else:
-                    self.console.print(
-                        f"[red]Column '{selected_col}' not found. Please try again.[/red]"
-                    )
 
-    def _get_column_description(self, column: str) -> str:
-        """Get description for required columns.
+        # Check log2 fold change columns
+        for col in self.csv_data.columns:
+            for log2_col in LOG2_FOLD_CHANGE_COLUMNS:
+                if log2_col.lower() == col.lower():
+                    fold_change_candidates.append((col, True))  # (column, is_log2)
+                    break
 
-        Args:
-            column: Column name
+        if not fold_change_candidates:
+            raise CSVValidationError(
+                f"No fold change column found. Expected one of: "
+                f"{', '.join(FOLD_CHANGE_COLUMNS + LOG2_FOLD_CHANGE_COLUMNS)}"
+            )
 
-        Returns:
-            Description of expected column content
-        """
-        descriptions = {
-            "transcript_id": "Transcript identifier (e.g., ENST00000123456)",
-            "cancer_fold": "Fold-change value for cancer expression (numeric)",
-        }
-        return descriptions.get(column, "Unknown column")
+        self.fold_change_column, self.is_log2 = fold_change_candidates[0]
+        fc_type = "log2 fold change" if self.is_log2 else "linear fold change"
+        console.print(
+            f"  ✓ Fold change column: [cyan]{self.fold_change_column}[/cyan] ({fc_type})"
+        )
 
-    def _validate_mapped_columns(self) -> None:
-        """Validate the data in mapped columns with DESeq2 format support.
-
-        Raises:
-            CSVValidationError: If data validation fails
-        """
-        transcript_col = self.column_mapping["transcript_id"]
-        fold_col = self.column_mapping["cancer_fold"]
+        # Validate data types
+        if not pd.api.types.is_numeric_dtype(self.csv_data[self.fold_change_column]):
+            raise CSVValidationError(
+                f"Fold change column '{self.fold_change_column}' must be numeric"
+            )
 
         # Check for missing values
-        transcript_nulls = self.csv_data[transcript_col].isnull().sum()
-        fold_nulls = self.csv_data[fold_col].isnull().sum()
+        missing_transcripts = self.csv_data[self.transcript_id_column].isna().sum()
+        missing_fc = self.csv_data[self.fold_change_column].isna().sum()
 
-        if transcript_nulls > 0:
-            self.logger.warning(f"Found {transcript_nulls} null transcript IDs")
+        if missing_transcripts > 0:
+            console.print(
+                f"  ⚠ Warning: {missing_transcripts} rows with missing transcript_id"
+            )
 
-        if fold_nulls > 0:
-            self.logger.warning(f"Found {fold_nulls} null fold-change values")
+        if missing_fc > 0:
+            console.print(f"  ⚠ Warning: {missing_fc} rows with missing fold_change")
 
-        # Validate fold-change values are numeric
+        # Remove rows with missing values
+        before_count = len(self.csv_data)
+        self.csv_data = self.csv_data.dropna(
+            subset=[self.transcript_id_column, self.fold_change_column]
+        )
+        after_count = len(self.csv_data)
+
+        if before_count != after_count:
+            console.print(
+                f"  Removed {before_count - after_count} rows with missing values"
+            )
+
+        # Show fold change distribution
+        fc_values = self.csv_data[self.fold_change_column]
+        table = Table(title="Fold Change Distribution")
+        table.add_column("Statistic", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Count", f"{len(fc_values):,}")
+        table.add_row("Mean", f"{fc_values.mean():.3f}")
+        table.add_row("Median", f"{fc_values.median():.3f}")
+        table.add_row("Min", f"{fc_values.min():.3f}")
+        table.add_row("Max", f"{fc_values.max():.3f}")
+
+        console.print(table)
+
+        console.print("[bold green]✓ CSV validation passed[/bold green]\n")
+
+    def create_schema(self) -> None:
+        """Create patient schema in database."""
+        console.print(f"\n[bold]Creating patient schema:[/bold] {self.schema_name}")
+
+        if self.dry_run:
+            console.print("[yellow]  (Dry run - skipping schema creation)[/yellow]")
+            return
+
         try:
-            fold_values = pd.to_numeric(self.csv_data[fold_col], errors="coerce")
-            invalid_folds = fold_values.isnull().sum() - fold_nulls
-
-            if invalid_folds > 0:
-                raise CSVValidationError(
-                    f"Found {invalid_folds} non-numeric fold-change values"
-                )
-
-        except Exception as e:
-            raise CSVValidationError(f"Failed to validate fold-change values: {e}")
-
-        # Process data based on format
-        valid_data = self.csv_data.dropna(subset=[transcript_col, fold_col])
-
-        if self.is_deseq2_format:
-            self._process_deseq2_data(valid_data, transcript_col, fold_col)
-        else:
-            self._process_standard_data(valid_data, transcript_col, fold_col)
-
-        self.console.print(
-            f"[green]✓ Processed {self.stats['valid_transcripts']} transcript entries[/green]"
-        )
-        if self.stats["invalid_transcripts"] > 0:
-            self.console.print(
-                f"[yellow]⚠ Skipped {self.stats['invalid_transcripts']} invalid entries[/yellow]"
-            )
-
-    def _process_standard_data(
-        self, valid_data: pd.DataFrame, transcript_col: str, fold_col: str
-        ) -> None:
-        """Process standard format data (transcript_id, fold_change) - validation only.
-
-        This method performs FORMAT validation only, without database access.
-        Database matching happens later in update_fold_changes() for flexible ID matching.
-
-        Args:
-            valid_data: DataFrame with valid data rows
-            transcript_col: Column name containing transcript IDs
-            fold_col: Column name containing fold-change values
-        """
-        self.console.print(
-            "[blue]🧬 Processing standard transcript data...[/blue]"
-        )
-
-        # Store all transcript updates without database validation
-        # Database matching will happen during the update phase
-        for idx, (transcript_id, fold_change) in zip(
-            valid_data.index, zip(valid_data[transcript_col], valid_data[fold_col])
-        ):
-            transcript_id = str(transcript_id).strip()
-            self.transcript_updates[transcript_id] = float(pd.to_numeric(fold_change))
-
-        # Update statistics
-        self.stats["valid_transcripts"] = len(self.transcript_updates)
-        csv_data_length = (
-            len(self.csv_data) if self.csv_data is not None else len(valid_data)
-        )
-        self.stats["invalid_transcripts"] = csv_data_length - len(valid_data)
-
-        self.console.print(f"[blue]📊 Standard Processing Results:[/blue]")
-        self.console.print(f"  Transcript IDs processed: {len(valid_data)}")
-        self.console.print(f"  Valid entries: {len(self.transcript_updates)}")
-        self.console.print(
-            f"[yellow]  Note: Flexible ID matching will occur during database update phase[/yellow]"
-        )
-
-    def _process_deseq2_data(
-        self, valid_data: pd.DataFrame, symbol_col: str, log2_col: str
-    ) -> None:
-        """Process DESeq2 format data (SYMBOL, log2FoldChange).
-
-        Args:
-            valid_data: DataFrame with valid data rows
-            symbol_col: Column name containing gene symbols
-            log2_col: Column name containing log2 fold-change values
-        """
-        self.console.print("[blue]🧬 Processing DESeq2 data...[/blue]")
-
-        # Load gene symbol to transcript ID mapping
-        self._load_gene_symbol_mapping()
-
-        # Convert log2 fold changes to linear fold changes
-        log2_values = pd.to_numeric(valid_data[log2_col])
-        linear_fold_changes = 2**log2_values  # Convert log2 to linear
-
-        # Map gene symbols to transcript IDs
-        transcript_updates = {}
-        unmapped_symbols = []
-
-        for idx, (symbol, fold_change) in zip(
-            valid_data.index, zip(valid_data[symbol_col], linear_fold_changes)
-        ):
-            symbol = str(symbol).strip()
-
-            if symbol in self.gene_symbol_mapping:
-                transcript_id = self.gene_symbol_mapping[symbol]
-                transcript_updates[transcript_id] = float(fold_change)
-            else:
-                unmapped_symbols.append(symbol)
-
-        self.transcript_updates = transcript_updates
-
-        # Update statistics
-        self.stats["valid_transcripts"] = len(self.transcript_updates)
-        # Handle case where csv_data might be None in tests
-        csv_data_length = (
-            len(self.csv_data) if self.csv_data is not None else len(valid_data)
-        )
-        self.stats["invalid_transcripts"] = (
-            csv_data_length - len(valid_data) + len(unmapped_symbols)
-        )
-        self.stats["unmapped_symbols"] = len(unmapped_symbols)
-        self.stats["mapping_success_rate"] = (
-            len(self.transcript_updates) / len(valid_data)
-        ) * 100
-
-        self.console.print(f"[blue]📊 DESeq2 Processing Results:[/blue]")
-        self.console.print(f"  Symbols processed: {len(valid_data)}")
-        self.console.print(f"  Successfully mapped: {len(self.transcript_updates)}")
-        self.console.print(f"  Unmapped symbols: {len(unmapped_symbols)}")
-        self.console.print(
-            f"  Mapping success rate: {self.stats['mapping_success_rate']:.1f}%"
-        )
-
-        if unmapped_symbols and len(unmapped_symbols) <= 10:
-            self.console.print(
-                f"[yellow]Unmapped symbols: {', '.join(unmapped_symbols[:10])}[/yellow]"
-            )
-        elif len(unmapped_symbols) > 10:
-            self.console.print(
-                f"[yellow]First 10 unmapped symbols: {', '.join(unmapped_symbols[:10])}... (+{len(unmapped_symbols)-10} more)[/yellow]"
-            )
-
-    def _normalize_transcript_id(self, transcript_id: str) -> str:
-        """Normalize transcript ID by removing version suffix if present.
-
-        Args:
-            transcript_id: Original transcript ID (e.g., 'ENST00000456328.1')
-
-        Returns:
-            Normalized transcript ID (e.g., 'ENST00000456328')
-        """
-        if not transcript_id:
-            return transcript_id
-
-        # Remove version suffix (everything after the last dot)
-        if "." in transcript_id and transcript_id.split(".")[-1].isdigit():
-            return transcript_id.rsplit(".", 1)[0]
-
-        return transcript_id
-
-    def _match_transcript_id_flexibly(
-        self, input_id: str, database_ids: Set[str]
-    ) -> Optional[str]:
-        """Flexibly match transcript ID against database, handling versioned/unversioned formats.
-
-        Args:
-            input_id: Transcript ID from CSV (may be versioned or unversioned)
-            database_ids: Set of transcript IDs from database
-
-        Returns:
-            Matching database transcript ID or None if no match found
-        """
-        if not input_id:
-            return None
-
-        # First try exact match
-        if input_id in database_ids:
-            return input_id
-
-        # Try normalized version (remove version suffix)
-        normalized_input = self._normalize_transcript_id(input_id)
-        if normalized_input in database_ids:
-            return normalized_input
-
-        # Try adding common version suffixes if input has none
-        if "." not in input_id:
-            for version in ["1", "2", "3", "4", "5"]:
-                versioned_id = f"{input_id}.{version}"
-                if versioned_id in database_ids:
-                    return versioned_id
-
-        # Try matching any database ID that starts with normalized input
-        for db_id in database_ids:
-            if self._normalize_transcript_id(db_id) == normalized_input:
-                return db_id
-
-        return None
-
-    def _get_database_transcript_ids(self) -> Set[str]:
-        """Get set of all transcript IDs from database for flexible matching.
-
-        Returns:
-            Set of transcript IDs from database
-        """
-        try:
-            # Connect to source database
-            db_manager = get_db_manager(self.source_db_config)
-
-            if not db_manager.ensure_connection():
-                raise CSVValidationError("Failed to connect to source database")
-
-            # Query for all transcript IDs - try normalized schema first
-            cursor = db_manager.cursor
-
-            try:
-                cursor.execute(
-                    "SELECT DISTINCT transcript_id FROM transcripts WHERE transcript_id IS NOT NULL"
-                )
-                transcript_ids = {row[0] for row in cursor.fetchall()}
-
-                if transcript_ids:  # If we got results from normalized schema
-                    self.logger.debug(f"Retrieved {len(transcript_ids)} transcript IDs from normalized schema")
-                    return transcript_ids
-
-            except Exception as e:
-                self.logger.debug(f"Normalized schema query failed, trying legacy table: {e}")
-
-            # Fallback to legacy table
-            cursor.execute(
-                "SELECT DISTINCT transcript_id FROM cancer_transcript_base WHERE transcript_id IS NOT NULL"
-            )
-
-            transcript_ids = {row[0] for row in cursor.fetchall()}
-            self.logger.debug(f"Retrieved {len(transcript_ids)} transcript IDs from legacy table")
-            return transcript_ids
-
-        except Exception as e:
-            self.console.print(
-                f"[yellow]Warning: Could not load transcript IDs for flexible matching: {e}[/yellow]"
-            )
-            return set()
-        finally:
-            if "db_manager" in locals():
-                db_manager.close()
-
-    def _apply_flexible_id_matching(self, target_db) -> None:
-        """Apply flexible transcript ID matching against target database.
-
-        This method matches transcript IDs from the CSV against what's actually
-        in the target database, handling version suffixes and variants.
-        Updates self.transcript_updates to only include matched IDs.
-
-        Args:
-            target_db: DatabaseManager for target patient database
-        """
-        self.console.print(
-            "[blue]🔍 Applying flexible ID matching against target database...[/blue]"
-        )
-
-        # Get transcript IDs from target database
-        try:
-            cursor = target_db.cursor
-
-            # Try normalized schema first
-            try:
-                cursor.execute(
-                    "SELECT DISTINCT transcript_id FROM transcripts WHERE transcript_id IS NOT NULL"
-                )
-                database_transcript_ids = {row[0] for row in cursor.fetchall()}
-
-                if not database_transcript_ids:  # If empty, try legacy
-                    raise Exception("No IDs in normalized schema")
-
-            except Exception:
-                # Fallback to legacy table
-                cursor.execute(
-                    "SELECT DISTINCT transcript_id FROM cancer_transcript_base WHERE transcript_id IS NOT NULL"
-                )
-                database_transcript_ids = {row[0] for row in cursor.fetchall()}
-
-            # Match each CSV ID against database IDs
-            original_updates = self.transcript_updates.copy()
-            matched_updates = {}
-            unmatched_ids = []
-
-            for csv_id, fold_change in original_updates.items():
-                matched_id = self._match_transcript_id_flexibly(csv_id, database_transcript_ids)
-
-                if matched_id:
-                    matched_updates[matched_id] = fold_change
+            # Check if schema exists
+            if schema_exists(self.patient_id, self.db_manager):
+                if self.overwrite:
+                    console.print(f"  [yellow]Schema exists - will overwrite[/yellow]")
                 else:
-                    unmatched_ids.append(csv_id)
-
-            # Update with only matched IDs
-            self.transcript_updates = matched_updates
-
-            # Update statistics
-            total_csv_ids = len(original_updates)
-            matched_count = len(matched_updates)
-            self.stats["unmatched_ids"] = len(unmatched_ids)
-            self.stats["matching_success_rate"] = (matched_count / total_csv_ids * 100) if total_csv_ids > 0 else 0
-
-            # Report results
-            self.console.print(f"[blue]📊 Flexible Matching Results:[/blue]")
-            self.console.print(f"  CSV transcript IDs: {total_csv_ids}")
-            self.console.print(f"  Successfully matched: {matched_count}")
-            self.console.print(f"  Unmatched IDs: {len(unmatched_ids)}")
-            self.console.print(
-                f"  Matching success rate: {self.stats['matching_success_rate']:.1f}%"
-            )
-
-            if unmatched_ids and len(unmatched_ids) <= 10:
-                self.console.print(
-                    f"[yellow]Unmatched IDs: {', '.join(unmatched_ids)}[/yellow]"
-                )
-            elif len(unmatched_ids) > 10:
-                self.console.print(
-                    f"[yellow]First 10 unmatched IDs: {', '.join(unmatched_ids[:10])}... (+{len(unmatched_ids)-10} more)[/yellow]"
-                )
-
-        except Exception as e:
-            self.logger.warning(f"Flexible ID matching failed: {e}")
-            self.console.print(
-                f"[yellow]Warning: Could not perform flexible ID matching: {e}[/yellow]"
-            )
-            # Continue with original IDs if matching fails
-
-    def _load_gene_symbol_mapping(self) -> None:
-        """Load gene symbol to transcript ID mapping from database.
-
-        Raises:
-            CSVValidationError: If mapping cannot be loaded
-        """
-        try:
-            self.console.print(
-                "[blue]Loading gene symbol mappings from database...[/blue]"
-            )
-
-            # Connect to source database
-            db_manager = get_db_manager(self.source_db_config)
-
-            if not db_manager.ensure_connection():
-                raise CSVValidationError("Failed to connect to source database")
-
-            # Query for gene symbol mappings
-            cursor = db_manager.cursor
-            cursor.execute(
-                """
-                SELECT DISTINCT gene_symbol, transcript_id 
-                FROM cancer_transcript_base 
-                WHERE gene_symbol IS NOT NULL 
-                AND gene_symbol != ''
-                AND transcript_id IS NOT NULL
-            """
-            )
-
-            # Build mapping dictionary
-            for gene_symbol, transcript_id in cursor.fetchall():
-                if gene_symbol not in self.gene_symbol_mapping:
-                    self.gene_symbol_mapping[gene_symbol] = transcript_id
-
-            self.console.print(
-                f"[green]✓ Loaded {len(self.gene_symbol_mapping)} gene symbol mappings[/green]"
-            )
-
-        except Exception as e:
-            raise CSVValidationError(f"Failed to load gene symbol mappings: {e}")
-        finally:
-            if "db_manager" in locals():
-                db_manager.close()
-
-    def create_patient_database(self) -> None:
-        """Create patient-specific database copy.
-
-        Raises:
-            DatabaseCopyError: If database creation fails
-        """
-        try:
-            self.console.print(
-                f"[blue]Creating patient database: {self.target_db_name}[/blue]"
-            )
-
-            # Get source database manager
-            source_db = get_db_manager(self.source_db_config)
-
-            # Create target database
-            self._create_target_database(source_db)
-
-            # Copy schema and data
-            self._copy_database_content(source_db)
-
-            self.console.print(
-                f"[green]✓ Patient database '{self.target_db_name}' created successfully[/green]"
-            )
-
-        except Exception as e:
-            self.logger.error(f"Database copy failed: {e}")
-            raise DatabaseCopyError(f"Failed to create patient database: {e}")
-
-    def _create_target_database(self, source_db: DatabaseManager) -> None:
-        """Create the target database.
-
-        Args:
-            source_db: Source database manager
-        """
-        # Connect to postgres database to create new database
-        postgres_config = self.source_db_config.copy()
-        postgres_config["dbname"] = "postgres"
-
-        try:
-            conn = psycopg2.connect(**postgres_config)
-            conn.autocommit = True
-
-            with conn.cursor() as cursor:
-                # Check if database already exists
-                cursor.execute(
-                    "SELECT 1 FROM pg_database WHERE datname = %s",
-                    (self.target_db_name,),
-                )
-
-                if cursor.fetchone():
-                    if not Confirm.ask(
-                        f"Database '{self.target_db_name}' already exists. Overwrite?"
-                    ):
-                        raise DatabaseCopyError("Database creation cancelled by user")
-
-                    # Drop existing database
-                    cursor.execute(f'DROP DATABASE "{self.target_db_name}"')
-                    self.logger.info(
-                        f"Dropped existing database: {self.target_db_name}"
+                    raise SchemaExistsError(
+                        f"Schema {self.schema_name} already exists. "
+                        f"Use --overwrite to replace it."
                     )
 
-                # Create new database
-                cursor.execute(f'CREATE DATABASE "{self.target_db_name}"')
-                self.logger.info(f"Created database: {self.target_db_name}")
+            # Create schema
+            metadata = {
+                "source_file": str(self.csv_file.name),
+                "file_format": "csv",
+            }
 
-        finally:
-            conn.close()
+            if self.cancer_type:
+                metadata["cancer_type"] = self.cancer_type
+            if self.cancer_subtype:
+                metadata["cancer_subtype"] = self.cancer_subtype
 
-    def _copy_database_content(self, source_db: DatabaseManager) -> None:
-        """Copy schema and data to target database.
+            result = create_patient_schema(
+                patient_id=self.patient_id,
+                db_manager=self.db_manager,
+                metadata=metadata,
+                overwrite=self.overwrite,
+            )
+
+            console.print(f"[bold green]✓ Schema created successfully[/bold green]")
+
+        except Exception as e:
+            console.print(f"[bold red]✗ Schema creation failed:[/bold red] {e}")
+            raise
+
+    def match_transcripts(self) -> pd.DataFrame:
+        """Match CSV transcripts to database transcripts.
+
+        Returns:
+            DataFrame with matched transcripts and their linear fold changes
+        """
+        console.print(f"\n[bold]Matching transcripts to database...[/bold]")
+
+        # Get all transcript IDs from CSV
+        csv_transcript_ids = self.csv_data[self.transcript_id_column].tolist()
+
+        # Convert log2 fold change to linear if needed
+        if self.is_log2:
+            console.print("  Converting log2 fold change to linear...")
+            fold_changes = (
+                self.csv_data[self.fold_change_column]
+                .apply(lambda x: 2 ** x if pd.notna(x) else None)
+                .tolist()
+            )
+        else:
+            fold_changes = self.csv_data[self.fold_change_column].tolist()
+
+        # Query database for matching transcripts
+        if not self.db_manager.cursor:
+            self.db_manager.connect()
+        cursor = self.db_manager.cursor
+
+        # Build parameterized query
+        placeholders = ",".join(["%s"] * len(csv_transcript_ids))
+        query = f"""
+            SELECT transcript_id
+            FROM public.transcripts
+            WHERE transcript_id IN ({placeholders})
+        """
+
+        cursor.execute(query, csv_transcript_ids)
+        db_transcript_ids = {row[0] for row in cursor.fetchall()}
+
+        # Match transcripts
+        matched_data = []
+        for transcript_id, fold_change in zip(csv_transcript_ids, fold_changes):
+            if transcript_id in db_transcript_ids:
+                matched_data.append(
+                    {"transcript_id": transcript_id, "fold_change": fold_change}
+                )
+
+        matched_df = pd.DataFrame(matched_data)
+
+        # Update statistics
+        self.stats["total_rows"] = len(csv_transcript_ids)
+        self.stats["transcripts_matched"] = len(matched_df)
+        self.stats["transcripts_unmatched"] = len(csv_transcript_ids) - len(matched_df)
+        self.stats["matching_success_rate"] = (
+            len(matched_df) / len(csv_transcript_ids)
+            if len(csv_transcript_ids) > 0
+            else 0.0
+        )
+
+        # Show matching results
+        table = Table(title="Transcript Matching Results")
+        table.add_column("Category", style="cyan")
+        table.add_column("Count", style="green")
+        table.add_column("Percentage", style="yellow")
+
+        total = self.stats["total_rows"]
+        matched = self.stats["transcripts_matched"]
+        unmatched = self.stats["transcripts_unmatched"]
+
+        table.add_row("Total transcripts in CSV", f"{total:,}", "100%")
+        table.add_row(
+            "Matched to database", f"{matched:,}", f"{(matched/total*100):.1f}%"
+        )
+        table.add_row(
+            "Not found in database", f"{unmatched:,}", f"{(unmatched/total*100):.1f}%"
+        )
+
+        console.print(table)
+
+        if unmatched > 0:
+            console.print(
+                f"\n[yellow]⚠ {unmatched:,} transcripts not found in database "
+                f"(may be outdated IDs or non-protein-coding)[/yellow]"
+            )
+
+        return matched_df
+
+    def import_expression_data(self, matched_df: pd.DataFrame) -> None:
+        """Import expression data into patient schema.
+
+        Only stores fold_change != 1.0 (sparse storage).
 
         Args:
-            source_db: Source database manager
+            matched_df: DataFrame with matched transcript_id and fold_change
         """
-        # Use pg_dump and pg_restore for efficient copying
-        source_config = self.source_db_config
+        console.print(f"\n[bold]Importing expression data...[/bold]")
 
-        dump_file = f"/tmp/{self.target_db_name}_dump.sql"
-
-        try:
-            # Create dump
-            dump_cmd = (
-                f"pg_dump -h {source_config['host']} -p {source_config['port']} "
-                f"-U {source_config['user']} -d {source_config['dbname']} "
-                f"-f {dump_file} --no-owner --no-privileges"
+        if self.dry_run:
+            console.print("[yellow]  (Dry run - skipping import)[/yellow]")
+            # Still calculate statistics for dry run
+            non_default = matched_df[matched_df["fold_change"] != 1.0]
+            self.stats["transcripts_stored"] = len(non_default)
+            self.stats["transcripts_baseline"] = len(matched_df) - len(non_default)
+            self.stats["storage_efficiency"] = (
+                self.stats["transcripts_baseline"] / len(matched_df) * 100
+                if len(matched_df) > 0
+                else 0.0
             )
+            return
 
-            self.logger.info("Creating database dump...")
-            os.system(f"PGPASSWORD='{source_config['password']}' {dump_cmd}")
+        # Filter for sparse storage (only != 1.0)
+        non_default_df = matched_df[matched_df["fold_change"] != 1.0].copy()
 
-            # Restore to target database
-            restore_cmd = (
-                f"psql -h {source_config['host']} -p {source_config['port']} "
-                f"-U {source_config['user']} -d {self.target_db_name} "
-                f"-f {dump_file}"
+        self.stats["transcripts_stored"] = len(non_default_df)
+        self.stats["transcripts_baseline"] = len(matched_df) - len(non_default_df)
+        self.stats["storage_efficiency"] = (
+            self.stats["transcripts_baseline"] / len(matched_df) * 100
+            if len(matched_df) > 0
+            else 0.0
+        )
+
+        console.print(
+            f"  Transcripts to store: {self.stats['transcripts_stored']:,} "
+            f"(excluding {self.stats['transcripts_baseline']:,} baseline values)"
+        )
+        console.print(
+            f"  Storage efficiency: {self.stats['storage_efficiency']:.1f}% "
+            f"reduction vs. storing all values"
+        )
+
+        if len(non_default_df) == 0:
+            console.print(
+                "[yellow]  No non-baseline expression values to store[/yellow]"
             )
+            return
 
-            self.logger.info("Restoring to target database...")
-            os.system(f"PGPASSWORD='{source_config['password']}' {restore_cmd}")
+        # Batch insert expression data
+        if not self.db_manager.cursor:
+            self.db_manager.connect()
+        cursor = self.db_manager.cursor
 
-        finally:
-            # Cleanup dump file
-            if os.path.exists(dump_file):
-                os.remove(dump_file)
-
-    def update_fold_changes(self) -> None:
-        """Update fold-change values in the patient database.
-
-        Raises:
-            FoldChangeUpdateError: If updates fail
+        insert_query = f"""
+            INSERT INTO {self.schema_name}.expression_data
+                (transcript_id, expression_fold_change)
+            VALUES (%s, %s)
+            ON CONFLICT (transcript_id) DO UPDATE SET
+                expression_fold_change = EXCLUDED.expression_fold_change,
+                updated_at = CURRENT_TIMESTAMP
         """
+
+        batch_size = 5000
+        total_batches = (len(non_default_df) + batch_size - 1) // batch_size
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                "Inserting expression data...", total=len(non_default_df)
+            )
+
+            for i in range(0, len(non_default_df), batch_size):
+                batch = non_default_df.iloc[i : i + batch_size]
+                values = [
+                    (row["transcript_id"], float(row["fold_change"]))
+                    for _, row in batch.iterrows()
+                ]
+
+                cursor.executemany(insert_query, values)
+                progress.update(task, advance=len(batch))
+
+        console.print(
+            f"[bold green]✓ Imported {len(non_default_df):,} expression values[/bold green]"
+        )
+
+    def update_metadata(self) -> None:
+        """Update patient metadata with import statistics."""
+        if self.dry_run:
+            console.print("\n[yellow](Dry run - skipping metadata update)[/yellow]")
+            return
+
+        console.print(f"\n[bold]Updating metadata...[/bold]")
+
+        metadata = {
+            "total_transcripts_uploaded": self.stats["total_rows"],
+            "transcripts_matched": self.stats["transcripts_matched"],
+            "transcripts_unmatched": self.stats["transcripts_unmatched"],
+            "matching_success_rate": self.stats["matching_success_rate"],
+        }
+
+        if self.cancer_type:
+            metadata["cancer_type"] = self.cancer_type
+        if self.cancer_subtype:
+            metadata["cancer_subtype"] = self.cancer_subtype
+
+        insert_metadata(
+            patient_id=self.patient_id, metadata=metadata, db_manager=self.db_manager
+        )
+
+        console.print("[bold green]✓ Metadata updated[/bold green]")
+
+    def validate_import(self) -> None:
+        """Validate imported data."""
+        console.print(f"\n[bold]Validating imported data...[/bold]")
+
+        if self.dry_run:
+            console.print("[yellow]  (Dry run - skipping validation)[/yellow]")
+            return
+
+        # Run patient schema validation
+        validation = validate_patient_schema(
+            patient_id=self.patient_id, db_manager=self.db_manager
+        )
+
+        # Display validation results
+        table = Table(title="Validation Results")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status", style="green")
+
+        for check_name, result in validation["checks"].items():
+            status = "✓ PASS" if "PASS" in str(result) else f"✗ {result}"
+            table.add_row(check_name, status)
+
+        console.print(table)
+
+        if validation["valid"]:
+            console.print("[bold green]✓ Validation passed[/bold green]")
+        else:
+            console.print("[bold red]✗ Validation failed[/bold red]")
+            raise RuntimeError(f"Validation failed: {validation}")
+
+        # Get patient statistics
+        stats = get_patient_statistics(
+            patient_id=self.patient_id, db_manager=self.db_manager
+        )
+
+        # Display statistics
+        stats_table = Table(title="Patient Expression Statistics")
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="green")
+
+        stats_table.add_row(
+            "Total transcripts stored", f"{stats['total_transcripts']:,}"
+        )
+        stats_table.add_row("Overexpressed (>2.0)", f"{stats['overexpressed_count']:,}")
+        stats_table.add_row(
+            "Underexpressed (<0.5)", f"{stats['underexpressed_count']:,}"
+        )
+        stats_table.add_row("Min fold change", f"{stats['min_fold_change']:.3f}")
+        stats_table.add_row("Max fold change", f"{stats['max_fold_change']:.3f}")
+        stats_table.add_row("Mean fold change", f"{stats['avg_fold_change']:.3f}")
+        stats_table.add_row("Median fold change", f"{stats['median_fold_change']:.3f}")
+
+        console.print(stats_table)
+
+    def run(self) -> None:
+        """Run complete patient data import workflow."""
         try:
-            self.console.print(
-                f"[blue]Updating fold-change values for {len(self.transcript_updates)} transcripts[/blue]"
+            console.print(
+                "\n[bold blue]MEDIABASE v0.6.0 - Patient Data Import[/bold blue]"
+            )
+            console.print(f"Patient ID: [cyan]{self.patient_id}[/cyan]")
+            console.print(f"Schema: [cyan]{self.schema_name}[/cyan]")
+            console.print(f"CSV file: [cyan]{self.csv_file}[/cyan]")
+
+            if self.dry_run:
+                console.print(
+                    "\n[yellow]DRY RUN MODE - No changes will be made[/yellow]"
+                )
+
+            # Step 1: Validate CSV
+            self.validate_csv()
+
+            # Step 2: Create schema
+            self.create_schema()
+
+            # Step 3: Match transcripts
+            matched_df = self.match_transcripts()
+
+            if len(matched_df) == 0:
+                console.print(
+                    "\n[bold red]✗ No transcripts matched - aborting[/bold red]"
+                )
+                return
+
+            # Step 4: Import expression data
+            self.import_expression_data(matched_df)
+
+            # Step 5: Update metadata
+            self.update_metadata()
+
+            # Step 6: Validate
+            self.validate_import()
+
+            # Success summary
+            console.print(
+                "\n[bold green]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold green]"
+            )
+            console.print(
+                "[bold green]✓ Patient data import completed successfully![/bold green]"
+            )
+            console.print(
+                "[bold green]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold green]"
             )
 
-            # Connect to target database
-            target_config = self.source_db_config.copy()
-            target_config["dbname"] = self.target_db_name
-            target_db = get_db_manager(target_config)
+            # Final statistics
+            final_table = Table(title="Import Summary")
+            final_table.add_column("Metric", style="cyan")
+            final_table.add_column("Value", style="green")
 
-            # Apply flexible ID matching for standard format (not DESeq2)
-            # This matches transcript IDs from CSV against what's actually in the database
-            if not self.is_deseq2_format:
-                self._apply_flexible_id_matching(target_db)
-
-            # Process updates in batches
-            transcript_ids = list(self.transcript_updates.keys())
-
-            # Create progress bar for batch updates
-            progress_bar = get_progress_bar(
-                total=len(transcript_ids),
-                desc="Updating fold-changes",
-                module_name="patient_copy",
+            final_table.add_row("Patient ID", self.patient_id)
+            final_table.add_row("Schema", self.schema_name)
+            final_table.add_row("CSV rows", f"{self.stats['total_rows']:,}")
+            final_table.add_row(
+                "Transcripts matched", f"{self.stats['transcripts_matched']:,}"
+            )
+            final_table.add_row(
+                "Match rate", f"{self.stats['matching_success_rate']:.1%}"
+            )
+            final_table.add_row(
+                "Transcripts stored", f"{self.stats['transcripts_stored']:,}"
+            )
+            final_table.add_row(
+                "Baseline (not stored)", f"{self.stats['transcripts_baseline']:,}"
+            )
+            final_table.add_row(
+                "Storage reduction", f"{self.stats['storage_efficiency']:.1f}%"
             )
 
-            try:
-                for i in range(0, len(transcript_ids), BATCH_SIZE):
-                    batch_ids = transcript_ids[i : i + BATCH_SIZE]
-                    batch_updates = [
-                        (self.transcript_updates[tid], tid) for tid in batch_ids
-                    ]
+            console.print(final_table)
 
-                    # Execute batch update
-                    try:
-                        # Ensure connection is active
-                        if not target_db.ensure_connection():
-                            raise Exception("Failed to connect to target database")
-
-                        # Execute batch update on normalized schema first
-                        try:
-                            execute_batch(
-                                target_db.cursor,
-                                """
-                                UPDATE transcripts
-                                SET expression_fold_change = %s
-                                WHERE transcript_id = %s
-                                """,
-                                batch_updates,
-                                page_size=BATCH_SIZE,
-                            )
-
-                            # Count successful updates from normalized schema
-                            target_db.cursor.execute(
-                                """
-                                SELECT COUNT(*) FROM transcripts
-                                WHERE transcript_id = ANY(%s)
-                                """,
-                                (batch_ids,),
-                            )
-                            found_count_normalized = target_db.cursor.fetchone()[0]
-
-                            # Also update legacy table for backwards compatibility (if it exists)
-                            try:
-                                target_db.cursor.execute("""
-                                    SELECT 1 FROM information_schema.tables
-                                    WHERE table_name = 'cancer_transcript_base'
-                                """)
-                                if target_db.cursor.fetchone():
-                                    execute_batch(
-                                        target_db.cursor,
-                                        """
-                                        UPDATE cancer_transcript_base
-                                        SET expression_fold_change = %s
-                                        WHERE transcript_id = %s
-                                        """,
-                                        batch_updates,
-                                        page_size=BATCH_SIZE,
-                                    )
-                            except Exception as legacy_error:
-                                self.logger.debug(f"Legacy table update failed (normal after migration): {legacy_error}")
-
-                            found_count = found_count_normalized
-
-                        except Exception as normalized_error:
-                            # Fallback to legacy table if normalized schema not available
-                            self.logger.warning(f"Normalized schema update failed, using legacy: {normalized_error}")
-                            execute_batch(
-                                target_db.cursor,
-                                """
-                                UPDATE cancer_transcript_base
-                                SET expression_fold_change = %s
-                                WHERE transcript_id = %s
-                                """,
-                                batch_updates,
-                                page_size=BATCH_SIZE,
-                            )
-
-                            # Count successful updates from legacy table
-                            target_db.cursor.execute(
-                                """
-                                SELECT COUNT(*) FROM cancer_transcript_base
-                                WHERE transcript_id = ANY(%s)
-                                """,
-                                (batch_ids,),
-                            )
-
-                        found_count = target_db.cursor.fetchone()[0]
-                        self.stats["updates_applied"] += found_count
-                        self.stats["transcripts_not_found"] += (
-                            len(batch_ids) - found_count
-                        )
-
-                        # Commit the batch
-                        target_db.conn.commit()
-
-                    except Exception as e:
-                        # Rollback on error
-                        if target_db.conn:
-                            target_db.conn.rollback()
-                        raise e
-
-                    # Update progress bar
-                    progress_bar.update(len(batch_ids))
-
-                # Complete the progress bar
-                progress_bar.complete()
-
-            finally:
-                # Ensure progress bar is closed
-                progress_bar.close()
-
-            self._log_update_statistics()
+            # Usage examples
+            console.print("\n[bold]Query examples:[/bold]")
+            console.print(
+                f"  SELECT * FROM {self.schema_name}.expression_data LIMIT 10;"
+            )
+            console.print(f"  SELECT * FROM {self.schema_name}.metadata;")
+            console.print(
+                f"\n  # Join with public schema:\n"
+                f"  SELECT g.gene_symbol, pe.expression_fold_change\n"
+                f"  FROM {self.schema_name}.expression_data pe\n"
+                f"  JOIN public.transcripts t ON pe.transcript_id = t.transcript_id\n"
+                f"  JOIN public.genes g ON t.gene_id = g.gene_id\n"
+                f"  WHERE pe.expression_fold_change > 2.0\n"
+                f"  LIMIT 20;"
+            )
 
         except Exception as e:
-            self.logger.error(f"Fold-change update failed: {e}")
-            raise FoldChangeUpdateError(f"Failed to update fold-change values: {e}")
-
-    def _log_update_statistics(self) -> None:
-        """Log update statistics."""
-        table = Table(title="Update Statistics")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Count", style="green")
-
-        table.add_row("CSV rows processed", str(self.stats["csv_rows_read"]))
-        table.add_row("Valid transcript entries", str(self.stats["valid_transcripts"]))
-        table.add_row("Invalid entries skipped", str(self.stats["invalid_transcripts"]))
-        table.add_row("Updates applied", str(self.stats["updates_applied"]))
-        table.add_row("Transcripts not found", str(self.stats["transcripts_not_found"]))
-
-        self.console.print(table)
-
-        if self.stats["transcripts_not_found"] > 0:
-            self.console.print(
-                f"[yellow]⚠ {self.stats['transcripts_not_found']} transcripts from CSV "
-                f"were not found in the database[/yellow]"
-            )
-
-    def validate_result(self) -> None:
-        """Validate the final result of the patient database creation."""
-        try:
-            target_config = self.source_db_config.copy()
-            target_config["dbname"] = self.target_db_name
-            target_db = get_db_manager(target_config)
-
-            # Ensure connection is active
-            if not target_db.ensure_connection():
-                raise Exception("Failed to connect to target database for validation")
-
-            # Check total transcript count
-            target_db.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base")
-            total_transcripts = target_db.cursor.fetchone()[0]
-
-            # Check transcripts with non-default fold-change
-            target_db.cursor.execute(
-                "SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change != 1.0"
-            )
-            modified_transcripts = target_db.cursor.fetchone()[0]
-
-            # Sample some updated values
-            target_db.cursor.execute(
-                """
-                    SELECT transcript_id, expression_fold_change 
-                    FROM cancer_transcript_base 
-                    WHERE expression_fold_change != 1.0 
-                    LIMIT 5
-                    """
-            )
-            samples = target_db.cursor.fetchall()
-
-            self.console.print(f"[green]✓ Validation complete[/green]")
-            self.console.print(f"Total transcripts: {total_transcripts:,}")
-            self.console.print(f"Modified transcripts: {modified_transcripts:,}")
-
-            if samples:
-                self.console.print("\nSample updated transcripts:")
-                for transcript_id, fold_change in samples:
-                    self.console.print(f"  {transcript_id}: {fold_change:.4f}")
-
-        except Exception as e:
-            self.logger.error(f"Validation failed: {e}")
-            raise PatientCopyError(f"Result validation failed: {e}")
+            console.print(f"\n[bold red]✗ Import failed:[/bold red] {e}")
+            logger.exception("Import failed")
+            raise
 
 
 def main():
-    """Main entry point for the patient copy script."""
+    """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Create patient-specific MEDIABASE copy with custom fold-change data",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s --patient-id PATIENT123 --csv-file patient_data.csv
-  %(prog)s --patient-id PATIENT123 --csv-file data.csv --source-db mediabase_dev
-  %(prog)s --patient-id PATIENT123 --csv-file data.csv --log-level DEBUG
-        """,
+        description="Import patient transcriptome data into MEDIABASE v0.6.0 shared core database"
     )
-
     parser.add_argument(
-        "--patient-id", required=True, help="Unique identifier for the patient"
+        "--patient-id",
+        type=str,
+        required=True,
+        help="Unique patient identifier (e.g., PATIENT123, DEMO_HER2)",
     )
-
     parser.add_argument(
         "--csv-file",
-        required=True,
         type=Path,
-        help="Path to CSV file with transcript fold-change data",
+        required=True,
+        help="Path to CSV file with expression data",
     )
-
     parser.add_argument(
-        "--source-db",
-        default="mediabase",
-        help="Source database name (default: mediabase)",
+        "--cancer-type",
+        type=str,
+        help='Cancer type (e.g., "Breast Cancer", "Lung Adenocarcinoma")',
     )
-
+    parser.add_argument(
+        "--cancer-subtype",
+        type=str,
+        help='Cancer molecular subtype (e.g., "HER2+", "TNBC", "EGFR-mutant")',
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Validate CSV without making changes"
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing patient schema if it exists",
+    )
     parser.add_argument(
         "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        type=str,
         default="INFO",
-        help="Logging level (default: INFO)",
-    )
-
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate CSV and show what would be done without making changes",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level",
     )
 
     args = parser.parse_args()
 
     # Setup logging
     setup_logging(log_level=args.log_level)
-    logger = logging.getLogger(__name__)
-    console = Console()
 
+    # Run import
     try:
-        # Validate inputs
-        if not args.csv_file.exists():
-            raise PatientCopyError(f"CSV file not found: {args.csv_file}")
-
-        # Get database configuration
-        db_config = {
-            "host": os.getenv("MB_POSTGRES_HOST", "localhost"),
-            "port": int(os.getenv("MB_POSTGRES_PORT", 5435)),
-            "dbname": args.source_db,
-            "user": os.getenv("MB_POSTGRES_USER", "mbase_user"),
-            "password": os.getenv("MB_POSTGRES_PASSWORD", "mbase_secret"),
-        }
-
-        # Display operation summary
-        console.print(f"[bold blue]MEDIABASE Patient Copy Operation[/bold blue]")
-        console.print(f"Patient ID: {args.patient_id}")
-        console.print(f"CSV File: {args.csv_file}")
-        console.print(f"Source Database: {args.source_db}")
-        console.print(f"Target Database: {PATIENT_DB_PREFIX}{args.patient_id}")
-        console.print(f"Dry Run: {args.dry_run}")
-
-        if not args.dry_run:
-            if not Confirm.ask("\nProceed with database creation?"):
-                console.print("[yellow]Operation cancelled by user[/yellow]")
-                sys.exit(0)
-
-        # Create patient database creator
-        creator = PatientDatabaseCreator(args.patient_id, args.csv_file, db_config)
-
-        # Execute pipeline
-        console.print("\n[bold]Step 1: Validating CSV file[/bold]")
-        creator.validate_csv_file()
-
-        if args.dry_run:
-            console.print("\n[yellow]Dry run complete. No changes made.[/yellow]")
-            sys.exit(0)
-
-        console.print("\n[bold]Step 2: Creating patient database[/bold]")
-        creator.create_patient_database()
-
-        console.print("\n[bold]Step 3: Updating fold-change values[/bold]")
-        creator.update_fold_changes()
-
-        console.print("\n[bold]Step 4: Validating results[/bold]")
-        creator.validate_result()
-
-        console.print(
-            f"\n[bold green]✓ Patient database '{PATIENT_DB_PREFIX}{args.patient_id}' created successfully![/bold green]"
+        importer = PatientDataImporter(
+            patient_id=args.patient_id,
+            csv_file=args.csv_file,
+            cancer_type=args.cancer_type,
+            cancer_subtype=args.cancer_subtype,
+            dry_run=args.dry_run,
+            overwrite=args.overwrite,
         )
+        importer.run()
+        return 0
 
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Operation interrupted by user[/yellow]")
-        sys.exit(1)
+    except InvalidPatientIDError as e:
+        console.print(f"\n[bold red]Invalid patient ID:[/bold red] {e}")
+        return 1
+    except SchemaExistsError as e:
+        console.print(f"\n[bold red]Schema exists:[/bold red] {e}")
+        console.print("Use --overwrite to replace existing schema")
+        return 1
+    except CSVValidationError as e:
+        console.print(f"\n[bold red]CSV validation failed:[/bold red] {e}")
+        return 1
     except Exception as e:
-        logger.error(f"Operation failed: {e}")
-        console.print(f"\n[bold red]✗ Error: {e}[/bold red]")
-        sys.exit(1)
+        console.print(f"\n[bold red]Import failed:[/bold red] {e}")
+        logger.exception("Unexpected error")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -27,8 +27,11 @@ from .base_processor import BaseProcessor, DownloadError, ProcessingError, Datab
 from ..utils.logging import get_progress_bar
 
 # Constants
-PUBTATOR_URL = 'https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTatorCentral/gene2pubtatorcentral.gz'
+PUBTATOR_URL = (
+    "https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTatorCentral/gene2pubtatorcentral.gz"
+)
 EXPECTED_COLUMNS = 5  # PMID, Type, GeneID, Mention, Method
+
 
 class PubTatorProcessor(BaseProcessor):
     """Process and integrate gene-publication associations from PubTator Central.
@@ -50,20 +53,20 @@ class PubTatorProcessor(BaseProcessor):
         super().__init__(config)
 
         # Define specific directory for PubTator data
-        self.pubtator_dir = self.cache_dir / 'pubtator'
+        self.pubtator_dir = self.cache_dir / "pubtator"
         self.pubtator_dir.mkdir(exist_ok=True)
 
         # Source URL
-        self.pubtator_url = config.get('pubtator_url', PUBTATOR_URL)
+        self.pubtator_url = config.get("pubtator_url", PUBTATOR_URL)
 
         # Processing statistics
         self.stats: Dict[str, int] = {
-            'total_lines': 0,
-            'valid_entries': 0,
-            'unique_gene_pmid_pairs': 0,
-            'mapped_genes': 0,
-            'unmapped_genes': 0,
-            'inserted_publications': 0
+            "total_lines": 0,
+            "valid_entries": 0,
+            "unique_gene_pmid_pairs": 0,
+            "mapped_genes": 0,
+            "unmapped_genes": 0,
+            "inserted_publications": 0,
         }
 
         # Console for rich output
@@ -79,13 +82,17 @@ class PubTatorProcessor(BaseProcessor):
             DownloadError: If download fails
         """
         try:
-            self.logger.info("Downloading PubTator Central gene2pubtatorcentral.gz (~5GB)")
-            self.logger.info("This may take several minutes depending on connection speed")
+            self.logger.info(
+                "Downloading PubTator Central gene2pubtatorcentral.gz (~5GB)"
+            )
+            self.logger.info(
+                "This may take several minutes depending on connection speed"
+            )
 
             # Use the BaseProcessor download method with caching
             pubtator_file = self.download_file(
                 url=self.pubtator_url,
-                file_path=self.pubtator_dir / "gene2pubtatorcentral.gz"
+                file_path=self.pubtator_dir / "gene2pubtatorcentral.gz",
             )
 
             self.logger.info(f"PubTator data available at: {pubtator_file}")
@@ -117,7 +124,9 @@ class PubTatorProcessor(BaseProcessor):
             """
 
             if not self.ensure_connection() or not self.db_manager.cursor:
-                raise DatabaseError("Cannot load gene ID mapping: no database connection")
+                raise DatabaseError(
+                    "Cannot load gene ID mapping: no database connection"
+                )
 
             self.db_manager.cursor.execute(query)
             results = self.db_manager.cursor.fetchall()
@@ -131,7 +140,9 @@ class PubTatorProcessor(BaseProcessor):
         except Exception as e:
             raise DatabaseError(f"Failed to load gene ID mapping: {e}")
 
-    def parse_pubtator_file(self, file_path: Path, gene_id_mapping: Dict[str, str]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    def parse_pubtator_file(
+        self, file_path: Path, gene_id_mapping: Dict[str, str]
+    ) -> Dict[Tuple[str, str], Dict[str, Any]]:
         """Parse PubTator Central file and aggregate gene-publication associations.
 
         File format (tab-separated):
@@ -161,14 +172,19 @@ class PubTatorProcessor(BaseProcessor):
             line_count = 0
 
             # Open gzipped file and parse with progress bar
-            with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+            with gzip.open(file_path, "rt", encoding="utf-8") as f:
                 # Count total lines for progress bar (approximate from file size)
                 # Rough estimate: ~50 bytes per line compressed
                 file_size = file_path.stat().st_size
                 estimated_lines = file_size // 50
 
                 # Wrap the file iterator with tqdm for progress tracking
-                for line in tqdm(f, desc="Parsing PubTator data", total=estimated_lines, unit=" lines"):
+                for line in tqdm(
+                    f,
+                    desc="Parsing PubTator data",
+                    total=estimated_lines,
+                    unit=" lines",
+                ):
                     line_count += 1
 
                     # Skip empty lines
@@ -176,17 +192,19 @@ class PubTatorProcessor(BaseProcessor):
                         continue
 
                     # Parse tab-separated fields
-                    fields = line.strip().split('\t')
+                    fields = line.strip().split("\t")
 
                     # Validate field count
                     if len(fields) != EXPECTED_COLUMNS:
-                        self.logger.debug(f"Skipping malformed line {line_count}: {len(fields)} fields")
+                        self.logger.debug(
+                            f"Skipping malformed line {line_count}: {len(fields)} fields"
+                        )
                         continue
 
                     pmid, entry_type, gene_id_str, mention, method = fields
 
                     # Only process Gene entries (skip Disease, Chemical, etc.)
-                    if entry_type != 'Gene':
+                    if entry_type != "Gene":
                         continue
 
                     # Map NCBI Gene ID to internal gene_id
@@ -194,22 +212,28 @@ class PubTatorProcessor(BaseProcessor):
 
                     if internal_gene_id is None:
                         unmapped_genes.add(gene_id_str)
-                        self.stats['unmapped_genes'] += 1
+                        self.stats["unmapped_genes"] += 1
                         continue
 
                     # Aggregate data for this gene-publication pair
                     key = (internal_gene_id, pmid)
                     gene_publications[key] += 1
 
-                    self.stats['valid_entries'] += 1
+                    self.stats["valid_entries"] += 1
 
-            self.stats['total_lines'] = line_count
-            self.stats['unique_gene_pmid_pairs'] = len(gene_publications)
-            self.stats['mapped_genes'] = len(set(gid for gid, _ in gene_publications.keys()))
+            self.stats["total_lines"] = line_count
+            self.stats["unique_gene_pmid_pairs"] = len(gene_publications)
+            self.stats["mapped_genes"] = len(
+                set(gid for gid, _ in gene_publications.keys())
+            )
 
             self.logger.info(f"Parsed {line_count:,} lines")
-            self.logger.info(f"Found {self.stats['unique_gene_pmid_pairs']:,} unique gene-publication pairs")
-            self.logger.info(f"Mapped to {self.stats['mapped_genes']:,} genes in database")
+            self.logger.info(
+                f"Found {self.stats['unique_gene_pmid_pairs']:,} unique gene-publication pairs"
+            )
+            self.logger.info(
+                f"Mapped to {self.stats['mapped_genes']:,} genes in database"
+            )
 
             if unmapped_genes:
                 sample_unmapped = list(unmapped_genes)[:10]
@@ -243,7 +267,9 @@ class PubTatorProcessor(BaseProcessor):
         # 3. Parse from full PubTator Central JSON files
         return None
 
-    def insert_gene_publications(self, gene_publications: Dict[Tuple[str, str], Dict[str, Any]]) -> None:
+    def insert_gene_publications(
+        self, gene_publications: Dict[Tuple[str, str], Dict[str, Any]]
+    ) -> None:
         """Insert gene-publication associations into database.
 
         Uses batch inserts for efficiency with ON CONFLICT handling to enable
@@ -263,12 +289,7 @@ class PubTatorProcessor(BaseProcessor):
             for (gene_id, pmid), mention_count in gene_publications.items():
                 first_seen_year = self._extract_publication_year(pmid)
 
-                batch_data.append((
-                    gene_id,
-                    pmid,
-                    mention_count,
-                    first_seen_year
-                ))
+                batch_data.append((gene_id, pmid, mention_count, first_seen_year))
 
             # Insert in batches
             insert_query = """
@@ -288,18 +309,22 @@ class PubTatorProcessor(BaseProcessor):
             # Use progress bar for batch inserts
             total_batches = (len(batch_data) + self.batch_size - 1) // self.batch_size
 
-            with tqdm(total=len(batch_data), desc="Inserting publications", unit=" records") as pbar:
+            with tqdm(
+                total=len(batch_data), desc="Inserting publications", unit=" records"
+            ) as pbar:
                 for i in range(0, len(batch_data), self.batch_size):
-                    batch = batch_data[i:i + self.batch_size]
+                    batch = batch_data[i : i + self.batch_size]
 
                     self.db_manager.cursor.executemany(insert_query, batch)
                     if self.db_manager.conn and not self.db_manager.conn.closed:
                         self.db_manager.conn.commit()
 
                     pbar.update(len(batch))
-                    self.stats['inserted_publications'] += len(batch)
+                    self.stats["inserted_publications"] += len(batch)
 
-            self.logger.info(f"Successfully inserted {self.stats['inserted_publications']:,} gene-publication associations")
+            self.logger.info(
+                f"Successfully inserted {self.stats['inserted_publications']:,} gene-publication associations"
+            )
 
         except Exception as e:
             self.db_manager.conn.rollback()
@@ -313,10 +338,14 @@ class PubTatorProcessor(BaseProcessor):
 
         table.add_row("Total lines processed", f"{self.stats['total_lines']:,}")
         table.add_row("Valid gene entries", f"{self.stats['valid_entries']:,}")
-        table.add_row("Unique gene-PMID pairs", f"{self.stats['unique_gene_pmid_pairs']:,}")
+        table.add_row(
+            "Unique gene-PMID pairs", f"{self.stats['unique_gene_pmid_pairs']:,}"
+        )
         table.add_row("Mapped genes", f"{self.stats['mapped_genes']:,}")
         table.add_row("Unmapped NCBI Gene IDs", f"{self.stats['unmapped_genes']:,}")
-        table.add_row("Inserted associations", f"{self.stats['inserted_publications']:,}")
+        table.add_row(
+            "Inserted associations", f"{self.stats['inserted_publications']:,}"
+        )
 
         self.console.print(table)
 
@@ -333,10 +362,10 @@ class PubTatorProcessor(BaseProcessor):
             self.logger.info("Verifying gene_publications table")
 
             verification_queries = {
-                'total_associations': "SELECT COUNT(*) FROM gene_publications",
-                'unique_genes': "SELECT COUNT(DISTINCT gene_id) FROM gene_publications",
-                'unique_pmids': "SELECT COUNT(DISTINCT pmid) FROM gene_publications",
-                'avg_mentions_per_gene': """
+                "total_associations": "SELECT COUNT(*) FROM gene_publications",
+                "unique_genes": "SELECT COUNT(DISTINCT gene_id) FROM gene_publications",
+                "unique_pmids": "SELECT COUNT(DISTINCT pmid) FROM gene_publications",
+                "avg_mentions_per_gene": """
                     SELECT ROUND(AVG(pub_count)::numeric, 1)
                     FROM (
                         SELECT gene_id, COUNT(*) as pub_count
@@ -344,7 +373,7 @@ class PubTatorProcessor(BaseProcessor):
                         GROUP BY gene_id
                     ) AS gene_counts
                 """,
-                'genes_with_high_literature': """
+                "genes_with_high_literature": """
                     SELECT COUNT(*)
                     FROM (
                         SELECT gene_id, COUNT(*) as pub_count
@@ -352,7 +381,7 @@ class PubTatorProcessor(BaseProcessor):
                         GROUP BY gene_id
                         HAVING COUNT(*) >= 100
                     ) AS high_lit_genes
-                """
+                """,
             }
 
             # Ensure we have a valid connection and cursor
@@ -386,9 +415,9 @@ class PubTatorProcessor(BaseProcessor):
             ETLError: If any step fails
         """
         try:
-            self.logger.info("="*80)
+            self.logger.info("=" * 80)
             self.logger.info("Starting PubTator Central ETL Process")
-            self.logger.info("="*80)
+            self.logger.info("=" * 80)
 
             # Step 1: Download data
             pubtator_file = self.download_pubtator_data()
@@ -413,9 +442,9 @@ class PubTatorProcessor(BaseProcessor):
             # Display summary
             self._display_summary_statistics()
 
-            self.logger.info("="*80)
+            self.logger.info("=" * 80)
             self.logger.info("PubTator Central ETL Process Completed Successfully")
-            self.logger.info("="*80)
+            self.logger.info("=" * 80)
 
         except Exception as e:
             self.logger.error(f"PubTator Central ETL failed: {e}")
@@ -435,17 +464,17 @@ def main() -> None:
 
     # Configuration
     config = {
-        'cache_dir': '/tmp/mediabase/cache',
-        'cache_ttl': 86400 * 7,  # 7 days for large files
-        'batch_size': 5000,  # Larger batches for bulk insert
-        'log_level': 'INFO',
-        'db': {
-            'host': 'localhost',
-            'port': 5435,
-            'dbname': 'mbase',
-            'user': 'mbase_user',
-            'password': 'mbase_secret'
-        }
+        "cache_dir": "/tmp/mediabase/cache",
+        "cache_ttl": 86400 * 7,  # 7 days for large files
+        "batch_size": 5000,  # Larger batches for bulk insert
+        "log_level": "INFO",
+        "db": {
+            "host": "localhost",
+            "port": 5435,
+            "dbname": "mbase",
+            "user": "mbase_user",
+            "password": "mbase_secret",
+        },
     }
 
     # Run processor
@@ -453,5 +482,5 @@ def main() -> None:
     processor.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,6 +1,10 @@
 """Migration package for MEDIABASE pipeline restructuring."""
 
-from .migration_controller import MigrationController, MigrationError, migration_transaction
+from .migration_controller import (
+    MigrationController,
+    MigrationError,
+    migration_transaction,
+)
 from .data_extractor import RobustDataExtractor
 from .data_validator import DataValidationFramework
 from .controlled_migration import ControlledMigration
@@ -12,17 +16,17 @@ from .post_migration_validator import PostMigrationValidator
 from .patient_compatibility import PatientDataMigrator
 
 __all__ = [
-    'MigrationController',
-    'MigrationError',
-    'migration_transaction',
-    'RobustDataExtractor',
-    'DataValidationFramework',
-    'ControlledMigration',
-    'PerformanceOptimizer',
-    'MigrationTestFramework',
-    'ConfigurationManager',
-    'MigrationConfig',
-    'MigrationMonitor',
-    'PostMigrationValidator',
-    'PatientDataMigrator'
+    "MigrationController",
+    "MigrationError",
+    "migration_transaction",
+    "RobustDataExtractor",
+    "DataValidationFramework",
+    "ControlledMigration",
+    "PerformanceOptimizer",
+    "MigrationTestFramework",
+    "ConfigurationManager",
+    "MigrationConfig",
+    "MigrationMonitor",
+    "PostMigrationValidator",
+    "PatientDataMigrator",
 ]

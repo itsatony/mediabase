@@ -41,7 +41,6 @@ DYNAMIC_QUERIES = {
         ORDER BY t.expression_fold_change DESC
         LIMIT 20;
     """,
-
     "drug_targets": """
         SELECT DISTINCT
             g.gene_symbol,
@@ -55,7 +54,6 @@ DYNAMIC_QUERIES = {
         WHERE t.expression_fold_change > 1.5
         ORDER BY t.expression_fold_change DESC, gdi.drug_name;
     """,
-    
     "pathway_analysis": """
         WITH pathway_analysis AS (
             SELECT
@@ -87,7 +85,6 @@ DYNAMIC_QUERIES = {
         FROM pathway_analysis
         ORDER BY ABS(avg_fold_change - 1.0) DESC, gene_count DESC;
     """,
-    
     "publication_search": """
         SELECT 
             gene_symbol,
@@ -105,7 +102,7 @@ DYNAMIC_QUERIES = {
             AND (pub_ref->>'year')::integer >= 2020
         ORDER BY expression_fold_change DESC, (pub_ref->>'year')::integer DESC
         LIMIT 15;
-    """
+    """,
 }
 
 SOTA_QUERIES = {
@@ -153,7 +150,6 @@ SOTA_QUERIES = {
             END,
             ABS(expression_fold_change - 1.0) DESC;
     """,
-    
     "therapeutic_prioritization": """
         WITH druggable_targets AS (
             SELECT 
@@ -211,7 +207,6 @@ SOTA_QUERIES = {
         ORDER BY priority_score DESC, expression_fold_change DESC
         LIMIT 15;
     """,
-    
     "pathway_strategy": """
         WITH pathway_enrichment AS (
             SELECT 
@@ -284,16 +279,17 @@ SOTA_QUERIES = {
         WHERE dysregulation_score > 1.0
         ORDER BY dysregulation_score DESC, druggable_targets DESC
         LIMIT 20;
-    """
+    """,
 }
+
 
 def validate_query_syntax(query_name: str, query: str) -> Dict[str, Any]:
     """Validate SQL query syntax and structure.
-    
+
     Args:
         query_name: Name of the query
         query: SQL query string
-        
+
     Returns:
         Validation result dictionary
     """
@@ -301,55 +297,75 @@ def validate_query_syntax(query_name: str, query: str) -> Dict[str, Any]:
         "query_name": query_name,
         "valid": True,
         "issues": [],
-        "warnings": []
+        "warnings": [],
     }
-    
+
     # Basic syntax checks
     query_clean = query.strip()
-    
+
     # Check for basic SQL structure
-    if not query_clean.upper().startswith(('SELECT', 'WITH')):
+    if not query_clean.upper().startswith(("SELECT", "WITH")):
         validation_result["valid"] = False
         validation_result["issues"].append("Query must start with SELECT or WITH")
-    
+
     # Check for semicolon termination
-    if not query_clean.endswith(';'):
+    if not query_clean.endswith(";"):
         validation_result["warnings"].append("Query should end with semicolon")
-    
+
     # Check for balanced parentheses
-    paren_count = query_clean.count('(') - query_clean.count(')')
+    paren_count = query_clean.count("(") - query_clean.count(")")
     if paren_count != 0:
         validation_result["valid"] = False
-        validation_result["issues"].append(f"Unbalanced parentheses: {abs(paren_count)} {'opening' if paren_count > 0 else 'closing'} missing")
-    
+        validation_result["issues"].append(
+            f"Unbalanced parentheses: {abs(paren_count)} {'opening' if paren_count > 0 else 'closing'} missing"
+        )
+
     # Check for required table reference
-    if 'cancer_transcript_base' not in query_clean:
+    if "cancer_transcript_base" not in query_clean:
         validation_result["valid"] = False
-        validation_result["issues"].append("Query must reference cancer_transcript_base table")
-    
+        validation_result["issues"].append(
+            "Query must reference cancer_transcript_base table"
+        )
+
     # Check for proper JSONB operations
-    jsonb_functions = ['jsonb_array_length', 'jsonb_array_elements', 'jsonb_object_keys']
+    jsonb_functions = [
+        "jsonb_array_length",
+        "jsonb_array_elements",
+        "jsonb_object_keys",
+    ]
     for func in jsonb_functions:
-        if func in query_clean and not any(col in query_clean for col in ['drugs', 'source_references', 'features']):
-            validation_result["warnings"].append(f"Using {func} but no JSONB columns detected")
-    
+        if func in query_clean and not any(
+            col in query_clean for col in ["drugs", "source_references", "features"]
+        ):
+            validation_result["warnings"].append(
+                f"Using {func} but no JSONB columns detected"
+            )
+
     # Check for array operations
-    if 'ANY(' in query_clean or 'array_length(' in query_clean:
-        array_columns = ['product_type', 'pathways', 'molecular_functions', 'cellular_location']
+    if "ANY(" in query_clean or "array_length(" in query_clean:
+        array_columns = [
+            "product_type",
+            "pathways",
+            "molecular_functions",
+            "cellular_location",
+        ]
         if not any(col in query_clean for col in array_columns):
-            validation_result["warnings"].append("Array operations detected but no array columns found")
-    
+            validation_result["warnings"].append(
+                "Array operations detected but no array columns found"
+            )
+
     # Check for proper CTEs (WITH clauses)
-    if query_clean.upper().startswith('WITH'):
-        if 'SELECT' not in query_clean.upper():
+    if query_clean.upper().startswith("WITH"):
+        if "SELECT" not in query_clean.upper():
             validation_result["valid"] = False
             validation_result["issues"].append("WITH clause must be followed by SELECT")
-    
+
     return validation_result
+
 
 def test_query_compatibility() -> Dict[str, Any]:
     """Test query compatibility with our patient data examples.
-    
+
     Returns:
         Compatibility test results
     """
@@ -357,135 +373,161 @@ def test_query_compatibility() -> Dict[str, Any]:
         "schema_compatible": True,
         "data_compatible": True,
         "issues": [],
-        "warnings": []
+        "warnings": [],
     }
-    
+
     # Define expected schema columns
     expected_columns = {
-        'transcript_id', 'gene_symbol', 'gene_id', 'gene_type', 'chromosome',
-        'coordinates', 'product_type', 'go_terms', 'pathways', 'drugs',
-        'expression_fold_change', 'expression_freq', 'cancer_types', 'features',
-        'molecular_functions', 'cellular_location', 'drug_scores',
-        'alt_transcript_ids', 'alt_gene_ids', 'uniprot_ids', 'ncbi_ids',
-        'refseq_ids', 'pdb_ids', 'source_references'
+        "transcript_id",
+        "gene_symbol",
+        "gene_id",
+        "gene_type",
+        "chromosome",
+        "coordinates",
+        "product_type",
+        "go_terms",
+        "pathways",
+        "drugs",
+        "expression_fold_change",
+        "expression_freq",
+        "cancer_types",
+        "features",
+        "molecular_functions",
+        "cellular_location",
+        "drug_scores",
+        "alt_transcript_ids",
+        "alt_gene_ids",
+        "uniprot_ids",
+        "ncbi_ids",
+        "refseq_ids",
+        "pdb_ids",
+        "source_references",
     }
-    
+
     # Check if queries reference valid columns
     all_queries = {**DYNAMIC_QUERIES, **SOTA_QUERIES}
-    
+
     for query_name, query in all_queries.items():
         query_upper = query.upper()
-        
+
         # Extract column references (simplified)
         for column in expected_columns:
-            if column in query and column not in ['FROM', 'WHERE', 'ORDER', 'GROUP']:
+            if column in query and column not in ["FROM", "WHERE", "ORDER", "GROUP"]:
                 # Column is referenced, which is good
                 continue
-    
+
     # Check for common issues with patient data
-    sample_genes = ['ERBB2', 'ESR1', 'PGR', 'BRCA1', 'BRCA2', 'TP53', 'KRAS', 'PIK3CA']
-    
+    sample_genes = ["ERBB2", "ESR1", "PGR", "BRCA1", "BRCA2", "TP53", "KRAS", "PIK3CA"]
+
     # Verify oncogene analysis includes genes from our examples
-    oncogene_query = SOTA_QUERIES['oncogene_analysis']
-    for gene in ['ERBB2', 'ESR1', 'KRAS', 'BRCA1']:
+    oncogene_query = SOTA_QUERIES["oncogene_analysis"]
+    for gene in ["ERBB2", "ESR1", "KRAS", "BRCA1"]:
         if gene not in oncogene_query:
-            compatibility_results["warnings"].append(f"Oncogene analysis missing {gene} from patient examples")
-    
+            compatibility_results["warnings"].append(
+                f"Oncogene analysis missing {gene} from patient examples"
+            )
+
     return compatibility_results
+
 
 def main():
     """Main entry point for query validation."""
     parser = argparse.ArgumentParser(description="Validate MEDIABASE SQL queries")
     parser.add_argument("--test-syntax", action="store_true", help="Test query syntax")
-    parser.add_argument("--test-compatibility", action="store_true", help="Test compatibility with patient data")
+    parser.add_argument(
+        "--test-compatibility",
+        action="store_true",
+        help="Test compatibility with patient data",
+    )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
-    
+
     args = parser.parse_args()
-    
+
     if not (args.test_syntax or args.test_compatibility):
         parser.print_help()
         return
-    
+
     print("MEDIABASE Query Validation Report")
     print("=" * 50)
-    
+
     total_issues = 0
     total_warnings = 0
-    
+
     if args.test_syntax:
         print("\n📋 Testing Query Syntax...")
-        
+
         print("\n🔍 Dynamic Queries:")
         for query_name, query in DYNAMIC_QUERIES.items():
             result = validate_query_syntax(query_name, query)
             status = "✅ PASS" if result["valid"] else "❌ FAIL"
             print(f"  {status} {query_name}")
-            
+
             if result["issues"]:
                 total_issues += len(result["issues"])
                 for issue in result["issues"]:
                     print(f"    🚨 Issue: {issue}")
-            
+
             if result["warnings"]:
                 total_warnings += len(result["warnings"])
                 if args.verbose:
                     for warning in result["warnings"]:
                         print(f"    ⚠️  Warning: {warning}")
-        
+
         print("\n🎯 SOTA Queries:")
         for query_name, query in SOTA_QUERIES.items():
             result = validate_query_syntax(query_name, query)
             status = "✅ PASS" if result["valid"] else "❌ FAIL"
             print(f"  {status} {query_name}")
-            
+
             if result["issues"]:
                 total_issues += len(result["issues"])
                 for issue in result["issues"]:
                     print(f"    🚨 Issue: {issue}")
-            
+
             if result["warnings"]:
                 total_warnings += len(result["warnings"])
                 if args.verbose:
                     for warning in result["warnings"]:
                         print(f"    ⚠️  Warning: {warning}")
-    
+
     if args.test_compatibility:
         print("\n🧬 Testing Patient Data Compatibility...")
         result = test_query_compatibility()
-        
+
         if result["schema_compatible"]:
             print("  ✅ Schema compatibility: PASS")
         else:
             print("  ❌ Schema compatibility: FAIL")
-            
+
         if result["data_compatible"]:
             print("  ✅ Data compatibility: PASS")
         else:
             print("  ❌ Data compatibility: FAIL")
-        
+
         if result["issues"]:
             total_issues += len(result["issues"])
             for issue in result["issues"]:
                 print(f"    🚨 Issue: {issue}")
-        
+
         if result["warnings"]:
             total_warnings += len(result["warnings"])
             if args.verbose:
                 for warning in result["warnings"]:
                     print(f"    ⚠️  Warning: {warning}")
-    
+
     # Summary
     print(f"\n📊 Validation Summary:")
     print(f"  Total queries tested: {len(DYNAMIC_QUERIES) + len(SOTA_QUERIES)}")
     print(f"  Issues found: {total_issues}")
     print(f"  Warnings: {total_warnings}")
-    
+
     if total_issues == 0:
         print("  🎉 All queries passed validation!")
         return 0
     else:
         print("  ⚠️  Some queries need attention")
         return 1
+
 
 if __name__ == "__main__":
     exit(main())

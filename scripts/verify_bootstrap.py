@@ -27,110 +27,99 @@ console = Console()
 # Expected database objects for v0.3.0 schema
 EXPECTED_TABLES = {
     # Normalized core tables
-    'genes',
-    'transcripts',
-    'gene_cross_references',
-    'gene_annotations',
-
+    "genes",
+    "transcripts",
+    "gene_cross_references",
+    "gene_annotations",
     # Normalized relationship tables
-    'gene_pathways',
-    'gene_drug_interactions',
-    'transcript_go_terms',
-
+    "gene_pathways",
+    "gene_drug_interactions",
+    "transcript_go_terms",
     # Legacy tables (backwards compatibility)
-    'cancer_transcript_base',
-    'evidence_scoring_metadata',
-
+    "cancer_transcript_base",
+    "evidence_scoring_metadata",
     # Infrastructure
-    'schema_version',
+    "schema_version",
 }
 
 EXPECTED_INDEXES = {
     # genes table indexes
-    'genes_pkey',
-    'idx_genes_symbol',
-    'idx_genes_type',
-    'idx_genes_chromosome',
-
+    "genes_pkey",
+    "idx_genes_symbol",
+    "idx_genes_type",
+    "idx_genes_chromosome",
     # transcripts table indexes
-    'transcripts_pkey',
-    'idx_transcripts_gene',
-    'idx_transcripts_type',
-
+    "transcripts_pkey",
+    "idx_transcripts_gene",
+    "idx_transcripts_type",
     # gene_cross_references indexes
-    'gene_cross_references_pkey',
-    'idx_gene_xref_gene',
-    'idx_gene_xref_db',
-    'idx_gene_xref_external_id',
-
+    "gene_cross_references_pkey",
+    "idx_gene_xref_gene",
+    "idx_gene_xref_db",
+    "idx_gene_xref_external_id",
     # gene_annotations indexes
-    'gene_annotations_pkey',
-    'idx_gene_annotations_gene',
-    'idx_gene_annotations_type',
-
+    "gene_annotations_pkey",
+    "idx_gene_annotations_gene",
+    "idx_gene_annotations_type",
     # gene_pathways indexes
-    'gene_pathways_pkey',
-    'idx_gene_pathways_gene',
-    'idx_gene_pathways_pathway',
-    'idx_gene_pathways_source',
-    'idx_gene_pathways_parent',
-    'idx_gene_pathways_level',
-    'idx_gene_pathways_category',
-    'idx_gene_pathways_evidence',
-    'idx_gene_pathways_confidence',
-    'idx_gene_pathways_role',
-    'idx_gene_pathways_pmids',
-
+    "gene_pathways_pkey",
+    "idx_gene_pathways_gene",
+    "idx_gene_pathways_pathway",
+    "idx_gene_pathways_source",
+    "idx_gene_pathways_parent",
+    "idx_gene_pathways_level",
+    "idx_gene_pathways_category",
+    "idx_gene_pathways_evidence",
+    "idx_gene_pathways_confidence",
+    "idx_gene_pathways_role",
+    "idx_gene_pathways_pmids",
     # gene_drug_interactions indexes
-    'gene_drug_interactions_pkey',
-    'idx_gene_drug_gene',
-    'idx_gene_drug_name',
-    'idx_gene_drug_chembl',
-    'idx_gene_drug_drugbank',
-    'idx_gene_drug_clinical_phase',
-    'idx_gene_drug_approval',
-    'idx_gene_drug_activity_type',
-    'idx_gene_drug_class',
-    'idx_gene_drug_type',
-    'idx_gene_drug_evidence_strength',
-    'idx_gene_drug_pmids',
-    'idx_gene_drug_clinical_relevance',
-
+    "gene_drug_interactions_pkey",
+    "idx_gene_drug_gene",
+    "idx_gene_drug_name",
+    "idx_gene_drug_chembl",
+    "idx_gene_drug_drugbank",
+    "idx_gene_drug_clinical_phase",
+    "idx_gene_drug_approval",
+    "idx_gene_drug_activity_type",
+    "idx_gene_drug_class",
+    "idx_gene_drug_type",
+    "idx_gene_drug_evidence_strength",
+    "idx_gene_drug_pmids",
+    "idx_gene_drug_clinical_relevance",
     # transcript_go_terms indexes
-    'transcript_go_terms_pkey',
-    'idx_transcript_go_transcript',
-    'idx_transcript_go_id',
-    'idx_transcript_go_category',
-
+    "transcript_go_terms_pkey",
+    "idx_transcript_go_transcript",
+    "idx_transcript_go_id",
+    "idx_transcript_go_category",
     # cancer_transcript_base indexes
-    'cancer_transcript_base_pkey',
-    'idx_transcript_gene_symbol',
-    'idx_transcript_gene_type',
-    'idx_transcript_chromosome',
-
+    "cancer_transcript_base_pkey",
+    "idx_transcript_gene_symbol",
+    "idx_transcript_gene_type",
+    "idx_transcript_chromosome",
     # schema_version indexes
-    'schema_version_pkey',
+    "schema_version_pkey",
 }
 
 EXPECTED_MATERIALIZED_VIEWS = {
-    'pathway_gene_counts',
-    'pathway_druggability',
-    'drug_gene_summary',
+    "pathway_gene_counts",
+    "pathway_druggability",
+    "drug_gene_summary",
 }
 
 EXPECTED_REGULAR_VIEWS = {
-    'pathway_annotation_coverage',
-    'drug_interaction_coverage',
+    "pathway_annotation_coverage",
+    "drug_interaction_coverage",
 }
 
 EXPECTED_FUNCTIONS = {
-    'refresh_pathway_drug_views',
-    'get_pathway_druggability',
-    'get_clinically_relevant_drugs',
+    "refresh_pathway_drug_views",
+    "get_pathway_druggability",
+    "get_clinically_relevant_drugs",
 }
 
 EXPECTED_TYPES = {
-    'publication_reference',
+    "publication_reference",
 }
 
 
@@ -139,11 +128,13 @@ def get_existing_tables(db_manager) -> Set[str]:
     if not db_manager.cursor:
         return set()
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT tablename
         FROM pg_tables
         WHERE schemaname = 'public'
-    """)
+    """
+    )
     return {row[0] for row in db_manager.cursor.fetchall()}
 
 
@@ -152,11 +143,13 @@ def get_existing_indexes(db_manager) -> Set[str]:
     if not db_manager.cursor:
         return set()
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT indexname
         FROM pg_indexes
         WHERE schemaname = 'public'
-    """)
+    """
+    )
     return {row[0] for row in db_manager.cursor.fetchall()}
 
 
@@ -165,11 +158,13 @@ def get_existing_materialized_views(db_manager) -> Set[str]:
     if not db_manager.cursor:
         return set()
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT matviewname
         FROM pg_matviews
         WHERE schemaname = 'public'
-    """)
+    """
+    )
     return {row[0] for row in db_manager.cursor.fetchall()}
 
 
@@ -178,11 +173,13 @@ def get_existing_regular_views(db_manager) -> Set[str]:
     if not db_manager.cursor:
         return set()
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT viewname
         FROM pg_views
         WHERE schemaname = 'public'
-    """)
+    """
+    )
     return {row[0] for row in db_manager.cursor.fetchall()}
 
 
@@ -191,12 +188,14 @@ def get_existing_functions(db_manager) -> Set[str]:
     if not db_manager.cursor:
         return set()
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT DISTINCT proname
         FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
         WHERE n.nspname = 'public'
-    """)
+    """
+    )
     return {row[0] for row in db_manager.cursor.fetchall()}
 
 
@@ -205,12 +204,14 @@ def get_existing_types(db_manager) -> Set[str]:
     if not db_manager.cursor:
         return set()
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT typname
         FROM pg_type
         WHERE typtype = 'c'
         AND typnamespace = 'public'::regnamespace
-    """)
+    """
+    )
     return {row[0] for row in db_manager.cursor.fetchall()}
 
 
@@ -220,12 +221,14 @@ def get_schema_version(db_manager) -> str:
         return "Unknown"
 
     try:
-        db_manager.cursor.execute("""
+        db_manager.cursor.execute(
+            """
             SELECT version_name
             FROM schema_version
             ORDER BY applied_at DESC
             LIMIT 1
-        """)
+        """
+        )
         result = db_manager.cursor.fetchone()
         return result[0] if result else "No version found"
     except Exception:
@@ -233,10 +236,7 @@ def get_schema_version(db_manager) -> str:
 
 
 def print_comparison_table(
-    title: str,
-    expected: Set[str],
-    actual: Set[str],
-    show_extra: bool = True
+    title: str, expected: Set[str], actual: Set[str], show_extra: bool = True
 ) -> bool:
     """Print a comparison table between expected and actual items."""
     missing = expected - actual
@@ -271,15 +271,16 @@ def verify_foreign_keys(db_manager) -> bool:
         return False
 
     expected_fks = {
-        ('transcripts', 'gene_id', 'genes'),
-        ('gene_cross_references', 'gene_id', 'genes'),
-        ('gene_annotations', 'gene_id', 'genes'),
-        ('gene_pathways', 'gene_id', 'genes'),
-        ('gene_drug_interactions', 'gene_id', 'genes'),
-        ('transcript_go_terms', 'transcript_id', 'transcripts'),
+        ("transcripts", "gene_id", "genes"),
+        ("gene_cross_references", "gene_id", "genes"),
+        ("gene_annotations", "gene_id", "genes"),
+        ("gene_pathways", "gene_id", "genes"),
+        ("gene_drug_interactions", "gene_id", "genes"),
+        ("transcript_go_terms", "transcript_id", "transcripts"),
     }
 
-    db_manager.cursor.execute("""
+    db_manager.cursor.execute(
+        """
         SELECT
             tc.table_name,
             kcu.column_name,
@@ -293,7 +294,8 @@ def verify_foreign_keys(db_manager) -> bool:
             AND ccu.table_schema = tc.table_schema
         WHERE tc.constraint_type = 'FOREIGN KEY'
             AND tc.table_schema = 'public'
-    """)
+    """
+    )
 
     actual_fks = {(row[0], row[1], row[2]) for row in db_manager.cursor.fetchall()}
 
@@ -319,16 +321,18 @@ def verify_foreign_keys(db_manager) -> bool:
 
 def main():
     """Main verification routine."""
-    console.print(Panel.fit(
-        "[bold cyan]Bootstrap Schema Verification[/bold cyan]\n"
-        "Validating v0.3.0 database schema",
-        border_style="cyan"
-    ))
+    console.print(
+        Panel.fit(
+            "[bold cyan]Bootstrap Schema Verification[/bold cyan]\n"
+            "Validating v0.3.0 database schema",
+            border_style="cyan",
+        )
+    )
     console.print()
 
     # Load configuration
     project_root = Path(__file__).parent.parent
-    env_path = project_root / '.env'
+    env_path = project_root / ".env"
     load_dotenv(env_path)
 
     config = {
@@ -336,7 +340,7 @@ def main():
         "port": int(os.environ.get("MB_POSTGRES_PORT", "5435")),
         "dbname": os.environ.get("MB_POSTGRES_NAME", "mediabase"),
         "user": os.environ.get("MB_POSTGRES_USER", "mbase_user"),
-        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret")
+        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret"),
     }
 
     # Connect to database
@@ -345,7 +349,9 @@ def main():
         console.print("[red]Failed to connect to database[/red]")
         return 1
 
-    console.print(f"[green]Connected to database:[/green] {config['dbname']} at {config['host']}:{config['port']}")
+    console.print(
+        f"[green]Connected to database:[/green] {config['dbname']} at {config['host']}:{config['port']}"
+    )
     console.print()
 
     # Check schema version
@@ -361,27 +367,37 @@ def main():
 
     # Tables
     existing_tables = get_existing_tables(db_manager)
-    tables_ok = print_comparison_table("Tables", EXPECTED_TABLES, existing_tables, show_extra=True)
+    tables_ok = print_comparison_table(
+        "Tables", EXPECTED_TABLES, existing_tables, show_extra=True
+    )
     all_passed = all_passed and tables_ok
 
     # Indexes (show only missing, not extra)
     existing_indexes = get_existing_indexes(db_manager)
-    indexes_ok = print_comparison_table("Indexes", EXPECTED_INDEXES, existing_indexes, show_extra=False)
+    indexes_ok = print_comparison_table(
+        "Indexes", EXPECTED_INDEXES, existing_indexes, show_extra=False
+    )
     all_passed = all_passed and indexes_ok
 
     # Materialized Views
     existing_mat_views = get_existing_materialized_views(db_manager)
-    mat_views_ok = print_comparison_table("Materialized Views", EXPECTED_MATERIALIZED_VIEWS, existing_mat_views)
+    mat_views_ok = print_comparison_table(
+        "Materialized Views", EXPECTED_MATERIALIZED_VIEWS, existing_mat_views
+    )
     all_passed = all_passed and mat_views_ok
 
     # Regular Views
     existing_views = get_existing_regular_views(db_manager)
-    views_ok = print_comparison_table("Regular Views", EXPECTED_REGULAR_VIEWS, existing_views)
+    views_ok = print_comparison_table(
+        "Regular Views", EXPECTED_REGULAR_VIEWS, existing_views
+    )
     all_passed = all_passed and views_ok
 
     # Functions
     existing_functions = get_existing_functions(db_manager)
-    functions_ok = print_comparison_table("Functions", EXPECTED_FUNCTIONS, existing_functions, show_extra=False)
+    functions_ok = print_comparison_table(
+        "Functions", EXPECTED_FUNCTIONS, existing_functions, show_extra=False
+    )
     all_passed = all_passed and functions_ok
 
     # Custom Types
@@ -396,18 +412,22 @@ def main():
     # Final summary
     console.print()
     if all_passed:
-        console.print(Panel.fit(
-            "[bold green]✓ All verifications passed![/bold green]\n"
-            "Bootstrap schema is correctly configured.",
-            border_style="green"
-        ))
+        console.print(
+            Panel.fit(
+                "[bold green]✓ All verifications passed![/bold green]\n"
+                "Bootstrap schema is correctly configured.",
+                border_style="green",
+            )
+        )
         return 0
     else:
-        console.print(Panel.fit(
-            "[bold red]✗ Some verifications failed[/bold red]\n"
-            "See details above for missing or incorrect objects.",
-            border_style="red"
-        ))
+        console.print(
+            Panel.fit(
+                "[bold red]✗ Some verifications failed[/bold red]\n"
+                "See details above for missing or incorrect objects.",
+                border_style="red",
+            )
+        )
         return 1
 
 

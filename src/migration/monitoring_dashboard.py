@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 @dataclass
 class MigrationMetrics:
     """Migration performance and progress metrics."""
+
     stage_name: str
     start_time: datetime
     end_time: Optional[datetime] = None
@@ -39,6 +40,7 @@ class MigrationMetrics:
 @dataclass
 class SystemHealth:
     """System health metrics during migration."""
+
     timestamp: datetime
     memory_usage_mb: float
     memory_available_mb: float
@@ -59,7 +61,9 @@ class MigrationMonitor:
             config: Configuration dictionary
         """
         self.config = config
-        self.monitoring_db_path = Path(config.get('log_dir', './migration_logs')) / "migration_monitor.db"
+        self.monitoring_db_path = (
+            Path(config.get("log_dir", "./migration_logs")) / "migration_monitor.db"
+        )
         self.monitoring_db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize monitoring database
@@ -78,13 +82,13 @@ class MigrationMonitor:
 
         # Performance thresholds
         self.performance_thresholds = {
-            'memory_warning_mb': config.get('memory_warning_mb', 1536),
-            'memory_critical_mb': config.get('memory_critical_mb', 2048),
-            'cpu_warning_percent': config.get('cpu_warning_percent', 80),
-            'cpu_critical_percent': config.get('cpu_critical_percent', 95),
-            'disk_warning_percent': config.get('disk_warning_percent', 85),
-            'disk_critical_percent': config.get('disk_critical_percent', 95),
-            'query_timeout_ms': config.get('query_timeout_ms', 5000)
+            "memory_warning_mb": config.get("memory_warning_mb", 1536),
+            "memory_critical_mb": config.get("memory_critical_mb", 2048),
+            "cpu_warning_percent": config.get("cpu_warning_percent", 80),
+            "cpu_critical_percent": config.get("cpu_critical_percent", 95),
+            "disk_warning_percent": config.get("disk_warning_percent", 85),
+            "disk_critical_percent": config.get("disk_critical_percent", 95),
+            "query_timeout_ms": config.get("query_timeout_ms", 5000),
         }
 
         # Callbacks for alerts
@@ -97,7 +101,8 @@ class MigrationMonitor:
                 cursor = conn.cursor()
 
                 # Create tables for persistent monitoring data
-                cursor.execute("""
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS migration_sessions (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         migration_id TEXT UNIQUE,
@@ -110,9 +115,11 @@ class MigrationMonitor:
                         status TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
+                """
+                )
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS stage_metrics (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         migration_id TEXT,
@@ -130,9 +137,11 @@ class MigrationMonitor:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (migration_id) REFERENCES migration_sessions (migration_id)
                     )
-                """)
+                """
+                )
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS system_health (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         migration_id TEXT,
@@ -146,9 +155,11 @@ class MigrationMonitor:
                         query_response_time_ms REAL,
                         FOREIGN KEY (migration_id) REFERENCES migration_sessions (migration_id)
                     )
-                """)
+                """
+                )
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS migration_events (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         migration_id TEXT,
@@ -160,12 +171,19 @@ class MigrationMonitor:
                         details TEXT,
                         FOREIGN KEY (migration_id) REFERENCES migration_sessions (migration_id)
                     )
-                """)
+                """
+                )
 
                 # Create indexes for performance
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_migration_id ON stage_metrics (migration_id)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_health_timestamp ON system_health (timestamp)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON migration_events (timestamp)")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_migration_id ON stage_metrics (migration_id)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_health_timestamp ON system_health (timestamp)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON migration_events (timestamp)"
+                )
 
                 conn.commit()
                 logger.info("✅ Monitoring database initialized")
@@ -189,18 +207,28 @@ class MigrationMonitor:
             # Record session start in database
             with sqlite3.connect(str(self.monitoring_db_path)) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT OR REPLACE INTO migration_sessions
                     (migration_id, start_time, total_stages, completed_stages, failed_stages, status)
                     VALUES (?, ?, ?, 0, 0, 'running')
-                """, (migration_id, self.migration_start_time, total_stages))
+                """,
+                    (migration_id, self.migration_start_time, total_stages),
+                )
                 conn.commit()
 
             # Start monitoring thread
-            self.monitor_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
+            self.monitor_thread = threading.Thread(
+                target=self._monitoring_loop, daemon=True
+            )
             self.monitor_thread.start()
 
-            self._log_event("session_start", None, "info", f"Started migration session: {migration_id}")
+            self._log_event(
+                "session_start",
+                None,
+                "info",
+                f"Started migration session: {migration_id}",
+            )
             logger.info(f"📊 Started monitoring migration session: {migration_id}")
 
         except Exception as e:
@@ -218,19 +246,25 @@ class MigrationMonitor:
 
             # Initialize stage metrics
             self.stage_metrics[stage_name] = MigrationMetrics(
-                stage_name=stage_name,
-                start_time=datetime.now(),
-                status="running"
+                stage_name=stage_name, start_time=datetime.now(), status="running"
             )
 
-            self._log_event("stage_start", stage_name, "info", f"Started stage: {stage_name}")
+            self._log_event(
+                "stage_start", stage_name, "info", f"Started stage: {stage_name}"
+            )
             logger.info(f"🔄 Started monitoring stage: {stage_name}")
 
         except Exception as e:
             logger.error(f"Failed to start stage monitoring: {e}")
 
-    def complete_stage(self, stage_name: str, records_processed: int = 0, records_failed: int = 0,
-                      error_count: int = 0, warnings_count: int = 0) -> None:
+    def complete_stage(
+        self,
+        stage_name: str,
+        records_processed: int = 0,
+        records_failed: int = 0,
+        error_count: int = 0,
+        warnings_count: int = 0,
+    ) -> None:
         """Complete monitoring for a migration stage.
 
         Args:
@@ -244,7 +278,9 @@ class MigrationMonitor:
             if stage_name in self.stage_metrics:
                 metrics = self.stage_metrics[stage_name]
                 metrics.end_time = datetime.now()
-                metrics.duration_seconds = (metrics.end_time - metrics.start_time).total_seconds()
+                metrics.duration_seconds = (
+                    metrics.end_time - metrics.start_time
+                ).total_seconds()
                 metrics.records_processed = records_processed
                 metrics.records_failed = records_failed
                 metrics.error_count = error_count
@@ -260,10 +296,16 @@ class MigrationMonitor:
                 # Save to database
                 self._save_stage_metrics(metrics)
 
-                self._log_event("stage_complete", stage_name, "info" if metrics.status == "completed" else "error",
-                              f"Completed stage: {stage_name} ({metrics.duration_seconds:.1f}s)")
+                self._log_event(
+                    "stage_complete",
+                    stage_name,
+                    "info" if metrics.status == "completed" else "error",
+                    f"Completed stage: {stage_name} ({metrics.duration_seconds:.1f}s)",
+                )
 
-                logger.info(f"✅ Stage completed: {stage_name} ({metrics.duration_seconds:.1f}s)")
+                logger.info(
+                    f"✅ Stage completed: {stage_name} ({metrics.duration_seconds:.1f}s)"
+                )
 
                 if self.current_stage == stage_name:
                     self.current_stage = None
@@ -282,15 +324,21 @@ class MigrationMonitor:
             if stage_name in self.stage_metrics:
                 metrics = self.stage_metrics[stage_name]
                 metrics.end_time = datetime.now()
-                metrics.duration_seconds = (metrics.end_time - metrics.start_time).total_seconds()
+                metrics.duration_seconds = (
+                    metrics.end_time - metrics.start_time
+                ).total_seconds()
                 metrics.status = "failed"
                 metrics.error_count = metrics.error_count + 1
 
                 # Save to database
                 self._save_stage_metrics(metrics)
 
-                self._log_event("stage_failed", stage_name, "error",
-                              f"Stage failed: {stage_name} - {error_message}")
+                self._log_event(
+                    "stage_failed",
+                    stage_name,
+                    "error",
+                    f"Stage failed: {stage_name} - {error_message}",
+                )
 
                 logger.error(f"❌ Stage failed: {stage_name} - {error_message}")
 
@@ -313,37 +361,58 @@ class MigrationMonitor:
                 self.monitor_thread.join(timeout=5.0)
 
             migration_end_time = datetime.now()
-            total_duration = (migration_end_time - self.migration_start_time).total_seconds()
+            total_duration = (
+                migration_end_time - self.migration_start_time
+            ).total_seconds()
 
             # Count completed and failed stages
-            completed_stages = sum(1 for m in self.stage_metrics.values() if m.status == "completed")
-            failed_stages = sum(1 for m in self.stage_metrics.values() if m.status == "failed")
+            completed_stages = sum(
+                1 for m in self.stage_metrics.values() if m.status == "completed"
+            )
+            failed_stages = sum(
+                1 for m in self.stage_metrics.values() if m.status == "failed"
+            )
 
             # Update session in database
             with sqlite3.connect(str(self.monitoring_db_path)) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     UPDATE migration_sessions
                     SET end_time = ?, total_duration_seconds = ?, completed_stages = ?,
                         failed_stages = ?, status = ?
                     WHERE migration_id = ?
-                """, (migration_end_time, total_duration, completed_stages, failed_stages,
-                     status, self.migration_id))
+                """,
+                    (
+                        migration_end_time,
+                        total_duration,
+                        completed_stages,
+                        failed_stages,
+                        status,
+                        self.migration_id,
+                    ),
+                )
                 conn.commit()
 
             # Generate summary
             summary = self._generate_migration_summary()
 
-            self._log_event("session_end", None, "info",
-                          f"Migration session ended: {status} ({total_duration:.1f}s)")
+            self._log_event(
+                "session_end",
+                None,
+                "info",
+                f"Migration session ended: {status} ({total_duration:.1f}s)",
+            )
 
-            logger.info(f"📊 Migration monitoring ended: {status} ({total_duration:.1f}s)")
+            logger.info(
+                f"📊 Migration monitoring ended: {status} ({total_duration:.1f}s)"
+            )
 
             return summary
 
         except Exception as e:
             logger.error(f"Failed to end monitoring session: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
 
     def _monitoring_loop(self) -> None:
         """Main monitoring loop running in background thread."""
@@ -359,7 +428,7 @@ class MigrationMonitor:
                     self._check_health_alerts(health)
 
                 # Sleep for monitoring interval
-                time.sleep(self.config.get('monitoring_interval_seconds', 30))
+                time.sleep(self.config.get("monitoring_interval_seconds", 30))
 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
@@ -385,7 +454,7 @@ class MigrationMonitor:
             cpu_usage = psutil.cpu_percent(interval=1)
 
             # Disk metrics
-            disk = psutil.disk_usage('/')
+            disk = psutil.disk_usage("/")
             disk_usage_percent = (disk.used / disk.total) * 100
 
             # Simplified database metrics (would need actual DB connection)
@@ -401,7 +470,7 @@ class MigrationMonitor:
                 disk_usage_percent=disk_usage_percent,
                 database_connections=database_connections,
                 active_queries=active_queries,
-                query_response_time_ms=query_response_time_ms
+                query_response_time_ms=query_response_time_ms,
             )
 
         except ImportError:
@@ -414,7 +483,7 @@ class MigrationMonitor:
                 disk_usage_percent=45.0,
                 database_connections=1,
                 active_queries=0,
-                query_response_time_ms=15.0
+                query_response_time_ms=15.0,
             )
 
         except Exception as e:
@@ -430,30 +499,64 @@ class MigrationMonitor:
         alerts = []
 
         # Memory alerts
-        if health.memory_usage_mb >= self.performance_thresholds['memory_critical_mb']:
-            alerts.append(("CRITICAL", f"Memory usage critical: {health.memory_usage_mb:.1f}MB"))
-        elif health.memory_usage_mb >= self.performance_thresholds['memory_warning_mb']:
-            alerts.append(("WARNING", f"Memory usage high: {health.memory_usage_mb:.1f}MB"))
+        if health.memory_usage_mb >= self.performance_thresholds["memory_critical_mb"]:
+            alerts.append(
+                ("CRITICAL", f"Memory usage critical: {health.memory_usage_mb:.1f}MB")
+            )
+        elif health.memory_usage_mb >= self.performance_thresholds["memory_warning_mb"]:
+            alerts.append(
+                ("WARNING", f"Memory usage high: {health.memory_usage_mb:.1f}MB")
+            )
 
         # CPU alerts
-        if health.cpu_usage_percent >= self.performance_thresholds['cpu_critical_percent']:
-            alerts.append(("CRITICAL", f"CPU usage critical: {health.cpu_usage_percent:.1f}%"))
-        elif health.cpu_usage_percent >= self.performance_thresholds['cpu_warning_percent']:
-            alerts.append(("WARNING", f"CPU usage high: {health.cpu_usage_percent:.1f}%"))
+        if (
+            health.cpu_usage_percent
+            >= self.performance_thresholds["cpu_critical_percent"]
+        ):
+            alerts.append(
+                ("CRITICAL", f"CPU usage critical: {health.cpu_usage_percent:.1f}%")
+            )
+        elif (
+            health.cpu_usage_percent
+            >= self.performance_thresholds["cpu_warning_percent"]
+        ):
+            alerts.append(
+                ("WARNING", f"CPU usage high: {health.cpu_usage_percent:.1f}%")
+            )
 
         # Disk alerts
-        if health.disk_usage_percent >= self.performance_thresholds['disk_critical_percent']:
-            alerts.append(("CRITICAL", f"Disk usage critical: {health.disk_usage_percent:.1f}%"))
-        elif health.disk_usage_percent >= self.performance_thresholds['disk_warning_percent']:
-            alerts.append(("WARNING", f"Disk usage high: {health.disk_usage_percent:.1f}%"))
+        if (
+            health.disk_usage_percent
+            >= self.performance_thresholds["disk_critical_percent"]
+        ):
+            alerts.append(
+                ("CRITICAL", f"Disk usage critical: {health.disk_usage_percent:.1f}%")
+            )
+        elif (
+            health.disk_usage_percent
+            >= self.performance_thresholds["disk_warning_percent"]
+        ):
+            alerts.append(
+                ("WARNING", f"Disk usage high: {health.disk_usage_percent:.1f}%")
+            )
 
         # Query performance alerts
-        if health.query_response_time_ms >= self.performance_thresholds['query_timeout_ms']:
-            alerts.append(("WARNING", f"Query response time high: {health.query_response_time_ms:.1f}ms"))
+        if (
+            health.query_response_time_ms
+            >= self.performance_thresholds["query_timeout_ms"]
+        ):
+            alerts.append(
+                (
+                    "WARNING",
+                    f"Query response time high: {health.query_response_time_ms:.1f}ms",
+                )
+            )
 
         # Process alerts
         for severity, message in alerts:
-            self._log_event("health_alert", self.current_stage, severity.lower(), message)
+            self._log_event(
+                "health_alert", self.current_stage, severity.lower(), message
+            )
             logger.warning(f"🚨 {severity}: {message}")
 
             # Call alert callbacks
@@ -472,18 +575,29 @@ class MigrationMonitor:
         try:
             with sqlite3.connect(str(self.monitoring_db_path)) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT OR REPLACE INTO stage_metrics
                     (migration_id, stage_name, start_time, end_time, duration_seconds,
                      records_processed, records_failed, memory_usage_mb, cpu_usage_percent,
                      status, error_count, warnings_count)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    self.migration_id, metrics.stage_name, metrics.start_time, metrics.end_time,
-                    metrics.duration_seconds, metrics.records_processed, metrics.records_failed,
-                    metrics.memory_usage_mb, metrics.cpu_usage_percent, metrics.status,
-                    metrics.error_count, metrics.warnings_count
-                ))
+                """,
+                    (
+                        self.migration_id,
+                        metrics.stage_name,
+                        metrics.start_time,
+                        metrics.end_time,
+                        metrics.duration_seconds,
+                        metrics.records_processed,
+                        metrics.records_failed,
+                        metrics.memory_usage_mb,
+                        metrics.cpu_usage_percent,
+                        metrics.status,
+                        metrics.error_count,
+                        metrics.warnings_count,
+                    ),
+                )
                 conn.commit()
 
         except Exception as e:
@@ -498,24 +612,39 @@ class MigrationMonitor:
         try:
             with sqlite3.connect(str(self.monitoring_db_path)) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO system_health
                     (migration_id, timestamp, memory_usage_mb, memory_available_mb,
                      cpu_usage_percent, disk_usage_percent, database_connections,
                      active_queries, query_response_time_ms)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    self.migration_id, health.timestamp, health.memory_usage_mb,
-                    health.memory_available_mb, health.cpu_usage_percent, health.disk_usage_percent,
-                    health.database_connections, health.active_queries, health.query_response_time_ms
-                ))
+                """,
+                    (
+                        self.migration_id,
+                        health.timestamp,
+                        health.memory_usage_mb,
+                        health.memory_available_mb,
+                        health.cpu_usage_percent,
+                        health.disk_usage_percent,
+                        health.database_connections,
+                        health.active_queries,
+                        health.query_response_time_ms,
+                    ),
+                )
                 conn.commit()
 
         except Exception as e:
             logger.error(f"Failed to save health metrics: {e}")
 
-    def _log_event(self, event_type: str, stage_name: Optional[str], severity: str, message: str,
-                   details: Optional[Dict[str, Any]] = None) -> None:
+    def _log_event(
+        self,
+        event_type: str,
+        stage_name: Optional[str],
+        severity: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Log migration event.
 
         Args:
@@ -528,12 +657,12 @@ class MigrationMonitor:
         try:
             timestamp = datetime.now()
             event = {
-                'timestamp': timestamp,
-                'event_type': event_type,
-                'stage_name': stage_name,
-                'severity': severity,
-                'message': message,
-                'details': details
+                "timestamp": timestamp,
+                "event_type": event_type,
+                "stage_name": stage_name,
+                "severity": severity,
+                "message": message,
+                "details": details,
             }
 
             self.event_log.append(event)
@@ -541,14 +670,22 @@ class MigrationMonitor:
             # Save to database
             with sqlite3.connect(str(self.monitoring_db_path)) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO migration_events
                     (migration_id, timestamp, event_type, stage_name, severity, message, details)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    self.migration_id, timestamp, event_type, stage_name, severity, message,
-                    json.dumps(details) if details else None
-                ))
+                """,
+                    (
+                        self.migration_id,
+                        timestamp,
+                        event_type,
+                        stage_name,
+                        severity,
+                        message,
+                        json.dumps(details) if details else None,
+                    ),
+                )
                 conn.commit()
 
         except Exception as e:
@@ -561,91 +698,117 @@ class MigrationMonitor:
             Migration summary dictionary
         """
         try:
-            total_duration = (datetime.now() - self.migration_start_time).total_seconds()
+            total_duration = (
+                datetime.now() - self.migration_start_time
+            ).total_seconds()
 
             # Calculate stage statistics
-            completed_stages = [m for m in self.stage_metrics.values() if m.status == "completed"]
-            failed_stages = [m for m in self.stage_metrics.values() if m.status == "failed"]
+            completed_stages = [
+                m for m in self.stage_metrics.values() if m.status == "completed"
+            ]
+            failed_stages = [
+                m for m in self.stage_metrics.values() if m.status == "failed"
+            ]
 
             total_records_processed = sum(m.records_processed for m in completed_stages)
-            total_records_failed = sum(m.records_failed for m in self.stage_metrics.values())
+            total_records_failed = sum(
+                m.records_failed for m in self.stage_metrics.values()
+            )
             total_errors = sum(m.error_count for m in self.stage_metrics.values())
             total_warnings = sum(m.warnings_count for m in self.stage_metrics.values())
 
             # Performance statistics
-            avg_stage_duration = sum(m.duration_seconds for m in completed_stages) / max(len(completed_stages), 1)
-            longest_stage = max(completed_stages, key=lambda m: m.duration_seconds) if completed_stages else None
+            avg_stage_duration = sum(
+                m.duration_seconds for m in completed_stages
+            ) / max(len(completed_stages), 1)
+            longest_stage = (
+                max(completed_stages, key=lambda m: m.duration_seconds)
+                if completed_stages
+                else None
+            )
 
             # Health statistics
             if self.health_history:
-                avg_memory = sum(h.memory_usage_mb for h in self.health_history) / len(self.health_history)
+                avg_memory = sum(h.memory_usage_mb for h in self.health_history) / len(
+                    self.health_history
+                )
                 max_memory = max(h.memory_usage_mb for h in self.health_history)
-                avg_cpu = sum(h.cpu_usage_percent for h in self.health_history) / len(self.health_history)
+                avg_cpu = sum(h.cpu_usage_percent for h in self.health_history) / len(
+                    self.health_history
+                )
                 max_cpu = max(h.cpu_usage_percent for h in self.health_history)
             else:
                 avg_memory = max_memory = avg_cpu = max_cpu = 0
 
             return {
-                'migration_id': self.migration_id,
-                'start_time': self.migration_start_time.isoformat(),
-                'end_time': datetime.now().isoformat(),
-                'total_duration_seconds': round(total_duration, 2),
-                'total_duration_formatted': str(timedelta(seconds=int(total_duration))),
-
-                'stage_summary': {
-                    'total_stages': len(self.stage_metrics),
-                    'completed_stages': len(completed_stages),
-                    'failed_stages': len(failed_stages),
-                    'success_rate_percent': round((len(completed_stages) / max(len(self.stage_metrics), 1)) * 100, 1)
+                "migration_id": self.migration_id,
+                "start_time": self.migration_start_time.isoformat(),
+                "end_time": datetime.now().isoformat(),
+                "total_duration_seconds": round(total_duration, 2),
+                "total_duration_formatted": str(timedelta(seconds=int(total_duration))),
+                "stage_summary": {
+                    "total_stages": len(self.stage_metrics),
+                    "completed_stages": len(completed_stages),
+                    "failed_stages": len(failed_stages),
+                    "success_rate_percent": round(
+                        (len(completed_stages) / max(len(self.stage_metrics), 1)) * 100,
+                        1,
+                    ),
                 },
-
-                'data_summary': {
-                    'total_records_processed': total_records_processed,
-                    'total_records_failed': total_records_failed,
-                    'success_rate_percent': round(
-                        ((total_records_processed - total_records_failed) / max(total_records_processed, 1)) * 100, 1
-                    )
+                "data_summary": {
+                    "total_records_processed": total_records_processed,
+                    "total_records_failed": total_records_failed,
+                    "success_rate_percent": round(
+                        (
+                            (total_records_processed - total_records_failed)
+                            / max(total_records_processed, 1)
+                        )
+                        * 100,
+                        1,
+                    ),
                 },
-
-                'error_summary': {
-                    'total_errors': total_errors,
-                    'total_warnings': total_warnings,
-                    'error_rate_per_stage': round(total_errors / max(len(self.stage_metrics), 1), 2)
+                "error_summary": {
+                    "total_errors": total_errors,
+                    "total_warnings": total_warnings,
+                    "error_rate_per_stage": round(
+                        total_errors / max(len(self.stage_metrics), 1), 2
+                    ),
                 },
-
-                'performance_summary': {
-                    'average_stage_duration_seconds': round(avg_stage_duration, 2),
-                    'longest_stage': {
-                        'name': longest_stage.stage_name if longest_stage else None,
-                        'duration_seconds': round(longest_stage.duration_seconds, 2) if longest_stage else 0
+                "performance_summary": {
+                    "average_stage_duration_seconds": round(avg_stage_duration, 2),
+                    "longest_stage": {
+                        "name": longest_stage.stage_name if longest_stage else None,
+                        "duration_seconds": round(longest_stage.duration_seconds, 2)
+                        if longest_stage
+                        else 0,
                     },
-                    'records_per_second': round(total_records_processed / max(total_duration, 1), 2)
+                    "records_per_second": round(
+                        total_records_processed / max(total_duration, 1), 2
+                    ),
                 },
-
-                'resource_usage': {
-                    'average_memory_mb': round(avg_memory, 2),
-                    'peak_memory_mb': round(max_memory, 2),
-                    'average_cpu_percent': round(avg_cpu, 2),
-                    'peak_cpu_percent': round(max_cpu, 2)
+                "resource_usage": {
+                    "average_memory_mb": round(avg_memory, 2),
+                    "peak_memory_mb": round(max_memory, 2),
+                    "average_cpu_percent": round(avg_cpu, 2),
+                    "peak_cpu_percent": round(max_cpu, 2),
                 },
-
-                'detailed_stages': [
+                "detailed_stages": [
                     {
-                        'name': m.stage_name,
-                        'duration_seconds': round(m.duration_seconds, 2),
-                        'records_processed': m.records_processed,
-                        'records_failed': m.records_failed,
-                        'status': m.status,
-                        'error_count': m.error_count,
-                        'warnings_count': m.warnings_count
+                        "name": m.stage_name,
+                        "duration_seconds": round(m.duration_seconds, 2),
+                        "records_processed": m.records_processed,
+                        "records_failed": m.records_failed,
+                        "status": m.status,
+                        "error_count": m.error_count,
+                        "warnings_count": m.warnings_count,
                     }
                     for m in self.stage_metrics.values()
-                ]
+                ],
             }
 
         except Exception as e:
             logger.error(f"Failed to generate migration summary: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
 
     def get_current_status(self) -> Dict[str, Any]:
         """Get current migration status.
@@ -654,26 +817,30 @@ class MigrationMonitor:
             Current status dictionary
         """
         if not self.is_monitoring:
-            return {'status': 'not_monitoring'}
+            return {"status": "not_monitoring"}
 
         current_time = datetime.now()
         elapsed = (current_time - self.migration_start_time).total_seconds()
 
-        completed_stages = sum(1 for m in self.stage_metrics.values() if m.status == "completed")
-        failed_stages = sum(1 for m in self.stage_metrics.values() if m.status == "failed")
+        completed_stages = sum(
+            1 for m in self.stage_metrics.values() if m.status == "completed"
+        )
+        failed_stages = sum(
+            1 for m in self.stage_metrics.values() if m.status == "failed"
+        )
 
         # Get latest health metrics
         latest_health = self.health_history[-1] if self.health_history else None
 
         return {
-            'status': 'running',
-            'migration_id': self.migration_id,
-            'current_stage': self.current_stage,
-            'elapsed_seconds': round(elapsed, 1),
-            'completed_stages': completed_stages,
-            'failed_stages': failed_stages,
-            'total_stages': len(self.stage_metrics),
-            'current_health': asdict(latest_health) if latest_health else None
+            "status": "running",
+            "migration_id": self.migration_id,
+            "current_stage": self.current_stage,
+            "elapsed_seconds": round(elapsed, 1),
+            "completed_stages": completed_stages,
+            "failed_stages": failed_stages,
+            "total_stages": len(self.stage_metrics),
+            "current_health": asdict(latest_health) if latest_health else None,
         }
 
     def add_alert_callback(self, callback: Callable) -> None:
@@ -695,24 +862,40 @@ class MigrationMonitor:
             summary = self._generate_migration_summary()
 
             if format.lower() == "json":
-                with open(output_file, 'w') as f:
+                with open(output_file, "w") as f:
                     json.dump(summary, f, indent=2)
 
             elif format.lower() == "csv":
                 import csv
-                with open(output_file, 'w', newline='') as f:
+
+                with open(output_file, "w", newline="") as f:
                     writer = csv.writer(f)
 
                     # Write stage details as CSV
-                    writer.writerow(['stage_name', 'duration_seconds', 'records_processed',
-                                   'records_failed', 'status', 'error_count', 'warnings_count'])
+                    writer.writerow(
+                        [
+                            "stage_name",
+                            "duration_seconds",
+                            "records_processed",
+                            "records_failed",
+                            "status",
+                            "error_count",
+                            "warnings_count",
+                        ]
+                    )
 
-                    for stage in summary.get('detailed_stages', []):
-                        writer.writerow([
-                            stage['name'], stage['duration_seconds'], stage['records_processed'],
-                            stage['records_failed'], stage['status'], stage['error_count'],
-                            stage['warnings_count']
-                        ])
+                    for stage in summary.get("detailed_stages", []):
+                        writer.writerow(
+                            [
+                                stage["name"],
+                                stage["duration_seconds"],
+                                stage["records_processed"],
+                                stage["records_failed"],
+                                stage["status"],
+                                stage["error_count"],
+                                stage["warnings_count"],
+                            ]
+                        )
 
             logger.info(f"📄 Monitoring data exported to: {output_file}")
 

@@ -35,14 +35,24 @@ class PatientDataMigrator:
         self.gene_symbol_mappings = {}
         self.column_mappings = {
             # Common column name variations
-            'transcript_id': ['transcript_id', 'ensembl_transcript_id', 'enst_id'],
-            'gene_symbol': ['gene_symbol', 'gene_name', 'symbol', 'hgnc_symbol'],
-            'fold_change': ['fold_change', 'cancer_fold', 'expression_fold_change', 'fc', 'log2fc'],
-            'gene_id': ['gene_id', 'ensembl_gene_id', 'ensg_id']
+            "transcript_id": ["transcript_id", "ensembl_transcript_id", "enst_id"],
+            "gene_symbol": ["gene_symbol", "gene_name", "symbol", "hgnc_symbol"],
+            "fold_change": [
+                "fold_change",
+                "cancer_fold",
+                "expression_fold_change",
+                "fc",
+                "log2fc",
+            ],
+            "gene_id": ["gene_id", "ensembl_gene_id", "ensg_id"],
         }
 
-    def create_patient_database_new_system(self, patient_id: str, fold_change_data: Union[str, pd.DataFrame],
-                                          source_database: str = "mbase") -> Dict[str, Any]:
+    def create_patient_database_new_system(
+        self,
+        patient_id: str,
+        fold_change_data: Union[str, pd.DataFrame],
+        source_database: str = "mbase",
+    ) -> Dict[str, Any]:
         """Create patient-specific database using the new normalized system.
 
         Args:
@@ -53,7 +63,9 @@ class PatientDataMigrator:
         Returns:
             Dictionary with creation results
         """
-        logger.info(f"🏥 Creating patient database for {patient_id} using new normalized system")
+        logger.info(
+            f"🏥 Creating patient database for {patient_id} using new normalized system"
+        )
 
         try:
             # Load and validate fold change data
@@ -67,42 +79,44 @@ class PatientDataMigrator:
             normalized_df = self._normalize_patient_data(df)
             validation_results = self._validate_patient_data(normalized_df)
 
-            if not validation_results['is_valid']:
+            if not validation_results["is_valid"]:
                 return {
-                    'status': 'failed',
-                    'error': 'Data validation failed',
-                    'validation_results': validation_results
+                    "status": "failed",
+                    "error": "Data validation failed",
+                    "validation_results": validation_results,
                 }
 
             # Create patient-specific database
             patient_db_name = f"{source_database}_{patient_id.lower()}"
-            creation_results = self._create_patient_database(patient_db_name, normalized_df, patient_id)
+            creation_results = self._create_patient_database(
+                patient_db_name, normalized_df, patient_id
+            )
 
             # Generate compatibility report
-            compatibility_report = self._generate_compatibility_report(normalized_df, creation_results)
+            compatibility_report = self._generate_compatibility_report(
+                normalized_df, creation_results
+            )
 
             logger.info(f"✅ Patient database created successfully: {patient_db_name}")
 
             return {
-                'status': 'success',
-                'patient_id': patient_id,
-                'database_name': patient_db_name,
-                'records_processed': len(normalized_df),
-                'validation_results': validation_results,
-                'creation_results': creation_results,
-                'compatibility_report': compatibility_report,
-                'created_at': datetime.now().isoformat()
+                "status": "success",
+                "patient_id": patient_id,
+                "database_name": patient_db_name,
+                "records_processed": len(normalized_df),
+                "validation_results": validation_results,
+                "creation_results": creation_results,
+                "compatibility_report": compatibility_report,
+                "created_at": datetime.now().isoformat(),
             }
 
         except Exception as e:
             logger.error(f"Failed to create patient database: {e}")
-            return {
-                'status': 'failed',
-                'error': str(e),
-                'patient_id': patient_id
-            }
+            return {"status": "failed", "error": str(e), "patient_id": patient_id}
 
-    def migrate_existing_patient_data(self, old_patient_db: str, patient_id: str) -> Dict[str, Any]:
+    def migrate_existing_patient_data(
+        self, old_patient_db: str, patient_id: str
+    ) -> Dict[str, Any]:
         """Migrate existing patient data from old system to new normalized system.
 
         Args:
@@ -120,29 +134,33 @@ class PatientDataMigrator:
 
             if old_data.empty:
                 return {
-                    'status': 'failed',
-                    'error': 'No fold change data found in old patient database',
-                    'old_database': old_patient_db
+                    "status": "failed",
+                    "error": "No fold change data found in old patient database",
+                    "old_database": old_patient_db,
                 }
 
             # Migrate to new system
-            migration_result = self.create_patient_database_new_system(patient_id, old_data)
+            migration_result = self.create_patient_database_new_system(
+                patient_id, old_data
+            )
 
             # Add migration-specific information
-            migration_result['migration_source'] = old_patient_db
-            migration_result['migration_type'] = 'old_to_new_system'
+            migration_result["migration_source"] = old_patient_db
+            migration_result["migration_type"] = "old_to_new_system"
 
-            logger.info(f"✅ Patient data migration completed: {old_patient_db} -> new system")
+            logger.info(
+                f"✅ Patient data migration completed: {old_patient_db} -> new system"
+            )
 
             return migration_result
 
         except Exception as e:
             logger.error(f"Failed to migrate patient data: {e}")
             return {
-                'status': 'failed',
-                'error': str(e),
-                'old_database': old_patient_db,
-                'patient_id': patient_id
+                "status": "failed",
+                "error": str(e),
+                "old_database": old_patient_db,
+                "patient_id": patient_id,
             }
 
     def _normalize_patient_data(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -172,25 +190,28 @@ class PatientDataMigrator:
             logger.info(f"Mapped columns: {column_mapping}")
 
         # Handle different transcript ID formats
-        if 'transcript_id' in normalized_df.columns:
+        if "transcript_id" in normalized_df.columns:
             normalized_df = self._normalize_transcript_ids(normalized_df)
 
         # Handle different gene symbol formats
-        if 'gene_symbol' in normalized_df.columns:
+        if "gene_symbol" in normalized_df.columns:
             normalized_df = self._normalize_gene_symbols(normalized_df)
 
         # Convert fold change values
-        if 'fold_change' in normalized_df.columns:
+        if "fold_change" in normalized_df.columns:
             normalized_df = self._normalize_fold_change_values(normalized_df)
 
         # Handle DESeq2 format data
-        if 'log2FoldChange' in df.columns and 'fold_change' not in normalized_df.columns:
+        if (
+            "log2FoldChange" in df.columns
+            and "fold_change" not in normalized_df.columns
+        ):
             logger.info("Converting DESeq2 log2FoldChange to linear fold change")
-            normalized_df['fold_change'] = 2 ** df['log2FoldChange']
+            normalized_df["fold_change"] = 2 ** df["log2FoldChange"]
 
         # Handle SYMBOL column (common in DESeq2 output)
-        if 'SYMBOL' in df.columns and 'gene_symbol' not in normalized_df.columns:
-            normalized_df['gene_symbol'] = df['SYMBOL']
+        if "SYMBOL" in df.columns and "gene_symbol" not in normalized_df.columns:
+            normalized_df["gene_symbol"] = df["SYMBOL"]
 
         logger.info(f"Data normalization completed: {len(normalized_df)} records")
         return normalized_df
@@ -207,10 +228,12 @@ class PatientDataMigrator:
         df = df.copy()
 
         # Remove version numbers from Ensembl IDs (e.g., ENST00000000001.1 -> ENST00000000001)
-        df['transcript_id'] = df['transcript_id'].astype(str).str.replace(r'\.\d+$', '', regex=True)
+        df["transcript_id"] = (
+            df["transcript_id"].astype(str).str.replace(r"\.\d+$", "", regex=True)
+        )
 
         # Ensure Ensembl format
-        mask = ~df['transcript_id'].str.startswith('ENST')
+        mask = ~df["transcript_id"].str.startswith("ENST")
         if mask.any():
             logger.warning(f"Found {mask.sum()} non-Ensembl transcript IDs")
 
@@ -228,10 +251,10 @@ class PatientDataMigrator:
         df = df.copy()
 
         # Convert to uppercase (standard for human gene symbols)
-        df['gene_symbol'] = df['gene_symbol'].astype(str).str.upper().str.strip()
+        df["gene_symbol"] = df["gene_symbol"].astype(str).str.upper().str.strip()
 
         # Remove any prefix/suffix notation (e.g., "GENE1_001" -> "GENE1")
-        df['gene_symbol'] = df['gene_symbol'].str.replace(r'_\d+$', '', regex=True)
+        df["gene_symbol"] = df["gene_symbol"].str.replace(r"_\d+$", "", regex=True)
 
         return df
 
@@ -247,12 +270,12 @@ class PatientDataMigrator:
         df = df.copy()
 
         # Convert to numeric, handling any string values
-        df['fold_change'] = pd.to_numeric(df['fold_change'], errors='coerce')
+        df["fold_change"] = pd.to_numeric(df["fold_change"], errors="coerce")
 
         # Handle log2 fold change conversion if values seem to be in log scale
-        if df['fold_change'].abs().max() < 20:  # Likely log2 values
+        if df["fold_change"].abs().max() < 20:  # Likely log2 values
             logger.info("Detected log2 fold change values, converting to linear scale")
-            df['fold_change'] = 2 ** df['fold_change']
+            df["fold_change"] = 2 ** df["fold_change"]
 
         return df
 
@@ -268,55 +291,77 @@ class PatientDataMigrator:
         logger.info("✅ Validating patient data")
 
         validation_results = {
-            'is_valid': True,
-            'errors': [],
-            'warnings': [],
-            'statistics': {}
+            "is_valid": True,
+            "errors": [],
+            "warnings": [],
+            "statistics": {},
         }
 
         # Check required columns
-        required_columns = ['transcript_id', 'fold_change']
+        required_columns = ["transcript_id", "fold_change"]
         missing_columns = [col for col in required_columns if col not in df.columns]
 
         if missing_columns:
-            validation_results['is_valid'] = False
-            validation_results['errors'].append(f"Missing required columns: {missing_columns}")
+            validation_results["is_valid"] = False
+            validation_results["errors"].append(
+                f"Missing required columns: {missing_columns}"
+            )
 
         # Check data types
-        if 'fold_change' in df.columns:
-            non_numeric_fc = df['fold_change'].isna().sum()
+        if "fold_change" in df.columns:
+            non_numeric_fc = df["fold_change"].isna().sum()
             if non_numeric_fc > 0:
-                validation_results['warnings'].append(f"{non_numeric_fc} non-numeric fold change values")
+                validation_results["warnings"].append(
+                    f"{non_numeric_fc} non-numeric fold change values"
+                )
 
         # Check transcript ID format
-        if 'transcript_id' in df.columns:
-            non_ensembl = ~df['transcript_id'].str.startswith('ENST', na=False)
+        if "transcript_id" in df.columns:
+            non_ensembl = ~df["transcript_id"].str.startswith("ENST", na=False)
             if non_ensembl.any():
-                validation_results['warnings'].append(f"{non_ensembl.sum()} non-Ensembl transcript IDs")
+                validation_results["warnings"].append(
+                    f"{non_ensembl.sum()} non-Ensembl transcript IDs"
+                )
 
         # Check for duplicates
-        if 'transcript_id' in df.columns:
-            duplicates = df['transcript_id'].duplicated().sum()
+        if "transcript_id" in df.columns:
+            duplicates = df["transcript_id"].duplicated().sum()
             if duplicates > 0:
-                validation_results['errors'].append(f"{duplicates} duplicate transcript IDs")
-                validation_results['is_valid'] = False
+                validation_results["errors"].append(
+                    f"{duplicates} duplicate transcript IDs"
+                )
+                validation_results["is_valid"] = False
 
         # Generate statistics
-        validation_results['statistics'] = {
-            'total_records': len(df),
-            'unique_transcripts': df['transcript_id'].nunique() if 'transcript_id' in df.columns else 0,
-            'unique_genes': df['gene_symbol'].nunique() if 'gene_symbol' in df.columns else 0,
-            'fold_change_range': {
-                'min': float(df['fold_change'].min()) if 'fold_change' in df.columns else None,
-                'max': float(df['fold_change'].max()) if 'fold_change' in df.columns else None,
-                'median': float(df['fold_change'].median()) if 'fold_change' in df.columns else None
-            }
+        validation_results["statistics"] = {
+            "total_records": len(df),
+            "unique_transcripts": df["transcript_id"].nunique()
+            if "transcript_id" in df.columns
+            else 0,
+            "unique_genes": df["gene_symbol"].nunique()
+            if "gene_symbol" in df.columns
+            else 0,
+            "fold_change_range": {
+                "min": float(df["fold_change"].min())
+                if "fold_change" in df.columns
+                else None,
+                "max": float(df["fold_change"].max())
+                if "fold_change" in df.columns
+                else None,
+                "median": float(df["fold_change"].median())
+                if "fold_change" in df.columns
+                else None,
+            },
         }
 
-        logger.info(f"Validation completed: {'PASSED' if validation_results['is_valid'] else 'FAILED'}")
+        logger.info(
+            f"Validation completed: {'PASSED' if validation_results['is_valid'] else 'FAILED'}"
+        )
         return validation_results
 
-    def _create_patient_database(self, patient_db_name: str, df: pd.DataFrame, patient_id: str) -> Dict[str, Any]:
+    def _create_patient_database(
+        self, patient_db_name: str, df: pd.DataFrame, patient_id: str
+    ) -> Dict[str, Any]:
         """Create patient-specific database using new normalized system.
 
         Args:
@@ -341,33 +386,43 @@ class PatientDataMigrator:
             schema_copy_results = self._copy_schema_to_patient_db(patient_db_manager)
 
             # Copy reference data
-            data_copy_results = self._copy_reference_data_to_patient_db(patient_db_manager)
+            data_copy_results = self._copy_reference_data_to_patient_db(
+                patient_db_manager
+            )
 
             # Insert patient-specific fold change data
-            fold_change_results = self._insert_patient_fold_change_data(patient_db_manager, df, patient_id)
+            fold_change_results = self._insert_patient_fold_change_data(
+                patient_db_manager, df, patient_id
+            )
 
             # Create patient-specific materialized views
-            view_results = self._create_patient_materialized_views(patient_db_manager, patient_id)
+            view_results = self._create_patient_materialized_views(
+                patient_db_manager, patient_id
+            )
 
             return {
-                'database_created': True,
-                'database_name': patient_db_name,
-                'schema_copy': schema_copy_results,
-                'data_copy': data_copy_results,
-                'fold_change_insertion': fold_change_results,
-                'materialized_views': view_results
+                "database_created": True,
+                "database_name": patient_db_name,
+                "schema_copy": schema_copy_results,
+                "data_copy": data_copy_results,
+                "fold_change_insertion": fold_change_results,
+                "materialized_views": view_results,
             }
 
         except Exception as e:
             logger.error(f"Failed to create patient database: {e}")
             # Cleanup on failure
             try:
-                self.db_manager.cursor.execute(f'DROP DATABASE IF EXISTS "{patient_db_name}"')
+                self.db_manager.cursor.execute(
+                    f'DROP DATABASE IF EXISTS "{patient_db_name}"'
+                )
             except:
                 pass
             raise
 
-    def _copy_schema_to_patient_db(self, patient_db_manager: DatabaseManager) -> Dict[str, Any]:
+    def _copy_schema_to_patient_db(
+        self, patient_db_manager: DatabaseManager
+    ) -> Dict[str, Any]:
         """Copy schema structure to patient database.
 
         Args:
@@ -380,18 +435,29 @@ class PatientDataMigrator:
 
         # Get schema creation SQL from main database
         schema_tables = [
-            'genes', 'transcripts', 'transcript_products', 'go_terms', 'transcript_go_terms',
-            'pathways', 'gene_pathways', 'drug_interactions', 'gene_drug_interactions',
-            'gene_cross_references', 'publications', 'gene_publications'
+            "genes",
+            "transcripts",
+            "transcript_products",
+            "go_terms",
+            "transcript_go_terms",
+            "pathways",
+            "gene_pathways",
+            "drug_interactions",
+            "gene_drug_interactions",
+            "gene_cross_references",
+            "publications",
+            "gene_publications",
         ]
 
         tables_created = 0
         for table_name in schema_tables:
             try:
                 # Get table creation SQL
-                self.db_manager.cursor.execute(f"""
+                self.db_manager.cursor.execute(
+                    f"""
                     SELECT pg_get_tabledef('{table_name}'::regclass)
-                """)
+                """
+                )
                 create_sql = self.db_manager.cursor.fetchone()[0]
 
                 # Execute in patient database
@@ -404,9 +470,11 @@ class PatientDataMigrator:
                 self._create_simplified_table(patient_db_manager, table_name)
                 tables_created += 1
 
-        return {'tables_created': tables_created, 'total_tables': len(schema_tables)}
+        return {"tables_created": tables_created, "total_tables": len(schema_tables)}
 
-    def _copy_reference_data_to_patient_db(self, patient_db_manager: DatabaseManager) -> Dict[str, Any]:
+    def _copy_reference_data_to_patient_db(
+        self, patient_db_manager: DatabaseManager
+    ) -> Dict[str, Any]:
         """Copy reference data to patient database.
 
         Args:
@@ -419,9 +487,18 @@ class PatientDataMigrator:
 
         # Copy all reference data (genes, pathways, etc.)
         reference_tables = [
-            'genes', 'transcripts', 'transcript_products', 'go_terms', 'transcript_go_terms',
-            'pathways', 'gene_pathways', 'drug_interactions', 'gene_drug_interactions',
-            'gene_cross_references', 'publications', 'gene_publications'
+            "genes",
+            "transcripts",
+            "transcript_products",
+            "go_terms",
+            "transcript_go_terms",
+            "pathways",
+            "gene_pathways",
+            "drug_interactions",
+            "gene_drug_interactions",
+            "gene_cross_references",
+            "publications",
+            "gene_publications",
         ]
 
         tables_copied = 0
@@ -438,26 +515,29 @@ class PatientDataMigrator:
                     columns = [desc[0] for desc in self.db_manager.cursor.description]
 
                     # Insert into patient database
-                    placeholders = ','.join(['%s'] * len(columns))
+                    placeholders = ",".join(["%s"] * len(columns))
                     insert_sql = f"INSERT INTO {table_name} ({','.join(columns)}) VALUES ({placeholders})"
 
                     patient_db_manager.cursor.executemany(insert_sql, data)
                     total_records += len(data)
 
                 tables_copied += 1
-                logger.info(f"Copied {len(data) if data else 0} records from {table_name}")
+                logger.info(
+                    f"Copied {len(data) if data else 0} records from {table_name}"
+                )
 
             except Exception as e:
                 logger.warning(f"Failed to copy data from {table_name}: {e}")
 
         return {
-            'tables_copied': tables_copied,
-            'total_tables': len(reference_tables),
-            'total_records_copied': total_records
+            "tables_copied": tables_copied,
+            "total_tables": len(reference_tables),
+            "total_records_copied": total_records,
         }
 
-    def _insert_patient_fold_change_data(self, patient_db_manager: DatabaseManager,
-                                       df: pd.DataFrame, patient_id: str) -> Dict[str, Any]:
+    def _insert_patient_fold_change_data(
+        self, patient_db_manager: DatabaseManager, df: pd.DataFrame, patient_id: str
+    ) -> Dict[str, Any]:
         """Insert patient-specific fold change data.
 
         Args:
@@ -471,7 +551,8 @@ class PatientDataMigrator:
         logger.info(f"💉 Inserting fold change data for patient {patient_id}")
 
         # Create patient expression table
-        patient_db_manager.cursor.execute("""
+        patient_db_manager.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS patient_gene_expression (
                 patient_id TEXT NOT NULL,
                 transcript_id TEXT NOT NULL,
@@ -481,7 +562,8 @@ class PatientDataMigrator:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (patient_id, transcript_id)
             )
-        """)
+        """
+        )
 
         successful_inserts = 0
         failed_inserts = 0
@@ -489,48 +571,65 @@ class PatientDataMigrator:
         for _, row in df.iterrows():
             try:
                 # Get gene information for this transcript
-                transcript_id = row.get('transcript_id')
-                fold_change = row.get('fold_change')
+                transcript_id = row.get("transcript_id")
+                fold_change = row.get("fold_change")
 
                 if pd.isna(transcript_id) or pd.isna(fold_change):
                     failed_inserts += 1
                     continue
 
                 # Get gene info from transcripts table
-                patient_db_manager.cursor.execute("""
+                patient_db_manager.cursor.execute(
+                    """
                     SELECT t.gene_id, g.gene_symbol
                     FROM transcripts t
                     JOIN genes g ON t.gene_id = g.gene_id
                     WHERE t.transcript_id = %s
-                """, (transcript_id,))
+                """,
+                    (transcript_id,),
+                )
 
                 gene_info = patient_db_manager.cursor.fetchone()
-                gene_id, gene_symbol = gene_info if gene_info else (None, row.get('gene_symbol'))
+                gene_id, gene_symbol = (
+                    gene_info if gene_info else (None, row.get("gene_symbol"))
+                )
 
                 # Insert patient expression data
-                patient_db_manager.cursor.execute("""
+                patient_db_manager.cursor.execute(
+                    """
                     INSERT INTO patient_gene_expression
                     (patient_id, transcript_id, gene_id, gene_symbol, expression_fold_change)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (patient_id, transcript_id)
                     DO UPDATE SET expression_fold_change = EXCLUDED.expression_fold_change
-                """, (patient_id, transcript_id, gene_id, gene_symbol, float(fold_change)))
+                """,
+                    (
+                        patient_id,
+                        transcript_id,
+                        gene_id,
+                        gene_symbol,
+                        float(fold_change),
+                    ),
+                )
 
                 successful_inserts += 1
 
             except Exception as e:
-                logger.warning(f"Failed to insert record for transcript {transcript_id}: {e}")
+                logger.warning(
+                    f"Failed to insert record for transcript {transcript_id}: {e}"
+                )
                 failed_inserts += 1
 
         return {
-            'successful_inserts': successful_inserts,
-            'failed_inserts': failed_inserts,
-            'total_records': len(df),
-            'success_rate_percent': round((successful_inserts / len(df)) * 100, 1)
+            "successful_inserts": successful_inserts,
+            "failed_inserts": failed_inserts,
+            "total_records": len(df),
+            "success_rate_percent": round((successful_inserts / len(df)) * 100, 1),
         }
 
-    def _create_patient_materialized_views(self, patient_db_manager: DatabaseManager,
-                                         patient_id: str) -> Dict[str, Any]:
+    def _create_patient_materialized_views(
+        self, patient_db_manager: DatabaseManager, patient_id: str
+    ) -> Dict[str, Any]:
         """Create patient-specific materialized views.
 
         Args:
@@ -599,20 +698,24 @@ class PatientDataMigrator:
             logger.info(f"Created patient enriched view")
 
             # Create index on the materialized view
-            patient_db_manager.cursor.execute(f"""
+            patient_db_manager.cursor.execute(
+                f"""
                 CREATE INDEX idx_patient_{patient_id}_enriched_transcript_id
                 ON patient_{patient_id}_enriched_view (transcript_id)
-            """)
+            """
+            )
 
-            patient_db_manager.cursor.execute(f"""
+            patient_db_manager.cursor.execute(
+                f"""
                 CREATE INDEX idx_patient_{patient_id}_enriched_fold_change
                 ON patient_{patient_id}_enriched_view (expression_fold_change)
-            """)
+            """
+            )
 
         except Exception as e:
             logger.error(f"Failed to create patient materialized views: {e}")
 
-        return {'views_created': views_created}
+        return {"views_created": views_created}
 
     def _extract_fold_change_from_old_system(self, old_patient_db: str) -> pd.DataFrame:
         """Extract fold change data from old patient database.
@@ -657,7 +760,9 @@ class PatientDataMigrator:
         # For now, return the main connection as a placeholder
         return self.db_manager
 
-    def _create_simplified_table(self, patient_db_manager: DatabaseManager, table_name: str) -> None:
+    def _create_simplified_table(
+        self, patient_db_manager: DatabaseManager, table_name: str
+    ) -> None:
         """Create simplified table structure for compatibility.
 
         Args:
@@ -666,7 +771,7 @@ class PatientDataMigrator:
         """
         # Simplified table creation SQL for essential tables
         table_schemas = {
-            'genes': """
+            "genes": """
                 CREATE TABLE genes (
                     gene_id TEXT PRIMARY KEY,
                     gene_symbol TEXT,
@@ -675,20 +780,22 @@ class PatientDataMigrator:
                     chromosome TEXT
                 )
             """,
-            'transcripts': """
+            "transcripts": """
                 CREATE TABLE transcripts (
                     transcript_id TEXT PRIMARY KEY,
                     gene_id TEXT,
                     transcript_name TEXT,
                     transcript_type TEXT
                 )
-            """
+            """,
         }
 
         if table_name in table_schemas:
             patient_db_manager.cursor.execute(table_schemas[table_name])
 
-    def _generate_compatibility_report(self, df: pd.DataFrame, creation_results: Dict[str, Any]) -> Dict[str, Any]:
+    def _generate_compatibility_report(
+        self, df: pd.DataFrame, creation_results: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Generate compatibility report for patient data migration.
 
         Args:
@@ -699,23 +806,31 @@ class PatientDataMigrator:
             Compatibility report
         """
         return {
-            'data_compatibility': {
-                'total_transcripts': len(df),
-                'successful_matches': creation_results.get('fold_change_insertion', {}).get('successful_inserts', 0),
-                'failed_matches': creation_results.get('fold_change_insertion', {}).get('failed_inserts', 0),
-                'success_rate_percent': creation_results.get('fold_change_insertion', {}).get('success_rate_percent', 0)
+            "data_compatibility": {
+                "total_transcripts": len(df),
+                "successful_matches": creation_results.get(
+                    "fold_change_insertion", {}
+                ).get("successful_inserts", 0),
+                "failed_matches": creation_results.get("fold_change_insertion", {}).get(
+                    "failed_inserts", 0
+                ),
+                "success_rate_percent": creation_results.get(
+                    "fold_change_insertion", {}
+                ).get("success_rate_percent", 0),
             },
-            'system_compatibility': {
-                'new_system_ready': True,
-                'materialized_views_created': creation_results.get('materialized_views', {}).get('views_created', 0),
-                'performance_optimized': True
+            "system_compatibility": {
+                "new_system_ready": True,
+                "materialized_views_created": creation_results.get(
+                    "materialized_views", {}
+                ).get("views_created", 0),
+                "performance_optimized": True,
             },
-            'migration_notes': [
-                'Patient data migrated to new normalized system',
-                'All existing functionality preserved',
-                'Performance improvements available through materialized views',
-                'System ready for SOTA queries and analysis'
-            ]
+            "migration_notes": [
+                "Patient data migrated to new normalized system",
+                "All existing functionality preserved",
+                "Performance improvements available through materialized views",
+                "System ready for SOTA queries and analysis",
+            ],
         }
 
     def get_patient_query_compatibility(self, patient_db_name: str) -> Dict[str, Any]:
@@ -731,44 +846,49 @@ class PatientDataMigrator:
             patient_db_manager = self._get_patient_db_connection(patient_db_name)
 
             # Check available views and tables
-            patient_db_manager.cursor.execute("""
+            patient_db_manager.cursor.execute(
+                """
                 SELECT table_name, table_type
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
                 ORDER BY table_name
-            """)
+            """
+            )
             available_objects = patient_db_manager.cursor.fetchall()
 
             # Check patient data statistics
-            patient_db_manager.cursor.execute("""
+            patient_db_manager.cursor.execute(
+                """
                 SELECT COUNT(*) as total_transcripts,
                        COUNT(CASE WHEN expression_fold_change > 1 THEN 1 END) as upregulated,
                        COUNT(CASE WHEN expression_fold_change < 1 THEN 1 END) as downregulated
                 FROM patient_gene_expression
-            """)
+            """
+            )
             stats = patient_db_manager.cursor.fetchone()
 
             return {
-                'database_ready': True,
-                'available_tables': [obj[0] for obj in available_objects if obj[1] == 'BASE TABLE'],
-                'available_views': [obj[0] for obj in available_objects if obj[1] == 'VIEW'],
-                'patient_statistics': {
-                    'total_transcripts': stats[0] if stats else 0,
-                    'upregulated_genes': stats[1] if stats else 0,
-                    'downregulated_genes': stats[2] if stats else 0
+                "database_ready": True,
+                "available_tables": [
+                    obj[0] for obj in available_objects if obj[1] == "BASE TABLE"
+                ],
+                "available_views": [
+                    obj[0] for obj in available_objects if obj[1] == "VIEW"
+                ],
+                "patient_statistics": {
+                    "total_transcripts": stats[0] if stats else 0,
+                    "upregulated_genes": stats[1] if stats else 0,
+                    "downregulated_genes": stats[2] if stats else 0,
                 },
-                'query_endpoints': [
-                    'Basic gene expression queries',
-                    'Drug interaction analysis',
-                    'Pathway enrichment analysis',
-                    'GO term analysis',
-                    'Publication associations'
-                ]
+                "query_endpoints": [
+                    "Basic gene expression queries",
+                    "Drug interaction analysis",
+                    "Pathway enrichment analysis",
+                    "GO term analysis",
+                    "Publication associations",
+                ],
             }
 
         except Exception as e:
             logger.error(f"Failed to get patient query compatibility: {e}")
-            return {
-                'database_ready': False,
-                'error': str(e)
-            }
+            return {"database_ready": False, "error": str(e)}

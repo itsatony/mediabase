@@ -7,20 +7,25 @@ from unittest.mock import Mock, patch
 from src.etl.transcript import TranscriptProcessor
 import pandas as pd
 
+
 @pytest.fixture
 def test_config():
     """Provide test configuration."""
     return {
-        'gencode_gtf_url': os.getenv('MB_GENCODE_GTF_URL', 'https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.basic.annotation.gtf.gz'),
-        'cache_dir': '/tmp/mediabase_test/cache',
-        'cache_ttl': 3600,  # 1 hour cache for tests
-        'batch_size': 100,
-        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
-        'dbname': os.getenv('MB_POSTGRES_NAME', 'mediabase_test'),
-        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
-        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret')
+        "gencode_gtf_url": os.getenv(
+            "MB_GENCODE_GTF_URL",
+            "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.basic.annotation.gtf.gz",
+        ),
+        "cache_dir": "/tmp/mediabase_test/cache",
+        "cache_ttl": 3600,  # 1 hour cache for tests
+        "batch_size": 100,
+        "host": os.getenv("MB_POSTGRES_HOST", "localhost"),
+        "port": int(os.getenv("MB_POSTGRES_PORT", "5435")),
+        "dbname": os.getenv("MB_POSTGRES_NAME", "mediabase_test"),
+        "user": os.getenv("MB_POSTGRES_USER", "mbase_user"),
+        "password": os.getenv("MB_POSTGRES_PASSWORD", "mbase_secret"),
     }
+
 
 @pytest.fixture
 def sample_gtf_data(tmp_path) -> Path:
@@ -36,24 +41,28 @@ def sample_gtf_data(tmp_path) -> Path:
     gtf_file.write_text(gtf_content)
     return gtf_file
 
+
 @pytest.fixture
 def mock_gtf_data():
     """Provide test GTF data with alternative IDs."""
-    return pd.DataFrame({
-        'feature': ['transcript', 'transcript'],
-        'transcript_id': ['ENST01', 'ENST02'],
-        'gene_id': ['ENSG01', 'ENSG02'],
-        'gene_name': ['GENE1', 'GENE2'],
-        'gene_type': ['protein_coding', 'protein_coding'],
-        'seqname': ['chr1', 'chr2'],
-        'start': [1000, 2000],
-        'end': [2000, 3000],
-        'strand': ['+', '-'],
-        'attribute': [
-            'transcript_id_refseq=NM_001; gene_id_ncbi=9876',
-            'transcript_id_ucsc=uc001; gene_id_ncbi=5432'
-        ]
-    })
+    return pd.DataFrame(
+        {
+            "feature": ["transcript", "transcript"],
+            "transcript_id": ["ENST01", "ENST02"],
+            "gene_id": ["ENSG01", "ENSG02"],
+            "gene_name": ["GENE1", "GENE2"],
+            "gene_type": ["protein_coding", "protein_coding"],
+            "seqname": ["chr1", "chr2"],
+            "start": [1000, 2000],
+            "end": [2000, 3000],
+            "strand": ["+", "-"],
+            "attribute": [
+                "transcript_id_refseq=NM_001; gene_id_ncbi=9876",
+                "transcript_id_ucsc=uc001; gene_id_ncbi=5432",
+            ],
+        }
+    )
+
 
 def test_process_gtf(sample_gtf_data, test_config):
     """Test GTF processing functionality."""
@@ -64,17 +73,28 @@ def test_process_gtf(sample_gtf_data, test_config):
     assert isinstance(df, pd.DataFrame)
     assert len(df) == 2
     # Check for actual columns returned by parse_gtf
-    assert all(col in df.columns for col in [
-        'transcript_id', 'gene_name', 'gene_id', 'gene_type',
-        'seqname', 'start', 'end', 'strand', 'coordinates'
-    ])
+    assert all(
+        col in df.columns
+        for col in [
+            "transcript_id",
+            "gene_name",
+            "gene_id",
+            "gene_type",
+            "seqname",
+            "start",
+            "end",
+            "strand",
+            "coordinates",
+        ]
+    )
 
     # Check specific values
-    assert df['transcript_id'].iloc[0] == 'ENST00000456328'
-    assert df['gene_name'].iloc[0] == 'DDX11L1'
-    assert df['start'].iloc[0] == 11869
-    assert df['end'].iloc[0] == 14409
-    assert isinstance(df['coordinates'].iloc[0], dict)
+    assert df["transcript_id"].iloc[0] == "ENST00000456328"
+    assert df["gene_name"].iloc[0] == "DDX11L1"
+    assert df["start"].iloc[0] == 11869
+    assert df["end"].iloc[0] == 14409
+    assert isinstance(df["coordinates"].iloc[0], dict)
+
 
 @pytest.mark.integration
 @pytest.mark.skip(reason="Requires full database setup and GENCODE GTF download")

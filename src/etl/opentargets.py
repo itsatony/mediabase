@@ -53,7 +53,7 @@ class OpenTargetsConfig:
                 "leukemia",
                 "sarcoma",
                 "myeloma",
-                "adenocarcinoma"
+                "adenocarcinoma",
             ]
 
         if self.cancer_disease_ids is None:
@@ -90,10 +90,10 @@ class OpenTargetsProcessor(BaseProcessor):
         self.ot_config = OpenTargetsConfig()
 
         # Override with user-provided config values if present
-        if 'opentargets_version' in config:
-            self.ot_config.version = config['opentargets_version']
-        if 'opentargets_min_score' in config:
-            self.ot_config.min_overall_score = config['opentargets_min_score']
+        if "opentargets_version" in config:
+            self.ot_config.version = config["opentargets_version"]
+        if "opentargets_min_score" in config:
+            self.ot_config.min_overall_score = config["opentargets_min_score"]
 
         # Build dataset URLs
         base = f"{self.ot_config.base_url}/{self.ot_config.version}/output/etl/parquet"
@@ -103,20 +103,20 @@ class OpenTargetsProcessor(BaseProcessor):
             "known_drugs": f"{base}/knownDrugsAggregated",
             "targets": f"{base}/targets",
             "mechanisms": f"{base}/mechanismOfAction",
-            "evidence_by_datatype": f"{base}/associationByDatatypeDirect"
+            "evidence_by_datatype": f"{base}/associationByDatatypeDirect",
         }
 
         # Define specific directory for Open Targets data
-        self.opentargets_dir = self.cache_dir / 'opentargets'
+        self.opentargets_dir = self.cache_dir / "opentargets"
         self.opentargets_dir.mkdir(exist_ok=True, parents=True)
 
         # Processing statistics
         self.stats: Dict[str, int] = {
-            'diseases': 0,
-            'cancer_diseases': 0,
-            'associations': 0,
-            'known_drugs': 0,
-            'tractability': 0
+            "diseases": 0,
+            "cancer_diseases": 0,
+            "associations": 0,
+            "known_drugs": 0,
+            "tractability": 0,
         }
 
     def run(self) -> None:
@@ -150,17 +150,22 @@ class OpenTargetsProcessor(BaseProcessor):
             return False
 
         for table in required_tables:
-            self.db_manager.cursor.execute("""
+            self.db_manager.cursor.execute(
+                """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables
                     WHERE table_schema = 'public'
                     AND table_name = %s
                 )
-            """, (table,))
+            """,
+                (table,),
+            )
             exists = self.db_manager.cursor.fetchone()[0]
             if not exists:
-                self.logger.error(f"Required table {table} does not exist. "
-                               f"Run transcripts and id_enrichment ETL first.")
+                self.logger.error(
+                    f"Required table {table} does not exist. "
+                    f"Run transcripts and id_enrichment ETL first."
+                )
                 return False
 
         return True
@@ -181,12 +186,16 @@ class OpenTargetsProcessor(BaseProcessor):
 
             # Schema tables already created by v0.5.0 migration
             # Skipping schema creation
-            logger.info("Using existing Open Targets schema (created by v0.5.0 migration)")
+            logger.info(
+                "Using existing Open Targets schema (created by v0.5.0 migration)"
+            )
 
             # Phase 1: Diseases
             logger.info("Processing diseases...")
             disease_count = self._process_diseases()
-            logger.info(f"Loaded {disease_count} diseases ({self._count_cancer_diseases()} cancer)")
+            logger.info(
+                f"Loaded {disease_count} diseases ({self._count_cancer_diseases()} cancer)"
+            )
 
             # Phase 2: Gene-disease associations
             logger.info("Processing gene-disease associations...")
@@ -208,12 +217,14 @@ class OpenTargetsProcessor(BaseProcessor):
             self._create_indexes()
 
             # Record metadata
-            self._record_metadata({
-                "diseases": disease_count,
-                "associations": assoc_count,
-                "known_drugs": drug_count,
-                "tractability": tract_count
-            })
+            self._record_metadata(
+                {
+                    "diseases": disease_count,
+                    "associations": assoc_count,
+                    "known_drugs": drug_count,
+                    "tractability": tract_count,
+                }
+            )
 
             logger.info("Open Targets ETL completed successfully")
             return True
@@ -226,7 +237,8 @@ class OpenTargetsProcessor(BaseProcessor):
         """Create Open Targets database schema."""
 
         # Diseases table
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS opentargets_diseases (
                 disease_id TEXT PRIMARY KEY,
                 disease_name TEXT NOT NULL,
@@ -252,10 +264,12 @@ class OpenTargetsProcessor(BaseProcessor):
 
             COMMENT ON COLUMN opentargets_diseases.parent_disease_ids IS
             'Array of parent disease IDs in ontology hierarchy (e.g., breast cancer -> carcinoma -> neoplasm)';
-        """)
+        """
+        )
 
         # Gene-disease associations table
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS opentargets_gene_disease_associations (
                 association_id SERIAL PRIMARY KEY,
                 gene_id TEXT NOT NULL,
@@ -296,10 +310,12 @@ class OpenTargetsProcessor(BaseProcessor):
 
             COMMENT ON COLUMN opentargets_gene_disease_associations.known_drug_score IS
             'Evidence from approved or clinical-phase drugs targeting this gene for this disease. Higher scores indicate actionable targets.';
-        """)
+        """
+        )
 
         # Known drugs table
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS opentargets_known_drugs (
                 drug_id SERIAL PRIMARY KEY,
                 molecule_chembl_id TEXT,
@@ -336,10 +352,12 @@ class OpenTargetsProcessor(BaseProcessor):
 
             COMMENT ON COLUMN opentargets_known_drugs.is_approved IS
             'True if drug is approved for any indication (may differ from specific disease indication in this row)';
-        """)
+        """
+        )
 
         # Target tractability table
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS opentargets_target_tractability (
                 gene_id TEXT PRIMARY KEY,
 
@@ -364,10 +382,12 @@ class OpenTargetsProcessor(BaseProcessor):
 
             COMMENT ON TABLE opentargets_target_tractability IS
             'Druggability assessment for gene targets from Open Targets. Clinical_precedence indicates drugs exist for this target or related family members. Use to assess likelihood of successful drug development.';
-        """)
+        """
+        )
 
         # Metadata tracking table
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS opentargets_metadata (
                 version TEXT PRIMARY KEY,
                 release_date DATE,
@@ -376,7 +396,8 @@ class OpenTargetsProcessor(BaseProcessor):
                 validation_results JSONB,
                 notes TEXT
             );
-        """)
+        """
+        )
 
     def _process_diseases(self) -> int:
         """
@@ -398,12 +419,10 @@ class OpenTargetsProcessor(BaseProcessor):
             therapeutic_areas = row.get("therapeuticAreas", [])
             if therapeutic_areas is None:
                 therapeutic_areas = []
-            elif hasattr(therapeutic_areas, '__len__') and len(therapeutic_areas) == 0:
+            elif hasattr(therapeutic_areas, "__len__") and len(therapeutic_areas) == 0:
                 therapeutic_areas = []
             is_cancer = self._is_cancer_disease(
-                therapeutic_areas,
-                row.get("id", ""),
-                row.get("name", "")
+                therapeutic_areas, row.get("id", ""), row.get("name", "")
             )
 
             # Extract parent IDs from ontology
@@ -418,7 +437,7 @@ class OpenTargetsProcessor(BaseProcessor):
                 "is_cancer": is_cancer,
                 "parent_disease_ids": self._to_json_serializable(parents),
                 "metadata": self._extract_disease_metadata(row),
-                "ot_version": self.ot_config.version
+                "ot_version": self.ot_config.version,
             }
             records.append(record)
 
@@ -442,7 +461,9 @@ class OpenTargetsProcessor(BaseProcessor):
         df = self._read_parquet_dataset(cache_path)
 
         # Filter for cancer diseases and score threshold
-        logger.info(f"Filtering associations: score >= {self.ot_config.min_overall_score}, cancer only")
+        logger.info(
+            f"Filtering associations: score >= {self.ot_config.min_overall_score}, cancer only"
+        )
         df = df[df["score"] >= self.ot_config.min_overall_score]
 
         # Get cancer disease IDs from database
@@ -458,7 +479,9 @@ class OpenTargetsProcessor(BaseProcessor):
         records = []
         skipped = 0
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing associations"):
+        for _, row in tqdm(
+            df.iterrows(), total=len(df), desc="Processing associations"
+        ):
             # Map target ID to our gene_id format
             target_id = row.get("targetId", "")
             gene_id = gene_id_map.get(target_id)
@@ -480,7 +503,7 @@ class OpenTargetsProcessor(BaseProcessor):
                 "overall_score": self._safe_float(row.get("score", 0)),
                 "is_direct": True,  # Using direct associations dataset
                 "metadata": self._extract_association_metadata(row),
-                "ot_version": self.ot_config.version
+                "ot_version": self.ot_config.version,
             }
 
             records.append(record)
@@ -528,7 +551,9 @@ class OpenTargetsProcessor(BaseProcessor):
 
             record = {
                 "molecule_chembl_id": row.get("drugId"),
-                "molecule_name": row.get("prefName", ""),  # FIX Issue #21: Use prefName field
+                "molecule_name": row.get(
+                    "prefName", ""
+                ),  # FIX Issue #21: Use prefName field
                 "molecule_type": row.get("drugType"),
                 "target_gene_id": gene_id,
                 "disease_id": disease_id,
@@ -541,7 +566,7 @@ class OpenTargetsProcessor(BaseProcessor):
                 "is_approved": is_approved,
                 "clinical_trial_ids": self._to_json_serializable(row.get("urls", [])),
                 "metadata": self._extract_drug_metadata(row),
-                "ot_version": self.ot_config.version
+                "ot_version": self.ot_config.version,
             }
 
             records.append(record)
@@ -565,7 +590,9 @@ class OpenTargetsProcessor(BaseProcessor):
         gene_id_map = self._get_gene_id_mapping()
 
         records = []
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing tractability"):
+        for _, row in tqdm(
+            df.iterrows(), total=len(df), desc="Processing tractability"
+        ):
             target_id = row.get("id", "")
             gene_id = gene_id_map.get(target_id)
 
@@ -586,7 +613,10 @@ class OpenTargetsProcessor(BaseProcessor):
             ab_bucket = None
 
             # Parse tractability array if it exists and is not None
-            if tractability_array is not None and not (isinstance(tractability_array, np.ndarray) and len(tractability_array) == 0):
+            if tractability_array is not None and not (
+                isinstance(tractability_array, np.ndarray)
+                and len(tractability_array) == 0
+            ):
                 try:
                     for item in tractability_array:
                         if not isinstance(item, dict):
@@ -602,11 +632,17 @@ class OpenTargetsProcessor(BaseProcessor):
                                     sm_clinical = True
                                     if not sm_bucket:
                                         sm_bucket = category
-                                elif category in ["Phase 1 Clinical", "Structure with Ligand"]:
+                                elif category in [
+                                    "Phase 1 Clinical",
+                                    "Structure with Ligand",
+                                ]:
                                     sm_discovery = True
                                     if not sm_bucket:
                                         sm_bucket = category
-                                elif category in ["High-Quality Ligand", "Druggable Family"]:
+                                elif category in [
+                                    "High-Quality Ligand",
+                                    "Druggable Family",
+                                ]:
                                     sm_predicted = True
                                     if not sm_bucket:
                                         sm_bucket = category
@@ -617,7 +653,11 @@ class OpenTargetsProcessor(BaseProcessor):
                                     ab_clinical = True
                                     if not ab_bucket:
                                         ab_bucket = category
-                                elif category in ["Phase 1 Clinical", "UniProt loc high conf", "GO CC high conf"]:
+                                elif category in [
+                                    "Phase 1 Clinical",
+                                    "UniProt loc high conf",
+                                    "GO CC high conf",
+                                ]:
                                     ab_predicted = True
                                     if not ab_bucket:
                                         ab_bucket = category
@@ -637,8 +677,12 @@ class OpenTargetsProcessor(BaseProcessor):
                     sm_clinical, sm_discovery, sm_predicted, ab_clinical, ab_predicted
                 ),
                 # FIX Issue #23: Wrap array in dict for JSONB object compatibility
-                "metadata": {"tractability": self._to_json_serializable(tractability_array)} if tractability_array is not None else {},
-                "ot_version": self.ot_config.version
+                "metadata": {
+                    "tractability": self._to_json_serializable(tractability_array)
+                }
+                if tractability_array is not None
+                else {},
+                "ot_version": self.ot_config.version,
             }
 
             records.append(record)
@@ -655,21 +699,18 @@ class OpenTargetsProcessor(BaseProcessor):
             # Disease indexes
             "CREATE INDEX IF NOT EXISTS idx_ot_diseases_name ON opentargets_diseases USING gin(to_tsvector('english', disease_name))",
             "CREATE INDEX IF NOT EXISTS idx_ot_diseases_cancer ON opentargets_diseases(is_cancer) WHERE is_cancer = true",
-
             # Association indexes
             "CREATE INDEX IF NOT EXISTS idx_ot_assoc_gene ON opentargets_gene_disease_associations(gene_id)",
             "CREATE INDEX IF NOT EXISTS idx_ot_assoc_disease ON opentargets_gene_disease_associations(disease_id)",
             "CREATE INDEX IF NOT EXISTS idx_ot_assoc_score ON opentargets_gene_disease_associations(overall_score DESC)",
             "CREATE INDEX IF NOT EXISTS idx_ot_assoc_gene_score ON opentargets_gene_disease_associations(gene_id, overall_score DESC)",
             "CREATE INDEX IF NOT EXISTS idx_ot_assoc_cancer_genes ON opentargets_gene_disease_associations(gene_id, overall_score) WHERE overall_score >= 0.5",
-
             # Drug indexes
             "CREATE INDEX IF NOT EXISTS idx_ot_drugs_target ON opentargets_known_drugs(target_gene_id)",
             "CREATE INDEX IF NOT EXISTS idx_ot_drugs_disease ON opentargets_known_drugs(disease_id)",
             "CREATE INDEX IF NOT EXISTS idx_ot_drugs_approved ON opentargets_known_drugs(is_approved, clinical_phase)",
             "CREATE INDEX IF NOT EXISTS idx_ot_drugs_chembl ON opentargets_known_drugs(molecule_chembl_id) WHERE molecule_chembl_id IS NOT NULL",
             "CREATE INDEX IF NOT EXISTS idx_ot_drugs_name ON opentargets_known_drugs USING gin(to_tsvector('english', molecule_name))",
-
             # Tractability indexes
             "CREATE INDEX IF NOT EXISTS idx_ot_tract_sm ON opentargets_target_tractability(gene_id) WHERE sm_clinical_precedence = true OR sm_predicted_tractable = true",
         ]
@@ -718,10 +759,11 @@ class OpenTargetsProcessor(BaseProcessor):
                 "-np",  # No parent directories
                 "-nH",  # No host directories
                 "--cut-dirs=6",  # Remove directory prefix
-                "-P", str(cache_path),
+                "-P",
+                str(cache_path),
                 "-q",  # Quiet (use progress bar instead)
                 "--show-progress",
-                url
+                url,
             ]
 
             subprocess.run(cmd, check=True)
@@ -735,6 +777,7 @@ class OpenTargetsProcessor(BaseProcessor):
     def _get_cache_key(self, url: str) -> str:
         """Generate cache key from URL."""
         import hashlib
+
         return hashlib.sha256(url.encode()).hexdigest()[:16]
 
     def _read_parquet_dataset(self, path: Path) -> pd.DataFrame:
@@ -745,15 +788,15 @@ class OpenTargetsProcessor(BaseProcessor):
             return pq.read_table(path).to_pandas()
 
     def _is_cancer_disease(
-        self,
-        therapeutic_areas: List[str],
-        disease_id: str,
-        disease_name: str
+        self, therapeutic_areas: List[str], disease_id: str, disease_name: str
     ) -> bool:
         """Determine if disease is cancer-related."""
         # Check therapeutic areas
         for area in therapeutic_areas:
-            if any(keyword in area.lower() for keyword in self.ot_config.cancer_therapeutic_areas):
+            if any(
+                keyword in area.lower()
+                for keyword in self.ot_config.cancer_therapeutic_areas
+            ):
                 return True
 
         # Check disease ID
@@ -762,7 +805,15 @@ class OpenTargetsProcessor(BaseProcessor):
             return True
 
         # Check disease name
-        cancer_keywords = ["cancer", "carcinoma", "neoplasm", "tumor", "lymphoma", "leukemia", "sarcoma"]
+        cancer_keywords = [
+            "cancer",
+            "carcinoma",
+            "neoplasm",
+            "tumor",
+            "lymphoma",
+            "leukemia",
+            "sarcoma",
+        ]
         disease_name_lower = disease_name.lower()
         return any(keyword in disease_name_lower for keyword in cancer_keywords)
 
@@ -776,13 +827,14 @@ class OpenTargetsProcessor(BaseProcessor):
 
     def _extract_parent_ids(self, parents: List) -> List[str]:
         """Extract parent disease IDs from ontology."""
-        if parents is None or (hasattr(parents, '__len__') and len(parents) == 0):
+        if parents is None or (hasattr(parents, "__len__") and len(parents) == 0):
             return []
         return [p.replace(":", "_") for p in parents if isinstance(p, str)]
 
     def _to_json_serializable(self, value):
         """Convert numpy arrays/pandas Series to JSON-serializable types recursively."""
         import numpy as np
+
         if value is None:
             return None
         if isinstance(value, (np.ndarray, pd.Series)):
@@ -820,20 +872,16 @@ class OpenTargetsProcessor(BaseProcessor):
         """Extract additional disease metadata."""
         return {
             "synonyms": self._to_json_serializable(row.get("synonyms", [])),
-            "dbXRefs": self._to_json_serializable(row.get("dbXRefs", []))
+            "dbXRefs": self._to_json_serializable(row.get("dbXRefs", [])),
         }
 
     def _extract_association_metadata(self, row: pd.Series) -> Dict:
         """Extract association metadata."""
-        return self._to_json_serializable({
-            "datasources": row.get("datasources", [])
-        })
+        return self._to_json_serializable({"datasources": row.get("datasources", [])})
 
     def _extract_drug_metadata(self, row: pd.Series) -> Dict:
         """Extract drug metadata."""
-        return self._to_json_serializable({
-            "references": row.get("references", [])
-        })
+        return self._to_json_serializable({"references": row.get("references", [])})
 
     def _format_phase_label(self, phase: Optional[float]) -> str:
         """Format clinical phase as label."""
@@ -844,7 +892,7 @@ class OpenTargetsProcessor(BaseProcessor):
             1: "Phase I",
             2: "Phase II",
             3: "Phase III",
-            4: "Approved"
+            4: "Approved",
         }
         return phase_map.get(int(phase), "Unknown")
 
@@ -870,7 +918,7 @@ class OpenTargetsProcessor(BaseProcessor):
         sm_discovery: bool,
         sm_predicted: bool,
         ab_clinical: bool,
-        ab_predicted: bool
+        ab_predicted: bool,
     ) -> str:
         """Generate human-readable tractability summary from boolean flags.
 
@@ -911,11 +959,13 @@ class OpenTargetsProcessor(BaseProcessor):
         if not self.ensure_connection() or not self.db_manager.cursor:
             return {}
         # In our schema, gene_id column in genes table IS the Ensembl gene ID
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             SELECT gene_id, gene_id
             FROM genes
             WHERE gene_id LIKE 'ENSG%'
-        """)
+        """
+        )
         result = self.db_manager.cursor.fetchall()
         return {row[0]: row[1] for row in result}
 
@@ -958,11 +1008,14 @@ class OpenTargetsProcessor(BaseProcessor):
 
         # Convert metadata to JSON strings
         for record in records:
-            if isinstance(record.get('metadata'), dict):
+            if isinstance(record.get("metadata"), dict):
                 import json
-                record['metadata'] = json.dumps(record['metadata'])
 
-        execute_batch(self.db_manager.cursor, insert_sql, records, page_size=self.batch_size)
+                record["metadata"] = json.dumps(record["metadata"])
+
+        execute_batch(
+            self.db_manager.cursor, insert_sql, records, page_size=self.batch_size
+        )
         if self.db_manager.conn and not self.db_manager.conn.closed:
             self.db_manager.conn.commit()
 
@@ -990,11 +1043,14 @@ class OpenTargetsProcessor(BaseProcessor):
 
         # Convert metadata to JSON strings
         for record in records:
-            if isinstance(record.get('metadata'), dict):
+            if isinstance(record.get("metadata"), dict):
                 import json
-                record['metadata'] = json.dumps(record['metadata'])
 
-        execute_batch(self.db_manager.cursor, insert_sql, records, page_size=self.batch_size)
+                record["metadata"] = json.dumps(record["metadata"])
+
+        execute_batch(
+            self.db_manager.cursor, insert_sql, records, page_size=self.batch_size
+        )
         if self.db_manager.conn and not self.db_manager.conn.closed:
             self.db_manager.conn.commit()
 
@@ -1023,11 +1079,14 @@ class OpenTargetsProcessor(BaseProcessor):
 
         # Convert metadata to JSON strings
         for record in records:
-            if isinstance(record.get('metadata'), dict):
+            if isinstance(record.get("metadata"), dict):
                 import json
-                record['metadata'] = json.dumps(record['metadata'])
 
-        execute_batch(self.db_manager.cursor, insert_sql, records, page_size=self.batch_size)
+                record["metadata"] = json.dumps(record["metadata"])
+
+        execute_batch(
+            self.db_manager.cursor, insert_sql, records, page_size=self.batch_size
+        )
         if self.db_manager.conn and not self.db_manager.conn.closed:
             self.db_manager.conn.commit()
 
@@ -1065,20 +1124,26 @@ class OpenTargetsProcessor(BaseProcessor):
 
         # Convert metadata to JSON strings
         for record in records:
-            if isinstance(record.get('metadata'), dict):
+            if isinstance(record.get("metadata"), dict):
                 import json
-                record['metadata'] = json.dumps(record['metadata'])
 
-        execute_batch(self.db_manager.cursor, insert_sql, records, page_size=self.batch_size)
+                record["metadata"] = json.dumps(record["metadata"])
+
+        execute_batch(
+            self.db_manager.cursor, insert_sql, records, page_size=self.batch_size
+        )
         if self.db_manager.conn and not self.db_manager.conn.closed:
             self.db_manager.conn.commit()
 
     def _record_metadata(self, counts: Dict[str, int]) -> None:
         """Record ETL metadata."""
-        self.db_manager.cursor.execute("""
+        self.db_manager.cursor.execute(
+            """
             INSERT INTO opentargets_metadata (version, record_counts)
             VALUES (%s, %s)
             ON CONFLICT (version) DO UPDATE
             SET record_counts = EXCLUDED.record_counts,
                 loaded_date = NOW()
-        """, (self.ot_config.version, counts))
+        """,
+            (self.ot_config.version, counts),
+        )

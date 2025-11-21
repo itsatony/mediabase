@@ -1,6 +1,6 @@
 # MEDIABASE: Cancer Transcriptome Database
 
-**Version:** 0.4.1 | **Status:** Production-Ready | [CHANGELOG](CHANGELOG.md)
+**Version:** 0.6.0 | **Status:** Production-Ready | [CHANGELOG](CHANGELOG.md)
 
 Comprehensive PostgreSQL database for cancer transcriptomics analysis, integrating gene expression data with biological annotations, drug information, disease associations, and scientific literature.
 
@@ -17,13 +17,24 @@ MEDIABASE combines multiple biological data sources into a unified, queryable da
 - **Literature Evidence** - PubMed/PubTator Central (47M+ gene-publication links)
 - **Cross-References** - ID mappings across UniProt, NCBI, RefSeq, Ensembl
 
+### Architecture (v0.6.0)
+
+MEDIABASE uses a **shared core architecture** for optimal storage efficiency:
+
+- **Single Database**: One PostgreSQL database (`mbase`) contains all data
+- **Public Schema**: Core transcriptome and biological data shared across all patients
+- **Patient Schemas**: Isolated schemas (`patient_<ID>`) for patient-specific expression data
+- **Sparse Storage**: Only stores expression values ≠ 1.0 (99.75% storage reduction vs v0.5.0)
+- **Query Pattern**: Simple LEFT JOIN between public and patient schemas
+
 ### Key Features
 
-- **Patient-Specific Analysis**: Create dedicated databases with patient transcriptomics data
+- **Patient-Specific Analysis**: Create isolated patient schemas with transcriptomics data
 - **DESeq2 Support**: Automatic conversion of DESeq2 output (`log2FoldChange` → linear fold-change)
-- **RESTful API**: Query endpoints for integration with analysis workflows
+- **RESTful API**: Query endpoints with patient_id parameter support
 - **Production Queries**: 25 validated SQL queries for common analyses
 - **Clinical Guides**: HER2+ breast cancer and MSS colorectal cancer examples
+- **Storage Efficient**: Baseline expression implicit, only store deviations
 
 ---
 
@@ -74,27 +85,35 @@ poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100 --log-le
 
 ## Usage Examples
 
-### Create Patient-Specific Database
+### Create Patient Schema (v0.6.0)
 
 ```bash
-# From DESeq2 results
+# From DESeq2 results - creates schema in shared database
 poetry run python scripts/create_patient_copy.py \
   --patient-id PATIENT123 \
-  --csv-file deseq2_results.csv
+  --csv-file deseq2_results.csv \
+  --source-db mbase
 
 # Validate CSV format (dry-run)
 poetry run python scripts/create_patient_copy.py \
   --patient-id PATIENT123 \
   --csv-file data.csv \
+  --source-db mbase \
   --dry-run
 ```
+
+**v0.6.0 Architecture:**
+- Creates `patient_PATIENT123` schema in existing `mbase` database
+- Schema contains `expression_data` (sparse) and `metadata` tables
+- Shared `public` schema provides core transcriptome data
+- Storage efficient: Only non-baseline expression values stored
 
 **CSV Requirements:**
 - Columns: `transcript_id` (or `SYMBOL`) and `cancer_fold` (or `log2FoldChange`)
 - Format: Standard CSV with header row
 - Example: `examples/patient_data_example.csv`
 
-### Query Database
+### Query Database (v0.6.0)
 
 ```python
 import psycopg2
@@ -106,20 +125,21 @@ conn = psycopg2.connect(
     password="your_password"
 )
 
-# Find FDA-approved drugs for overexpressed genes
+# Find FDA-approved drugs for overexpressed genes (patient-specific)
 query = """
 SELECT
     g.gene_symbol,
-    ctb.expression_fold_change,
+    COALESCE(pe.expression_fold_change, 1.0) as fold_change,
     okd.molecule_name as drug_name,
     okd.mechanism_of_action,
     okd.clinical_phase_label
-FROM cancer_transcript_base ctb
-JOIN genes g ON ctb.gene_symbol = g.gene_symbol
-JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
-WHERE ctb.expression_fold_change > 2.0
+FROM public.transcripts t
+LEFT JOIN patient_PATIENT123.expression_data pe ON t.transcript_id = pe.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+JOIN public.opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+WHERE COALESCE(pe.expression_fold_change, 1.0) > 2.0
   AND okd.is_approved = true
-ORDER BY ctb.expression_fold_change DESC
+ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC
 LIMIT 10;
 """
 
@@ -128,7 +148,7 @@ cursor.execute(query)
 results = cursor.fetchall()
 ```
 
-### Start API Server
+### Start API Server (v0.6.0)
 
 ```bash
 # Launch RESTful API
@@ -137,8 +157,14 @@ poetry run python -m src.api.server
 # API Documentation
 open http://localhost:8000/docs
 
-# Search endpoint
-curl "http://localhost:8000/api/v1/transcripts?symbol=EGFR"
+# Search public schema (baseline expression)
+curl "http://localhost:8000/api/v1/transcripts?gene_symbols=EGFR"
+
+# Search patient-specific data
+curl "http://localhost:8000/api/v1/transcripts?patient_id=PATIENT123&gene_symbols=ERBB2&fold_change_min=4.0"
+
+# List available patient schemas
+curl "http://localhost:8000/api/v1/patients"
 ```
 
 ---
@@ -328,7 +354,7 @@ If you use MEDIABASE in your research, please cite:
 
 ```
 MEDIABASE: Cancer Transcriptome Database (2025)
-Version 0.4.1
+Version 0.6.0
 https://github.com/itsatony/mediabase
 ```
 

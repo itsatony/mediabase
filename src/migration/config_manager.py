@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 @dataclass
 class DatabaseConfig:
     """Database configuration settings."""
+
     host: str = "localhost"
     port: int = 5432
     database: str = "mbase"
@@ -34,6 +35,7 @@ class DatabaseConfig:
 @dataclass
 class ValidationConfig:
     """Data validation configuration."""
+
     max_gene_symbol_length: int = 50
     required_gene_fields: List[str] = None
     drug_name_min_length: int = 2
@@ -45,18 +47,23 @@ class ValidationConfig:
 
     def __post_init__(self):
         if self.required_gene_fields is None:
-            self.required_gene_fields = ['gene_id', 'gene_symbol', 'gene_type']
+            self.required_gene_fields = ["gene_id", "gene_symbol", "gene_type"]
 
         if self.cross_reference_databases is None:
-            self.cross_reference_databases = ['UniProt', 'RefSeq', 'Ensembl']
+            self.cross_reference_databases = ["UniProt", "RefSeq", "Ensembl"]
 
         if self.go_categories is None:
-            self.go_categories = ['molecular_function', 'biological_process', 'cellular_component']
+            self.go_categories = [
+                "molecular_function",
+                "biological_process",
+                "cellular_component",
+            ]
 
 
 @dataclass
 class PerformanceConfig:
     """Performance and optimization configuration."""
+
     batch_size: int = 10000
     index_creation_parallel: bool = True
     materialized_view_refresh_interval: int = 3600
@@ -70,6 +77,7 @@ class PerformanceConfig:
 @dataclass
 class TestingConfig:
     """Testing framework configuration."""
+
     test_unit: bool = True
     test_integration: bool = True
     test_performance: bool = True
@@ -84,6 +92,7 @@ class TestingConfig:
 @dataclass
 class MigrationConfig:
     """Main migration configuration."""
+
     # Directories and paths
     checkpoints_dir: str = "./migration_checkpoints"
     backup_dir: str = "./migration_backups"
@@ -122,7 +131,9 @@ class MigrationConfig:
 class ConfigurationManager:
     """Manages migration configuration with validation and environment support."""
 
-    def __init__(self, config_file: Optional[str] = None, environment: str = "development"):
+    def __init__(
+        self, config_file: Optional[str] = None, environment: str = "development"
+    ):
         """Initialize configuration manager.
 
         Args:
@@ -174,8 +185,8 @@ class ConfigurationManager:
                 logger.warning(f"Configuration file not found: {config_file}")
                 return
 
-            with open(config_path, 'r') as f:
-                if config_path.suffix.lower() in ['.yml', '.yaml']:
+            with open(config_path, "r") as f:
+                if config_path.suffix.lower() in [".yml", ".yaml"]:
                     file_config = yaml.safe_load(f)
                 else:
                     file_config = json.load(f)
@@ -191,34 +202,33 @@ class ConfigurationManager:
         """Load configuration from environment variables."""
         env_mappings = {
             # Database settings
-            'MB_POSTGRES_HOST': 'database.host',
-            'MB_POSTGRES_PORT': 'database.port',
-            'MB_POSTGRES_DB': 'database.database',
-            'MB_POSTGRES_USER': 'database.user',
-            'MB_POSTGRES_PASSWORD': 'database.password',
-
+            "MB_POSTGRES_HOST": "database.host",
+            "MB_POSTGRES_PORT": "database.port",
+            "MB_POSTGRES_DB": "database.database",
+            "MB_POSTGRES_USER": "database.user",
+            "MB_POSTGRES_PASSWORD": "database.password",
             # Migration settings
-            'MB_MIGRATION_CHECKPOINTS_DIR': 'checkpoints_dir',
-            'MB_MIGRATION_BACKUP_DIR': 'backup_dir',
-            'MB_MIGRATION_TEMP_DIR': 'temp_dir',
-            'MB_MIGRATION_LOG_DIR': 'log_dir',
-
+            "MB_MIGRATION_CHECKPOINTS_DIR": "checkpoints_dir",
+            "MB_MIGRATION_BACKUP_DIR": "backup_dir",
+            "MB_MIGRATION_TEMP_DIR": "temp_dir",
+            "MB_MIGRATION_LOG_DIR": "log_dir",
             # Behavior settings
-            'MB_MIGRATION_AUTO_CLEANUP': 'auto_cleanup',
-            'MB_MIGRATION_DEBUG': 'debug_mode',
-            'MB_MIGRATION_VERBOSE': 'verbose_logging',
-
+            "MB_MIGRATION_AUTO_CLEANUP": "auto_cleanup",
+            "MB_MIGRATION_DEBUG": "debug_mode",
+            "MB_MIGRATION_VERBOSE": "verbose_logging",
             # Performance settings
-            'MB_MIGRATION_BATCH_SIZE': 'performance.batch_size',
-            'MB_MIGRATION_PARALLEL_WORKERS': 'performance.parallel_workers',
-            'MB_MIGRATION_MEMORY_LIMIT': 'performance.memory_limit_mb',
+            "MB_MIGRATION_BATCH_SIZE": "performance.batch_size",
+            "MB_MIGRATION_PARALLEL_WORKERS": "performance.parallel_workers",
+            "MB_MIGRATION_MEMORY_LIMIT": "performance.memory_limit_mb",
         }
 
         for env_var, config_path in env_mappings.items():
             env_value = os.getenv(env_var)
             if env_value is not None:
                 try:
-                    self._set_nested_value(config_path, self._convert_env_value(env_value))
+                    self._set_nested_value(
+                        config_path, self._convert_env_value(env_value)
+                    )
                     logger.debug(f"Set {config_path} from {env_var}")
                 except Exception as e:
                     logger.warning(f"Failed to set {config_path} from {env_var}: {e}")
@@ -257,7 +267,7 @@ class ConfigurationManager:
             errors.append("Database port must be between 1 and 65535")
 
         # Validate directory paths
-        for dir_attr in ['checkpoints_dir', 'backup_dir', 'temp_dir', 'log_dir']:
+        for dir_attr in ["checkpoints_dir", "backup_dir", "temp_dir", "log_dir"]:
             dir_path = getattr(self.config, dir_attr)
             try:
                 Path(dir_path).mkdir(parents=True, exist_ok=True)
@@ -276,7 +286,9 @@ class ConfigurationManager:
             errors.append("Testing coverage threshold must be between 0 and 100")
 
         if errors:
-            error_message = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
+            error_message = "Configuration validation failed:\n" + "\n".join(
+                f"  - {error}" for error in errors
+            )
             raise ValueError(error_message)
 
     def _merge_config(self, new_config: Dict[str, Any]) -> None:
@@ -285,9 +297,14 @@ class ConfigurationManager:
         Args:
             new_config: Configuration dictionary to merge
         """
+
         def merge_dict(base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
             for key, value in overlay.items():
-                if isinstance(value, dict) and key in base and isinstance(base[key], dict):
+                if (
+                    isinstance(value, dict)
+                    and key in base
+                    and isinstance(base[key], dict)
+                ):
                     merge_dict(base[key], value)
                 else:
                     base[key] = value
@@ -309,10 +326,10 @@ class ConfigurationManager:
             MigrationConfig object
         """
         # Extract nested configs
-        db_config = DatabaseConfig(**config_dict.pop('database', {}))
-        val_config = ValidationConfig(**config_dict.pop('validation', {}))
-        perf_config = PerformanceConfig(**config_dict.pop('performance', {}))
-        test_config = TestingConfig(**config_dict.pop('testing', {}))
+        db_config = DatabaseConfig(**config_dict.pop("database", {}))
+        val_config = ValidationConfig(**config_dict.pop("validation", {}))
+        perf_config = PerformanceConfig(**config_dict.pop("performance", {}))
+        test_config = TestingConfig(**config_dict.pop("testing", {}))
 
         # Create main config
         main_config = MigrationConfig(**config_dict)
@@ -330,7 +347,7 @@ class ConfigurationManager:
             path: Dot-separated path (e.g., 'database.host')
             value: Value to set
         """
-        parts = path.split('.')
+        parts = path.split(".")
         target = self.config
 
         for part in parts[:-1]:
@@ -348,12 +365,12 @@ class ConfigurationManager:
             Converted value
         """
         # Boolean conversion
-        if value.lower() in ('true', 'false'):
-            return value.lower() == 'true'
+        if value.lower() in ("true", "false"):
+            return value.lower() == "true"
 
         # Integer conversion
         try:
-            if '.' not in value:
+            if "." not in value:
                 return int(value)
         except ValueError:
             pass
@@ -393,8 +410,8 @@ class ConfigurationManager:
         try:
             config_dict = asdict(self.config)
 
-            with open(output_file, 'w') as f:
-                if format.lower() == 'yaml':
+            with open(output_file, "w") as f:
+                if format.lower() == "yaml":
                     yaml.dump(config_dict, f, default_flow_style=False, indent=2)
                 else:
                     json.dump(config_dict, f, indent=2)
@@ -445,7 +462,7 @@ class ConfigurationManager:
             config_file = output_path / f"migration_config_{environment}.yaml"
             config_dict = asdict(env_config)
 
-            with open(config_file, 'w') as f:
+            with open(config_file, "w") as f:
                 yaml.dump(config_dict, f, default_flow_style=False, indent=2)
 
             logger.info(f"✅ Created {environment} configuration: {config_file}")
@@ -461,21 +478,21 @@ class ConfigurationManager:
             Configuration summary dictionary
         """
         return {
-            'environment': self.config.environment,
-            'database_host': self.config.database.host,
-            'database_port': self.config.database.port,
-            'database_name': self.config.database.database,
-            'checkpoints_dir': self.config.checkpoints_dir,
-            'require_confirmation': self.config.require_user_confirmation,
-            'debug_mode': self.config.debug_mode,
-            'batch_size': self.config.performance.batch_size,
-            'parallel_workers': self.config.performance.parallel_workers,
-            'testing_enabled': {
-                'unit': self.config.testing.test_unit,
-                'integration': self.config.testing.test_integration,
-                'performance': self.config.testing.test_performance,
-                'validation': self.config.testing.test_data_validation
-            }
+            "environment": self.config.environment,
+            "database_host": self.config.database.host,
+            "database_port": self.config.database.port,
+            "database_name": self.config.database.database,
+            "checkpoints_dir": self.config.checkpoints_dir,
+            "require_confirmation": self.config.require_user_confirmation,
+            "debug_mode": self.config.debug_mode,
+            "batch_size": self.config.performance.batch_size,
+            "parallel_workers": self.config.performance.parallel_workers,
+            "testing_enabled": {
+                "unit": self.config.testing.test_unit,
+                "integration": self.config.testing.test_integration,
+                "performance": self.config.testing.test_performance,
+                "validation": self.config.testing.test_data_validation,
+            },
         }
 
     def update_runtime_config(self, updates: Dict[str, Any]) -> None:

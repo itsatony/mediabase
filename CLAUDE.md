@@ -8,16 +8,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Workflow**:
 1. Oncologist uploads patient transcriptome data (DESeq2 results, RNA-seq data)
-2. System creates **patient-specific database copy** with integrated fold-change data
+2. System creates **patient-specific schema** in shared database with sparse fold-change data
 3. Oncologist interacts with **LLM-based bioinformatics assistant**
 4. Assistant translates normal medical conversation into optimized SQL queries
 5. Assistant provides clinical insights based on query results
+
+**v0.6.0 Architecture**:
+- **Single Database**: One `mbase` database with public schema + patient schemas
+- **Shared Core**: Public schema contains all transcriptome/biological data (23GB)
+- **Patient Isolation**: Each patient's expression data in isolated schema (`patient_<ID>`)
+- **Sparse Storage**: Only stores fold_change != 1.0 (99.75% storage savings)
+- **Simple Queries**: LEFT JOIN pattern with COALESCE for baseline values
 
 **Design Imperatives**:
 - **Schema must be LLM-friendly**: Clear table/column names, intuitive relationships
 - **Documentation must be comprehensive**: Every data source, every relationship documented
 - **Queries must be SOTA**: State-of-the-art cancer bioinformatics queries as examples
-- **Database must be easily cloneable**: Patient-specific copies are core functionality
+- **Patient schemas are lightweight**: Sparse storage, shared core data
 - **ETL must be robust**: Download+cache pattern, reproducible, well-documented
 
 **This means ALL future work should prioritize**:
@@ -126,7 +133,7 @@ poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100
 poetry run python scripts/run_etl.py --log-level DEBUG
 ```
 
-### API Server (NEW in v0.2.0)
+### API Server (v0.6.0)
 ```bash
 # Start API server
 poetry run python -m src.api.server
@@ -134,20 +141,40 @@ poetry run python -m src.api.server
 # API endpoints available at:
 # - http://localhost:8000/docs (Interactive docs)
 # - http://localhost:8000/api/v1/transcripts (Search endpoint)
+# - http://localhost:8000/api/v1/patients (List patient schemas)
 # - http://localhost:8000/health (Health check)
+
+# Query public schema (baseline expression)
+curl "http://localhost:8000/api/v1/transcripts?gene_symbols=EGFR"
+
+# Query patient-specific data
+curl "http://localhost:8000/api/v1/transcripts?patient_id=PATIENT123&gene_symbols=ERBB2&fold_change_min=4.0"
+
+# List available patient schemas
+curl "http://localhost:8000/api/v1/patients"
 ```
 
-### Patient Copy with DESeq2 Support (Enhanced in v0.2.0)
+### Patient Schema Creation with DESeq2 Support (v0.6.0)
 ```bash
-# Process DESeq2 format files automatically
+# Create patient schema from DESeq2 results
 poetry run python scripts/create_patient_copy.py \
     --patient-id PATIENT123 \
-    --csv-file deseq2_results.csv
+    --csv-file deseq2_results.csv \
+    --source-db mbase
 
-# System automatically detects:
-# - SYMBOL column → gene symbol mapping
-# - log2FoldChange column → linear conversion
+# System automatically:
+# - Creates patient_PATIENT123 schema in mbase database
+# - Detects SYMBOL column → gene symbol mapping
+# - Converts log2FoldChange → linear fold change
+# - Stores only non-baseline values (sparse storage)
 # - Provides mapping success rate statistics
+
+# Validate CSV format without making changes
+poetry run python scripts/create_patient_copy.py \
+    --patient-id PATIENT123 \
+    --csv-file data.csv \
+    --source-db mbase \
+    --dry-run
 ```
 
 ## Architecture
@@ -240,35 +267,108 @@ Required environment variables (copy from `.env.example`):
 - Use `MB_POSTGRES_NAME=mediabase_test` for test environment
 - Integration tests may require actual ETL data for validation
 
-## Patient Copy Functionality
+## Patient Schema Management (v0.6.0)
 
-### Creating Patient-Specific Databases
-MEDIABASE includes functionality to create patient-specific database copies with custom fold-change data:
+### v0.6.0 Shared Core Architecture
+
+MEDIABASE v0.6.0 uses a **single database with schema-based multi-tenancy**:
+
+**Architecture Components:**
+- **One Database**: `mbase` contains all data (public + patient schemas)
+- **Public Schema**: Core transcriptome data (genes, transcripts, pathways, drugs, publications)
+- **Patient Schemas**: Isolated `patient_<ID>` schemas for patient-specific expression data
+- **Sparse Storage**: Only stores `expression_fold_change != 1.0` (99.75% storage reduction)
+- **Baseline Implicit**: fold_change = 1.0 assumed for all transcripts not in patient schema
+
+**Benefits:**
+- **Storage Efficient**: ~23GB core + ~10MB per patient (vs ~23GB per patient in v0.5.0)
+- **Fast Queries**: Simple LEFT JOIN pattern, no cross-database complexity
+- **Easy Backups**: Single database backup includes all patient data
+- **Multi-tenant**: Thousands of patient schemas in one database
+
+### Creating Patient Schemas
 
 ```bash
-# Create patient copy with transcriptome data
+# Create patient schema from DESeq2 results
 poetry run python scripts/create_patient_copy.py \
     --patient-id PATIENT123 \
-    --csv-file patient_transcriptome.csv
+    --csv-file deseq2_results.csv \
+    --source-db mbase
 
 # Validate CSV without making changes
 poetry run python scripts/create_patient_copy.py \
     --patient-id PATIENT123 \
     --csv-file data.csv \
+    --source-db mbase \
     --dry-run
+
+# Generate synthetic patient data for testing
+poetry run python scripts/generate_synthetic_patient_data.py \
+    --cancer-type HER2_POSITIVE \
+    --output examples/synthetic_her2_patient.csv \
+    --num-genes 500
 ```
 
 ### CSV Requirements
 - **Required columns**: `transcript_id` and `cancer_fold` (or alternatives)
+  - Alternatives: `SYMBOL` + `log2FoldChange` (DESeq2 format)
+  - System auto-detects column names and formats
 - **Format**: Standard CSV with header row
 - **Data**: Ensembl transcript IDs and numeric fold-change values
+  - Linear fold-change (e.g., 6.0 = 6-fold overexpression)
+  - OR log2 fold-change (auto-converted to linear)
 - **Example**: See `examples/patient_data_example.csv`
 
 ### Workflow
 1. **CSV Validation**: Automatic column detection and data validation
-2. **Database Copy**: Complete schema and data duplication
-3. **Fold-Change Update**: Batch update of `expression_fold_change` column
-4. **Validation**: Verification of successful updates
+2. **Schema Creation**: `patient_<ID>` schema created in `mbase` database
+3. **Sparse Insert**: Only non-baseline values (≠ 1.0) inserted
+4. **Metadata**: Upload provenance tracked in `patient_<ID>.metadata` table
+5. **Validation**: Verification of successful updates and data integrity
+
+### Query Pattern (v0.6.0)
+
+```sql
+-- Query patient-specific expression data
+SELECT
+    g.gene_symbol,
+    t.transcript_id,
+    COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    okd.molecule_name as drug_name
+FROM public.transcripts t
+LEFT JOIN patient_PATIENT123.expression_data pe
+    ON t.transcript_id = pe.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.opentargets_known_drugs okd
+    ON g.gene_id = okd.target_gene_id
+WHERE COALESCE(pe.expression_fold_change, 1.0) > 2.0  -- Overexpressed
+  AND okd.is_approved = true
+ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC
+LIMIT 20;
+```
+
+**Key Pattern Elements:**
+- `LEFT JOIN patient_<ID>.expression_data` - Patient-specific values
+- `COALESCE(pe.expression_fold_change, 1.0)` - Baseline 1.0 for missing values
+- `public.transcripts`, `public.genes` - Shared core data
+- Simple single-database connection
+
+### Managing Patient Schemas
+
+```bash
+# List all patient schemas
+poetry run python scripts/manage_db.py --list-patients
+
+# Validate patient schema integrity
+poetry run python scripts/manage_db.py --validate-patient PATIENT123
+
+# Drop patient schema (careful!)
+poetry run python scripts/manage_db.py --drop-patient PATIENT123
+
+# Backup specific patient schema
+pg_dump -h localhost -p 5432 -U user -d mbase \
+  --schema=patient_PATIENT123 > patient_backup.sql
+```
 
 ## ChEMBL v35 Integration (NEW in v0.4.1)
 
@@ -351,20 +451,20 @@ FROM (SELECT unnest(pathways) as pathway FROM cancer_transcript_base) p;
 "
 ```
 
-## SOTA Query Files
+## SOTA Query Files (v0.6.0)
 
-MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer therapeutic analysis on patient-specific databases.
+MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer therapeutic analysis using patient-specific schemas.
 
 ### Available Query Files
 
-**PRIMARY QUERY FILE** (NEW in v0.4.1):
+**PRIMARY QUERY FILE** (Updated for v0.6.0):
 - **`WORKING_QUERY_EXAMPLES.sql`**: Comprehensive verified query library ✅
   - **Status**: Fully tested and production-ready
   - **Size**: 433 lines with 15+ working queries
-  - **Coverage**: Patient databases + main database queries
+  - **Coverage**: Patient schema queries + public schema queries
   - **Best for**: Clinical cancer analytics, therapeutic targeting, biomarker discovery
-  - **Tested on**: All 6 demo patient databases + main database
-  - **Sections**: Patient queries, main database queries, cross-schema compatibility, troubleshooting
+  - **Tested on**: 3 demo patient schemas (HER2+, TNBC, EGFR+) in `mbase` database
+  - **Sections**: Patient queries, baseline queries, LEFT JOIN patterns, COALESCE usage
 
 **Recommended Alternatives**:
 - **`cancer_specific_sota_queries.sql`**: Cancer-type-specific queries (HER2+, TNBC, EGFR+, MSI-high, PDAC)
@@ -388,14 +488,13 @@ MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer therapeutic an
   - Contains 5 PostgreSQL syntax errors
   - Replaced by `legacy_sota_queries_for_patients.sql`
 
-### Usage Example
+### Usage Example (v0.6.0)
 
 ```bash
-# Connect to patient database
-PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user \
-  -d mediabase_patient_DEMO_BREAST_HER2
+# Connect to mbase database (contains all patient schemas)
+PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user -d mbase
 
-# Run PRIMARY query file (recommended)
+# Run PRIMARY query file (v0.6.0 compatible)
 \i WORKING_QUERY_EXAMPLES.sql
 
 # Or run cancer-specific queries
@@ -403,6 +502,11 @@ PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user \
 
 # Or run comprehensive SOTA analysis
 \i legacy_sota_queries_for_patients.sql
+
+# List available patient schemas
+SELECT schema_name
+FROM information_schema.schemata
+WHERE schema_name LIKE 'patient_%';
 ```
 
 ### Query Examples from WORKING_QUERY_EXAMPLES.sql
@@ -587,7 +691,7 @@ Before submitting new data source integration:
 - [ ] Data provenance tracked (source, version, date)
 - [ ] README.md updated with source description
 - [ ] Tests verify data loading and basic queries
-- [ ] Validated on patient-specific database copy
+- [ ] Validated with patient schema queries (v0.6.0)
 - [ ] Query examples tested with actual LLM (Claude/GPT-4)
 
 ### Example: Well-Documented Table
@@ -616,6 +720,17 @@ COMMENT ON COLUMN clinical_trial_gene_associations.association_type IS
 ```
 
 ## Version History & Migration
+
+### v0.6.0 - Shared Core Architecture (Current)
+- **Architecture Overhaul**: Single database with schema-based multi-tenancy
+- **Patient Schemas**: `patient_<ID>` schemas replace per-patient databases
+- **Sparse Storage**: 99.75% storage reduction (only store fold_change != 1.0)
+- **API Updates**: Patient_id parameter support for multi-patient queries
+- **Query Patterns**: LEFT JOIN with COALESCE for baseline expression
+- **Synthetic Data**: Generate biologically realistic test patient data
+- **Migration Tools**: Automated migration from v0.5.0 database-per-patient model
+
+**Migration from v0.5.0**: See `docs/MIGRATION_GUIDE_v0.6.0.md`
 
 ### v0.5.0 (Planned) - Publications & Clinical Trials
 - PubTator Central gene-publication links

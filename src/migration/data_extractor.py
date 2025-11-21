@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 
 class ExtractionError(Exception):
     """Custom exception for data extraction errors."""
+
     pass
 
 
@@ -60,9 +61,9 @@ class RobustDataExtractor:
         # Multi-pass extraction to handle various gene ID formats and quality issues
         gene_extraction_queries = [
             {
-                'name': 'clean_records',
-                'description': 'Primary extraction - clean records with valid Ensembl IDs',
-                'query': """
+                "name": "clean_records",
+                "description": "Primary extraction - clean records with valid Ensembl IDs",
+                "query": """
                     SELECT DISTINCT
                         gene_id,
                         gene_symbol,
@@ -78,12 +79,12 @@ class RobustDataExtractor:
                       AND gene_id ~ '^ENSG[0-9]+(\.[0-9]+)?$'  -- Valid Ensembl format
                       AND LENGTH(gene_symbol) BETWEEN 1 AND 50  -- Reasonable symbol length
                 """,
-                'critical': True
+                "critical": True,
             },
             {
-                'name': 'missing_gene_id',
-                'description': 'Secondary extraction - handle missing gene_id',
-                'query': """
+                "name": "missing_gene_id",
+                "description": "Secondary extraction - handle missing gene_id",
+                "query": """
                     SELECT DISTINCT
                         COALESCE(
                             NULLIF(gene_id, ''),
@@ -100,12 +101,12 @@ class RobustDataExtractor:
                       AND LENGTH(gene_symbol) BETWEEN 1 AND 50
                       AND (gene_id IS NULL OR gene_id = '' OR gene_id ~ '^\\s*$')
                 """,
-                'critical': False
+                "critical": False,
             },
             {
-                'name': 'recover_from_transcript_ids',
-                'description': 'Tertiary extraction - recover from transcript IDs',
-                'query': """
+                "name": "recover_from_transcript_ids",
+                "description": "Tertiary extraction - recover from transcript IDs",
+                "query": """
                     SELECT DISTINCT
                         CASE
                             WHEN transcript_id ~ '^ENST[0-9]+' THEN
@@ -129,21 +130,21 @@ class RobustDataExtractor:
                       )
                       AND LENGTH(transcript_id) > 5
                 """,
-                'critical': False
-            }
+                "critical": False,
+            },
         ]
 
         extracted_genes = []
         extraction_summary = {}
 
         for extraction_pass in gene_extraction_queries:
-            pass_name = extraction_pass['name']
+            pass_name = extraction_pass["name"]
             logger.info(f"Running gene extraction pass: {pass_name}")
 
             try:
                 start_time = pd.Timestamp.now()
 
-                self.db_manager.cursor.execute(extraction_pass['query'])
+                self.db_manager.cursor.execute(extraction_pass["query"])
                 batch_results = self.db_manager.cursor.fetchall()
 
                 processing_errors = 0
@@ -154,36 +155,40 @@ class RobustDataExtractor:
                         gene_data = self._process_gene_record(row)
 
                         # Validate and normalize gene symbol
-                        if gene_data['gene_symbol']:
+                        if gene_data["gene_symbol"]:
                             normalized_symbol = self._normalize_gene_symbol_robust(
-                                gene_data['gene_symbol']
+                                gene_data["gene_symbol"]
                             )
 
-                            if normalized_symbol != gene_data['gene_symbol']:
-                                self.gene_symbol_conflicts.append({
-                                    'original': gene_data['gene_symbol'],
-                                    'normalized': normalized_symbol,
-                                    'gene_id': gene_data['gene_id'],
-                                    'extraction_pass': pass_name
-                                })
+                            if normalized_symbol != gene_data["gene_symbol"]:
+                                self.gene_symbol_conflicts.append(
+                                    {
+                                        "original": gene_data["gene_symbol"],
+                                        "normalized": normalized_symbol,
+                                        "gene_id": gene_data["gene_id"],
+                                        "extraction_pass": pass_name,
+                                    }
+                                )
 
-                            gene_data['gene_symbol'] = normalized_symbol
+                            gene_data["gene_symbol"] = normalized_symbol
 
                         pass_genes.append(gene_data)
 
                     except Exception as e:
                         processing_errors += 1
                         if processing_errors <= 10:  # Log first 10 errors
-                            logger.warning(f"Failed to process gene record in {pass_name}: {e}")
+                            logger.warning(
+                                f"Failed to process gene record in {pass_name}: {e}"
+                            )
 
                 extracted_genes.extend(pass_genes)
                 elapsed = (pd.Timestamp.now() - start_time).total_seconds()
 
                 extraction_summary[pass_name] = {
-                    'records_extracted': len(batch_results),
-                    'genes_processed': len(pass_genes),
-                    'processing_errors': processing_errors,
-                    'elapsed_seconds': round(elapsed, 2)
+                    "records_extracted": len(batch_results),
+                    "genes_processed": len(pass_genes),
+                    "processing_errors": processing_errors,
+                    "elapsed_seconds": round(elapsed, 2),
                 }
 
                 logger.info(f"✅ Pass {pass_name}: {len(pass_genes)} genes extracted")
@@ -191,13 +196,12 @@ class RobustDataExtractor:
             except Exception as e:
                 logger.error(f"❌ Gene extraction pass {pass_name} failed: {e}")
 
-                if extraction_pass['critical']:
-                    raise ExtractionError(f"Critical extraction pass failed: {pass_name} - {e}")
+                if extraction_pass["critical"]:
+                    raise ExtractionError(
+                        f"Critical extraction pass failed: {pass_name} - {e}"
+                    )
 
-                extraction_summary[pass_name] = {
-                    'status': 'failed',
-                    'error': str(e)
-                }
+                extraction_summary[pass_name] = {"status": "failed", "error": str(e)}
 
         # Deduplicate and resolve conflicts
         logger.info("🔄 Deduplicating genes and resolving conflicts...")
@@ -207,18 +211,20 @@ class RobustDataExtractor:
         self._validate_extracted_genes(unique_genes)
 
         final_stats = {
-            'total_extracted': len(extracted_genes),
-            'unique_genes': len(unique_genes),
-            'symbol_conflicts': len(self.gene_symbol_conflicts),
-            'extraction_passes': extraction_summary
+            "total_extracted": len(extracted_genes),
+            "unique_genes": len(unique_genes),
+            "symbol_conflicts": len(self.gene_symbol_conflicts),
+            "extraction_passes": extraction_summary,
         }
 
-        self.extraction_stats['genes'] = final_stats
+        self.extraction_stats["genes"] = final_stats
 
         logger.info(f"✅ Gene extraction complete:")
         logger.info(f"   📊 Total records processed: {len(extracted_genes)}")
         logger.info(f"   🧬 Unique genes identified: {len(unique_genes)}")
-        logger.info(f"   🔄 Symbol conflicts resolved: {len(self.gene_symbol_conflicts)}")
+        logger.info(
+            f"   🔄 Symbol conflicts resolved: {len(self.gene_symbol_conflicts)}"
+        )
 
         return unique_genes, self.gene_symbol_conflicts
 
@@ -235,9 +241,9 @@ class RobustDataExtractor:
 
         drug_extraction_patterns = [
             {
-                'source': 'drugcentral',
-                'description': 'Extract DrugCentral drug interaction data',
-                'query': """
+                "source": "drugcentral",
+                "description": "Extract DrugCentral drug interaction data",
+                "query": """
                     SELECT
                         gene_symbol,
                         gene_id,
@@ -247,12 +253,12 @@ class RobustDataExtractor:
                       AND drugs::text LIKE '%drug_name%'
                       AND jsonb_typeof(drugs) = 'object'
                 """,
-                'parser': self._parse_drugcentral_structure
+                "parser": self._parse_drugcentral_structure,
             },
             {
-                'source': 'chembl',
-                'description': 'Extract ChEMBL drug data',
-                'query': """
+                "source": "chembl",
+                "description": "Extract ChEMBL drug data",
+                "query": """
                     SELECT
                         gene_symbol,
                         gene_id,
@@ -262,12 +268,12 @@ class RobustDataExtractor:
                       AND (drugs::text LIKE '%molecule%' OR drugs::text LIKE '%compound%')
                       AND jsonb_typeof(drugs) = 'object'
                 """,
-                'parser': self._parse_chembl_structure
+                "parser": self._parse_chembl_structure,
             },
             {
-                'source': 'pharmgkb_drugs',
-                'description': 'Extract drugs from PharmGKB data incorrectly stored in drugs field',
-                'query': """
+                "source": "pharmgkb_drugs",
+                "description": "Extract drugs from PharmGKB data incorrectly stored in drugs field",
+                "query": """
                     SELECT
                         gene_symbol,
                         gene_id,
@@ -277,21 +283,21 @@ class RobustDataExtractor:
                       AND drugs::text LIKE '%drugs%'
                       AND jsonb_typeof(drugs) = 'object'
                 """,
-                'parser': self._parse_pharmgkb_drugs_from_corrupted_field
-            }
+                "parser": self._parse_pharmgkb_drugs_from_corrupted_field,
+            },
         ]
 
         all_drug_interactions = []
         extraction_stats = {}
 
         for pattern in drug_extraction_patterns:
-            source = pattern['source']
+            source = pattern["source"]
             logger.info(f"🔄 Extracting {source} drug data...")
 
             try:
                 start_time = pd.Timestamp.now()
 
-                self.db_manager.cursor.execute(pattern['query'])
+                self.db_manager.cursor.execute(pattern["query"])
                 raw_records = self.db_manager.cursor.fetchall()
 
                 extracted_count = 0
@@ -299,9 +305,11 @@ class RobustDataExtractor:
                 source_interactions = []
 
                 # Process records with progress bar
-                for record in tqdm(raw_records, desc=f"Processing {source}", leave=False):
+                for record in tqdm(
+                    raw_records, desc=f"Processing {source}", leave=False
+                ):
                     try:
-                        drug_interactions = pattern['parser'](record)
+                        drug_interactions = pattern["parser"](record)
                         if drug_interactions:
                             source_interactions.extend(drug_interactions)
                             extracted_count += len(drug_interactions)
@@ -312,44 +320,49 @@ class RobustDataExtractor:
                             logger.warning(f"Failed to parse {source} record: {e}")
 
                         # Log error details for debugging
-                        self.error_log.append({
-                            'source': source,
-                            'error': str(e),
-                            'record_preview': str(record)[:200] + '...' if len(str(record)) > 200 else str(record)
-                        })
+                        self.error_log.append(
+                            {
+                                "source": source,
+                                "error": str(e),
+                                "record_preview": str(record)[:200] + "..."
+                                if len(str(record)) > 200
+                                else str(record),
+                            }
+                        )
 
                 all_drug_interactions.extend(source_interactions)
                 elapsed = (pd.Timestamp.now() - start_time).total_seconds()
 
                 extraction_stats[source] = {
-                    'records_processed': len(raw_records),
-                    'interactions_extracted': extracted_count,
-                    'errors': error_count,
-                    'error_rate': error_count / max(len(raw_records), 1),
-                    'elapsed_seconds': round(elapsed, 2)
+                    "records_processed": len(raw_records),
+                    "interactions_extracted": extracted_count,
+                    "errors": error_count,
+                    "error_rate": error_count / max(len(raw_records), 1),
+                    "elapsed_seconds": round(elapsed, 2),
                 }
 
-                logger.info(f"✅ {source}: {extracted_count} interactions extracted from {len(raw_records)} records")
+                logger.info(
+                    f"✅ {source}: {extracted_count} interactions extracted from {len(raw_records)} records"
+                )
 
             except Exception as e:
                 logger.error(f"❌ Failed to extract {source} data: {e}")
-                extraction_stats[source] = {
-                    'status': 'failed',
-                    'error': str(e)
-                }
+                extraction_stats[source] = {"status": "failed", "error": str(e)}
 
         # Deduplicate drug interactions
         logger.info("🔄 Deduplicating drug interactions...")
-        deduplicated_interactions = self._deduplicate_drug_interactions(all_drug_interactions)
+        deduplicated_interactions = self._deduplicate_drug_interactions(
+            all_drug_interactions
+        )
 
         final_stats = {
-            'total_extracted': len(all_drug_interactions),
-            'deduplicated_count': len(deduplicated_interactions),
-            'sources': extraction_stats,
-            'error_count': len(self.error_log)
+            "total_extracted": len(all_drug_interactions),
+            "deduplicated_count": len(deduplicated_interactions),
+            "sources": extraction_stats,
+            "error_count": len(self.error_log),
         }
 
-        self.extraction_stats['drug_interactions'] = final_stats
+        self.extraction_stats["drug_interactions"] = final_stats
 
         logger.info(f"✅ Drug extraction complete:")
         logger.info(f"   💊 Total interactions extracted: {len(all_drug_interactions)}")
@@ -391,7 +404,9 @@ class RobustDataExtractor:
 
             for record in tqdm(raw_records, desc="Processing PharmGKB pathways"):
                 try:
-                    pathways = self._parse_pharmgkb_pathways_from_corrupted_field(record)
+                    pathways = self._parse_pharmgkb_pathways_from_corrupted_field(
+                        record
+                    )
                     if pathways:
                         pathway_data.extend(pathways)
 
@@ -403,14 +418,14 @@ class RobustDataExtractor:
             elapsed = (pd.Timestamp.now() - start_time).total_seconds()
 
             extraction_stats = {
-                'records_processed': len(raw_records),
-                'pathways_extracted': len(pathway_data),
-                'processing_errors': processing_errors,
-                'error_rate': processing_errors / max(len(raw_records), 1),
-                'elapsed_seconds': round(elapsed, 2)
+                "records_processed": len(raw_records),
+                "pathways_extracted": len(pathway_data),
+                "processing_errors": processing_errors,
+                "error_rate": processing_errors / max(len(raw_records), 1),
+                "elapsed_seconds": round(elapsed, 2),
             }
 
-            self.extraction_stats['pharmgkb_pathways'] = extraction_stats
+            self.extraction_stats["pharmgkb_pathways"] = extraction_stats
 
             logger.info(f"✅ PharmGKB pathway extraction complete:")
             logger.info(f"   🛤️ Pathways extracted: {len(pathway_data)}")
@@ -469,7 +484,7 @@ class RobustDataExtractor:
             # Deduplicate by gene_id
             unique_annotations = {}
             for ann in annotations:
-                gene_id = ann.get('gene_id')
+                gene_id = ann.get("gene_id")
                 if gene_id and gene_id not in unique_annotations:
                     unique_annotations[gene_id] = ann
                 elif gene_id in unique_annotations:
@@ -482,14 +497,14 @@ class RobustDataExtractor:
             elapsed = (pd.Timestamp.now() - start_time).total_seconds()
 
             extraction_stats = {
-                'records_processed': len(raw_records),
-                'annotations_extracted': len(annotations),
-                'unique_genes_annotated': len(deduplicated_annotations),
-                'processing_errors': processing_errors,
-                'elapsed_seconds': round(elapsed, 2)
+                "records_processed": len(raw_records),
+                "annotations_extracted": len(annotations),
+                "unique_genes_annotated": len(deduplicated_annotations),
+                "processing_errors": processing_errors,
+                "elapsed_seconds": round(elapsed, 2),
             }
 
-            self.extraction_stats['annotations'] = extraction_stats
+            self.extraction_stats["annotations"] = extraction_stats
 
             logger.info(f"✅ Annotation extraction complete:")
             logger.info(f"   📝 Annotations extracted: {len(annotations)}")
@@ -508,11 +523,11 @@ class RobustDataExtractor:
             Dictionary with extraction statistics and summary
         """
         return {
-            'extraction_timestamp': pd.Timestamp.now().isoformat(),
-            'extraction_stats': self.extraction_stats,
-            'gene_symbol_conflicts': len(self.gene_symbol_conflicts),
-            'total_errors': len(self.error_log),
-            'sample_errors': self.error_log[:5]  # First 5 errors for debugging
+            "extraction_timestamp": pd.Timestamp.now().isoformat(),
+            "extraction_stats": self.extraction_stats,
+            "gene_symbol_conflicts": len(self.gene_symbol_conflicts),
+            "total_errors": len(self.error_log),
+            "sample_errors": self.error_log[:5],  # First 5 errors for debugging
         }
 
     # Private helper methods
@@ -521,18 +536,18 @@ class RobustDataExtractor:
         """Process a single gene record with validation."""
         try:
             gene_data = {
-                'gene_id': row[0] if row[0] and row[0].strip() else None,
-                'gene_symbol': row[1] if row[1] and row[1].strip() else None,
-                'gene_type': row[2] if row[2] and row[2].strip() else 'unknown',
-                'chromosome': row[3] if row[3] and row[3].strip() else None,
-                'coordinates': row[4] if row[4] else {}
+                "gene_id": row[0] if row[0] and row[0].strip() else None,
+                "gene_symbol": row[1] if row[1] and row[1].strip() else None,
+                "gene_type": row[2] if row[2] and row[2].strip() else "unknown",
+                "chromosome": row[3] if row[3] and row[3].strip() else None,
+                "coordinates": row[4] if row[4] else {},
             }
 
             # Basic validation
-            if not gene_data['gene_id']:
+            if not gene_data["gene_id"]:
                 raise ValueError("Gene ID is required")
 
-            if not gene_data['gene_symbol']:
+            if not gene_data["gene_symbol"]:
                 raise ValueError("Gene symbol is required")
 
             return gene_data
@@ -554,12 +569,12 @@ class RobustDataExtractor:
             cleaned = symbol.strip().upper()
 
             # Remove common problematic characters
-            cleaned = re.sub(r'[^\w\-@\.]', '', cleaned)
+            cleaned = re.sub(r"[^\w\-@\.]", "", cleaned)
 
             # Handle common formatting issues
-            cleaned = re.sub(r'^LOC(\d+)$', r'LOC\1', cleaned)  # Fix LOC genes
-            cleaned = re.sub(r'_+', '_', cleaned)  # Multiple underscores
-            cleaned = re.sub(r'\-+', '-', cleaned)  # Multiple hyphens
+            cleaned = re.sub(r"^LOC(\d+)$", r"LOC\1", cleaned)  # Fix LOC genes
+            cleaned = re.sub(r"_+", "_", cleaned)  # Multiple underscores
+            cleaned = re.sub(r"\-+", "-", cleaned)  # Multiple hyphens
 
             # Validate length
             if len(cleaned) < 1 or len(cleaned) > 50:
@@ -588,11 +603,11 @@ class RobustDataExtractor:
 
         # Filter out clearly non-human or corrupted gene symbols
         invalid_patterns = [
-            'metazoa',  # Non-human phylogenetic annotation
-            'scaffold',  # Genomic scaffold annotations
-            'contig',    # Assembly contigs
-            'uncharacterized',  # Generic annotations
-            'loc',       # Generic location annotations (when not followed by numbers)
+            "metazoa",  # Non-human phylogenetic annotation
+            "scaffold",  # Genomic scaffold annotations
+            "contig",  # Assembly contigs
+            "uncharacterized",  # Generic annotations
+            "loc",  # Generic location annotations (when not followed by numbers)
         ]
 
         gene_symbol_lower = gene_symbol.lower()
@@ -606,7 +621,9 @@ class RobustDataExtractor:
         if len(gene_symbol) > 50:  # Unreasonably long
             return False
 
-        if gene_symbol.count('_') > 3:  # Too many underscores suggest annotation artifact
+        if (
+            gene_symbol.count("_") > 3
+        ):  # Too many underscores suggest annotation artifact
             return False
 
         return True
@@ -618,19 +635,21 @@ class RobustDataExtractor:
         invalid_count = 0
 
         for gene in genes:
-            if self._is_valid_gene_symbol(gene.get('gene_symbol', '')):
+            if self._is_valid_gene_symbol(gene.get("gene_symbol", "")):
                 valid_genes.append(gene)
             else:
                 invalid_count += 1
 
-        logger.info(f"Gene filtering: {invalid_count} genes with invalid symbols removed")
+        logger.info(
+            f"Gene filtering: {invalid_count} genes with invalid symbols removed"
+        )
 
         # Now deduplicate by gene_id
         unique_genes = {}
         conflicts = []
 
         for gene in valid_genes:
-            gene_id = gene['gene_id']
+            gene_id = gene["gene_id"]
 
             if gene_id not in unique_genes:
                 unique_genes[gene_id] = gene
@@ -640,17 +659,19 @@ class RobustDataExtractor:
                 better_record = self._choose_better_gene_record(existing, gene)
 
                 if better_record != existing:
-                    conflicts.append({
-                        'gene_id': gene_id,
-                        'replaced': existing,
-                        'with': better_record
-                    })
+                    conflicts.append(
+                        {
+                            "gene_id": gene_id,
+                            "replaced": existing,
+                            "with": better_record,
+                        }
+                    )
                     unique_genes[gene_id] = better_record
 
         # Finally, handle gene symbol duplicates (different genes with same symbol)
         symbol_groups = {}
         for gene in unique_genes.values():
-            symbol = gene['gene_symbol']
+            symbol = gene["gene_symbol"]
             if symbol not in symbol_groups:
                 symbol_groups[symbol] = []
             symbol_groups[symbol].append(gene)
@@ -667,9 +688,13 @@ class RobustDataExtractor:
                 best_gene = max(gene_group, key=self._score_gene_record)
                 final_genes.append(best_gene)
                 symbol_conflicts += len(gene_group) - 1
-                logger.warning(f"Gene symbol conflict: {symbol} found in {len(gene_group)} genes, kept best scoring gene {best_gene['gene_id']}")
+                logger.warning(
+                    f"Gene symbol conflict: {symbol} found in {len(gene_group)} genes, kept best scoring gene {best_gene['gene_id']}"
+                )
 
-        logger.info(f"Gene deduplication: {len(conflicts)} ID conflicts and {symbol_conflicts} symbol conflicts resolved")
+        logger.info(
+            f"Gene deduplication: {len(conflicts)} ID conflicts and {symbol_conflicts} symbol conflicts resolved"
+        )
         return final_genes
 
     def _choose_better_gene_record(self, record1: Dict, record2: Dict) -> Dict:
@@ -684,24 +709,24 @@ class RobustDataExtractor:
         score = 0
 
         # Valid Ensembl gene ID
-        if record.get('gene_id', '').startswith('ENSG'):
+        if record.get("gene_id", "").startswith("ENSG"):
             score += 3
 
         # Gene symbol quality
-        symbol = record.get('gene_symbol', '')
-        if symbol and len(symbol) > 1 and not symbol.startswith('UNKNOWN'):
+        symbol = record.get("gene_symbol", "")
+        if symbol and len(symbol) > 1 and not symbol.startswith("UNKNOWN"):
             score += 2
 
         # Gene type present
-        if record.get('gene_type') and record['gene_type'] != 'unknown':
+        if record.get("gene_type") and record["gene_type"] != "unknown":
             score += 1
 
         # Chromosome information
-        if record.get('chromosome'):
+        if record.get("chromosome"):
             score += 1
 
         # Coordinates present
-        if record.get('coordinates') and isinstance(record['coordinates'], dict):
+        if record.get("coordinates") and isinstance(record["coordinates"], dict):
             score += 1
 
         return score
@@ -714,11 +739,13 @@ class RobustDataExtractor:
         # Check for required fields
         missing_fields = 0
         for gene in genes[:100]:  # Check first 100
-            if not gene.get('gene_id') or not gene.get('gene_symbol'):
+            if not gene.get("gene_id") or not gene.get("gene_symbol"):
                 missing_fields += 1
 
         if missing_fields > 10:  # More than 10% missing critical fields
-            raise ExtractionError(f"Too many genes missing critical fields: {missing_fields}")
+            raise ExtractionError(
+                f"Too many genes missing critical fields: {missing_fields}"
+            )
 
         logger.info(f"Gene validation passed for {len(genes)} genes")
 
@@ -731,7 +758,7 @@ class RobustDataExtractor:
         try:
             gene_symbol, gene_id, drugs_json = record
 
-            if not drugs_json or drugs_json == '{}':
+            if not drugs_json or drugs_json == "{}":
                 return interactions
 
             # Parse the drugs JSON structure
@@ -744,27 +771,29 @@ class RobustDataExtractor:
             # Implementation will depend on actual structure found
             # This is a template that will need to be adapted based on real data structure
 
-            drugcentral_data = drugs_data.get('drugcentral_data', {})
+            drugcentral_data = drugs_data.get("drugcentral_data", {})
             if drugcentral_data:
-                for drug_entry in drugcentral_data.get('drugs', []):
+                for drug_entry in drugcentral_data.get("drugs", []):
                     interaction = {
-                        'gene_id': gene_id,
-                        'gene_symbol': gene_symbol,
-                        'drug_name': drug_entry.get('name', ''),
-                        'drug_chembl_id': drug_entry.get('chembl_id', ''),
-                        'drugcentral_id': drug_entry.get('drugcentral_id', ''),
-                        'interaction_type': drug_entry.get('action_type', ''),
-                        'mechanism_of_action': drug_entry.get('mechanism', ''),
-                        'clinical_phase': drug_entry.get('phase', ''),
-                        'source_database': 'drugcentral',
-                        'raw_data': drug_entry
+                        "gene_id": gene_id,
+                        "gene_symbol": gene_symbol,
+                        "drug_name": drug_entry.get("name", ""),
+                        "drug_chembl_id": drug_entry.get("chembl_id", ""),
+                        "drugcentral_id": drug_entry.get("drugcentral_id", ""),
+                        "interaction_type": drug_entry.get("action_type", ""),
+                        "mechanism_of_action": drug_entry.get("mechanism", ""),
+                        "clinical_phase": drug_entry.get("phase", ""),
+                        "source_database": "drugcentral",
+                        "raw_data": drug_entry,
                     }
 
-                    if interaction['drug_name']:  # Only add if drug name exists
+                    if interaction["drug_name"]:  # Only add if drug name exists
                         interactions.append(interaction)
 
         except Exception as e:
-            logger.warning(f"Failed to parse DrugCentral structure for {gene_symbol}: {e}")
+            logger.warning(
+                f"Failed to parse DrugCentral structure for {gene_symbol}: {e}"
+            )
 
         return interactions
 
@@ -775,7 +804,7 @@ class RobustDataExtractor:
         try:
             gene_symbol, gene_id, drugs_json = record
 
-            if not drugs_json or drugs_json == '{}':
+            if not drugs_json or drugs_json == "{}":
                 return interactions
 
             if isinstance(drugs_json, str):
@@ -784,22 +813,24 @@ class RobustDataExtractor:
                 drugs_data = drugs_json
 
             # Extract ChEMBL specific data
-            chembl_data = drugs_data.get('chembl_data', {})
+            chembl_data = drugs_data.get("chembl_data", {})
             if chembl_data:
-                for drug_entry in chembl_data.get('compounds', []):
+                for drug_entry in chembl_data.get("compounds", []):
                     interaction = {
-                        'gene_id': gene_id,
-                        'gene_symbol': gene_symbol,
-                        'drug_name': drug_entry.get('molecule_name', ''),
-                        'drug_chembl_id': drug_entry.get('molecule_chembl_id', ''),
-                        'interaction_type': drug_entry.get('target_type', ''),
-                        'mechanism_of_action': drug_entry.get('mechanism_of_action', ''),
-                        'clinical_phase': drug_entry.get('max_phase', ''),
-                        'source_database': 'chembl',
-                        'raw_data': drug_entry
+                        "gene_id": gene_id,
+                        "gene_symbol": gene_symbol,
+                        "drug_name": drug_entry.get("molecule_name", ""),
+                        "drug_chembl_id": drug_entry.get("molecule_chembl_id", ""),
+                        "interaction_type": drug_entry.get("target_type", ""),
+                        "mechanism_of_action": drug_entry.get(
+                            "mechanism_of_action", ""
+                        ),
+                        "clinical_phase": drug_entry.get("max_phase", ""),
+                        "source_database": "chembl",
+                        "raw_data": drug_entry,
                     }
 
-                    if interaction['drug_name']:
+                    if interaction["drug_name"]:
                         interactions.append(interaction)
 
         except Exception as e:
@@ -814,7 +845,7 @@ class RobustDataExtractor:
         try:
             gene_symbol, gene_id, drugs_json = record
 
-            if not drugs_json or drugs_json == '{}':
+            if not drugs_json or drugs_json == "{}":
                 return interactions
 
             if isinstance(drugs_json, str):
@@ -823,27 +854,27 @@ class RobustDataExtractor:
                 drugs_data = drugs_json
 
             # Navigate PharmGKB structure to find drugs
-            pharmgkb_data = drugs_data.get('pharmgkb_data', {})
-            pathway_data = pharmgkb_data.get('pathway_data', {})
+            pharmgkb_data = drugs_data.get("pharmgkb_data", {})
+            pathway_data = pharmgkb_data.get("pathway_data", {})
 
             for pathway_id, pathway_info in pathway_data.items():
                 if isinstance(pathway_info, dict):
-                    reactions = pathway_info.get('reactions', [])
+                    reactions = pathway_info.get("reactions", [])
 
                     for reaction in reactions:
                         if isinstance(reaction, dict):
-                            drug_names = reaction.get('drugs', [])
+                            drug_names = reaction.get("drugs", [])
 
                             for drug_name in drug_names:
                                 if drug_name and isinstance(drug_name, str):
                                     interaction = {
-                                        'gene_id': gene_id,
-                                        'gene_symbol': gene_symbol,
-                                        'drug_name': drug_name.strip(),
-                                        'interaction_type': 'pharmgkb_pathway',
-                                        'source_database': 'pharmgkb',
-                                        'pathway_id': pathway_id,
-                                        'pmids': reaction.get('pmids', [])
+                                        "gene_id": gene_id,
+                                        "gene_symbol": gene_symbol,
+                                        "drug_name": drug_name.strip(),
+                                        "interaction_type": "pharmgkb_pathway",
+                                        "source_database": "pharmgkb",
+                                        "pathway_id": pathway_id,
+                                        "pmids": reaction.get("pmids", []),
                                     }
 
                                     interactions.append(interaction)
@@ -853,14 +884,16 @@ class RobustDataExtractor:
 
         return interactions
 
-    def _parse_pharmgkb_pathways_from_corrupted_field(self, record: Tuple) -> List[Dict]:
+    def _parse_pharmgkb_pathways_from_corrupted_field(
+        self, record: Tuple
+    ) -> List[Dict]:
         """Extract PharmGKB pathway data from corrupted drugs field."""
         pathways = []
 
         try:
             gene_symbol, gene_id, drugs_json = record
 
-            if not drugs_json or drugs_json == '{}':
+            if not drugs_json or drugs_json == "{}":
                 return pathways
 
             if isinstance(drugs_json, str):
@@ -869,28 +902,30 @@ class RobustDataExtractor:
                 drugs_data = drugs_json
 
             # Extract pathway data
-            pharmgkb_data = drugs_data.get('pharmgkb_data', {})
-            pathway_data = pharmgkb_data.get('pathway_data', {})
+            pharmgkb_data = drugs_data.get("pharmgkb_data", {})
+            pathway_data = pharmgkb_data.get("pathway_data", {})
 
             for pathway_id, pathway_info in pathway_data.items():
                 if isinstance(pathway_info, dict):
-                    reactions = pathway_info.get('reactions', [])
+                    reactions = pathway_info.get("reactions", [])
 
                     for reaction in reactions:
                         if isinstance(reaction, dict):
                             pathway_record = {
-                                'gene_id': gene_id,
-                                'gene_symbol': gene_symbol,
-                                'pathway_id': pathway_id,
-                                'reaction_type': reaction.get('reaction_type', ''),
-                                'control_type': reaction.get('control_type', ''),
-                                'controller_genes': reaction.get('controller_genes', []),
-                                'target_genes': [reaction.get('to', '')],
-                                'from_genes': [reaction.get('from', '')],
-                                'drugs_involved': reaction.get('drugs', []),
-                                'pmids': reaction.get('pmids', []),
-                                'diseases': reaction.get('diseases', []),
-                                'cell_type': reaction.get('cell_type', '')
+                                "gene_id": gene_id,
+                                "gene_symbol": gene_symbol,
+                                "pathway_id": pathway_id,
+                                "reaction_type": reaction.get("reaction_type", ""),
+                                "control_type": reaction.get("control_type", ""),
+                                "controller_genes": reaction.get(
+                                    "controller_genes", []
+                                ),
+                                "target_genes": [reaction.get("to", "")],
+                                "from_genes": [reaction.get("from", "")],
+                                "drugs_involved": reaction.get("drugs", []),
+                                "pmids": reaction.get("pmids", []),
+                                "diseases": reaction.get("diseases", []),
+                                "cell_type": reaction.get("cell_type", ""),
                             }
 
                             pathways.append(pathway_record)
@@ -906,9 +941,9 @@ class RobustDataExtractor:
 
         for interaction in interactions:
             key = (
-                interaction.get('gene_id', ''),
-                interaction.get('drug_name', '').lower().strip(),
-                interaction.get('source_database', '')
+                interaction.get("gene_id", ""),
+                interaction.get("drug_name", "").lower().strip(),
+                interaction.get("source_database", ""),
             )
 
             if key not in unique_interactions:
@@ -929,11 +964,11 @@ class RobustDataExtractor:
         for key, value in interaction2.items():
             if value and not merged.get(key):
                 merged[key] = value
-            elif key == 'pmids' and isinstance(value, list):
+            elif key == "pmids" and isinstance(value, list):
                 # Merge PMID lists
-                existing_pmids = set(merged.get('pmids', []))
+                existing_pmids = set(merged.get("pmids", []))
                 new_pmids = set(value)
-                merged['pmids'] = list(existing_pmids.union(new_pmids))
+                merged["pmids"] = list(existing_pmids.union(new_pmids))
 
         return merged
 
@@ -941,27 +976,33 @@ class RobustDataExtractor:
         """Process an annotation record."""
         try:
             annotation_data = {
-                'gene_symbol': record[0],
-                'gene_id': record[1],
-                'go_terms': record[2] if record[2] else {},
-                'pathways': record[3] if record[3] else [],
-                'product_type': record[4] if record[4] else [],
-                'molecular_functions': record[5] if record[5] else [],
-                'cellular_location': record[6] if record[6] else [],
-                'uniprot_ids': record[7] if record[7] else [],
-                'ncbi_ids': record[8] if record[8] else [],
-                'refseq_ids': record[9] if record[9] else []
+                "gene_symbol": record[0],
+                "gene_id": record[1],
+                "go_terms": record[2] if record[2] else {},
+                "pathways": record[3] if record[3] else [],
+                "product_type": record[4] if record[4] else [],
+                "molecular_functions": record[5] if record[5] else [],
+                "cellular_location": record[6] if record[6] else [],
+                "uniprot_ids": record[7] if record[7] else [],
+                "ncbi_ids": record[8] if record[8] else [],
+                "refseq_ids": record[9] if record[9] else [],
             }
 
             # Clean and structure GO terms
-            if isinstance(annotation_data['go_terms'], dict):
-                annotation_data['go_molecular_functions'] = annotation_data['go_terms'].get('molecular_function', [])
-                annotation_data['go_biological_processes'] = annotation_data['go_terms'].get('biological_process', [])
-                annotation_data['go_cellular_components'] = annotation_data['go_terms'].get('cellular_component', [])
+            if isinstance(annotation_data["go_terms"], dict):
+                annotation_data["go_molecular_functions"] = annotation_data[
+                    "go_terms"
+                ].get("molecular_function", [])
+                annotation_data["go_biological_processes"] = annotation_data[
+                    "go_terms"
+                ].get("biological_process", [])
+                annotation_data["go_cellular_components"] = annotation_data[
+                    "go_terms"
+                ].get("cellular_component", [])
             else:
-                annotation_data['go_molecular_functions'] = []
-                annotation_data['go_biological_processes'] = []
-                annotation_data['go_cellular_components'] = []
+                annotation_data["go_molecular_functions"] = []
+                annotation_data["go_biological_processes"] = []
+                annotation_data["go_cellular_components"] = []
 
             return annotation_data
 
@@ -974,9 +1015,16 @@ class RobustDataExtractor:
 
         # Merge array fields
         array_fields = [
-            'pathways', 'product_type', 'molecular_functions', 'cellular_location',
-            'uniprot_ids', 'ncbi_ids', 'refseq_ids', 'go_molecular_functions',
-            'go_biological_processes', 'go_cellular_components'
+            "pathways",
+            "product_type",
+            "molecular_functions",
+            "cellular_location",
+            "uniprot_ids",
+            "ncbi_ids",
+            "refseq_ids",
+            "go_molecular_functions",
+            "go_biological_processes",
+            "go_cellular_components",
         ]
 
         for field in array_fields:
@@ -985,15 +1033,15 @@ class RobustDataExtractor:
             merged[field] = list(existing.union(new_items))
 
         # Merge GO terms dict
-        if isinstance(ann2.get('go_terms'), dict):
-            if not isinstance(merged.get('go_terms'), dict):
-                merged['go_terms'] = {}
+        if isinstance(ann2.get("go_terms"), dict):
+            if not isinstance(merged.get("go_terms"), dict):
+                merged["go_terms"] = {}
 
-            for go_type, terms in ann2['go_terms'].items():
-                if go_type not in merged['go_terms']:
-                    merged['go_terms'][go_type] = []
-                existing_terms = set(merged['go_terms'][go_type])
+            for go_type, terms in ann2["go_terms"].items():
+                if go_type not in merged["go_terms"]:
+                    merged["go_terms"][go_type] = []
+                existing_terms = set(merged["go_terms"][go_type])
                 new_terms = set(terms if isinstance(terms, list) else [terms])
-                merged['go_terms'][go_type] = list(existing_terms.union(new_terms))
+                merged["go_terms"][go_type] = list(existing_terms.union(new_terms))
 
         return merged

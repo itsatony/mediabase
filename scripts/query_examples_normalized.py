@@ -28,6 +28,7 @@ from rich.panel import Panel
 # Setup logging
 logger = setup_logging(module_name=__name__)
 
+
 class NormalizedSchemaExamples:
     """Example queries for the normalized MEDIABASE schema."""
 
@@ -37,7 +38,9 @@ class NormalizedSchemaExamples:
         if not self.db_manager.ensure_connection():
             raise Exception("Failed to connect to database")
 
-    def find_oncogenes(self, min_fold_change: float = 2.0, limit: int = 20) -> List[Dict]:
+    def find_oncogenes(
+        self, min_fold_change: float = 2.0, limit: int = 20
+    ) -> List[Dict]:
         """
         Example 1: Find significantly upregulated oncogenes
 
@@ -77,7 +80,9 @@ class NormalizedSchemaExamples:
         columns = [desc[0] for desc in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-    def find_drug_targets(self, min_fold_change: float = 1.5, limit: int = 15) -> List[Dict]:
+    def find_drug_targets(
+        self, min_fold_change: float = 1.5, limit: int = 15
+    ) -> List[Dict]:
         """
         Example 2: Find druggable targets with existing drug interactions
 
@@ -169,27 +174,32 @@ class NormalizedSchemaExamples:
 
         # Basic counts
         cursor.execute("SELECT COUNT(*) FROM genes")
-        stats['total_genes'] = cursor.fetchone()[0]
+        stats["total_genes"] = cursor.fetchone()[0]
 
         cursor.execute("SELECT COUNT(*) FROM transcripts")
-        stats['total_transcripts'] = cursor.fetchone()[0]
+        stats["total_transcripts"] = cursor.fetchone()[0]
 
         # Enrichment stats
         cursor.execute("SELECT COUNT(DISTINCT gene_id) FROM gene_drug_interactions")
-        stats['genes_with_drugs'] = cursor.fetchone()[0]
+        stats["genes_with_drugs"] = cursor.fetchone()[0]
 
         cursor.execute("SELECT COUNT(DISTINCT gene_id) FROM gene_pathways")
-        stats['genes_with_pathways'] = cursor.fetchone()[0]
+        stats["genes_with_pathways"] = cursor.fetchone()[0]
 
         cursor.execute("SELECT COUNT(DISTINCT transcript_id) FROM transcript_go_terms")
-        stats['transcripts_with_go_terms'] = cursor.fetchone()[0]
+        stats["transcripts_with_go_terms"] = cursor.fetchone()[0]
 
         # Coverage percentages
-        if stats['total_genes'] > 0:
-            stats['drug_coverage_percent'] = round((stats['genes_with_drugs'] / stats['total_genes']) * 100, 1)
-            stats['pathway_coverage_percent'] = round((stats['genes_with_pathways'] / stats['total_genes']) * 100, 1)
+        if stats["total_genes"] > 0:
+            stats["drug_coverage_percent"] = round(
+                (stats["genes_with_drugs"] / stats["total_genes"]) * 100, 1
+            )
+            stats["pathway_coverage_percent"] = round(
+                (stats["genes_with_pathways"] / stats["total_genes"]) * 100, 1
+            )
 
         return stats
+
 
 def display_results(results: List[Dict], title: str, description: str):
     """Display query results in a formatted table."""
@@ -202,7 +212,7 @@ def display_results(results: List[Dict], title: str, description: str):
 
     # Add columns based on first result
     for key in results[0].keys():
-        table.add_column(key.replace('_', ' ').title())
+        table.add_column(key.replace("_", " ").title())
 
     # Add rows
     for result in results:
@@ -210,7 +220,9 @@ def display_results(results: List[Dict], title: str, description: str):
         for value in result.values():
             if isinstance(value, (list, tuple)) and value:
                 # Format arrays nicely
-                values.append(str(value)[:50] + "..." if len(str(value)) > 50 else str(value))
+                values.append(
+                    str(value)[:50] + "..." if len(str(value)) > 50 else str(value)
+                )
             elif isinstance(value, float):
                 values.append(f"{value:.2f}")
             else:
@@ -222,54 +234,82 @@ def display_results(results: List[Dict], title: str, description: str):
     console.print(table)
     console.print()
 
+
 def main():
     """Run example queries for the normalized schema."""
-    parser = argparse.ArgumentParser(description="Run example queries for normalized MEDIABASE schema")
-    parser.add_argument("--example", choices=["oncogenes", "drug-targets", "pathways", "stats", "all"],
-                       default="all", help="Which example to run")
+    parser = argparse.ArgumentParser(
+        description="Run example queries for normalized MEDIABASE schema"
+    )
+    parser.add_argument(
+        "--example",
+        choices=["oncogenes", "drug-targets", "pathways", "stats", "all"],
+        default="all",
+        help="Which example to run",
+    )
     parser.add_argument("--db-name", default="mediabase", help="Database name")
 
     args = parser.parse_args()
 
     # Database configuration
     db_config = {
-        'host': 'localhost',
-        'port': 5435,
-        'dbname': args.db_name,
-        'user': 'mbase_user',
-        'password': 'mbase_secret'
+        "host": "localhost",
+        "port": 5435,
+        "dbname": args.db_name,
+        "user": "mbase_user",
+        "password": "mbase_secret",
     }
 
     try:
         examples = NormalizedSchemaExamples(db_config)
 
-        console.print("[bold green]MEDIABASE Normalized Schema Query Examples[/bold green]")
+        console.print(
+            "[bold green]MEDIABASE Normalized Schema Query Examples[/bold green]"
+        )
         console.print(f"[dim]Database: {args.db_name}[/dim]")
         console.print()
 
         if args.example in ["oncogenes", "all"]:
             results = examples.find_oncogenes()
-            display_results(results, "Upregulated Oncogenes",
-                           "Find significantly overexpressed genes using normalized schema with optimized joins")
+            display_results(
+                results,
+                "Upregulated Oncogenes",
+                "Find significantly overexpressed genes using normalized schema with optimized joins",
+            )
 
         if args.example in ["drug-targets", "all"]:
             results = examples.find_drug_targets()
-            display_results(results, "Druggable Targets",
-                           "Identify therapeutic targets with existing drug interactions")
+            display_results(
+                results,
+                "Druggable Targets",
+                "Identify therapeutic targets with existing drug interactions",
+            )
 
         if args.example in ["pathways", "all"]:
             results = examples.analyze_pathways()
-            display_results(results, "Pathway Analysis",
-                           "Pathway-level expression analysis using normalized gene_pathways table")
+            display_results(
+                results,
+                "Pathway Analysis",
+                "Pathway-level expression analysis using normalized gene_pathways table",
+            )
 
         if args.example in ["stats", "all"]:
             stats = examples.get_gene_summary_stats()
-            console.print(Panel.fit(
-                "\n".join([f"[bold]{k.replace('_', ' ').title()}:[/bold] {v:,}" for k, v in stats.items()]),
-                title="Database Statistics", border_style="green"
-            ))
+            console.print(
+                Panel.fit(
+                    "\n".join(
+                        [
+                            f"[bold]{k.replace('_', ' ').title()}:[/bold] {v:,}"
+                            for k, v in stats.items()
+                        ]
+                    ),
+                    title="Database Statistics",
+                    border_style="green",
+                )
+            )
 
-        console.print("[bold green]✓[/bold green] Query examples completed successfully!")
+        console.print(
+            "[bold green]✓[/bold green] Query examples completed successfully!"
+        )
 
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -277,6 +317,7 @@ def main():
         return 1
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

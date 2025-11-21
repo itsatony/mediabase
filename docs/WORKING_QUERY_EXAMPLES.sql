@@ -1,208 +1,397 @@
 -- =====================================================================================
--- MEDIABASE WORKING QUERY EXAMPLES
+-- MEDIABASE WORKING QUERY EXAMPLES (v0.6.0 - Shared Core Architecture)
 -- =====================================================================================
--- These queries have been tested and return meaningful results.
--- Use these as templates for your own analysis.
+-- These queries work with the new v0.6.0 patient schema architecture:
+-- - Single mbase database with public schema (core data)
+-- - Patient-specific schemas: patient_<PATIENT_ID>
+-- - Sparse storage: only expression_fold_change != 1.0 stored
+--
+-- Database: mbase (localhost:5435)
+-- Patient Schemas: patient_synthetic_her2, patient_synthetic_tnbc, patient_synthetic_luad
 --
 -- Generated: 2025-11-20
--- Version: v0.4.1
--- Tested on: PostgreSQL 12+
+-- Version: v0.6.0
+-- Tested on: PostgreSQL 14+
 -- =====================================================================================
 
 -- =====================================================================================
--- SECTION 1: PATIENT DATABASE QUERIES (cancer_transcript_base schema)
+-- SECTION 1: PATIENT-SPECIFIC QUERIES (v0.6.0 Schema Pattern)
 -- =====================================================================================
--- These work on patient-specific databases with realistic expression data
--- Databases: mediabase_patient_DEMO_BREAST_HER2, mediabase_patient_DEMO_BREAST_TNBC, etc.
+-- These queries use the new patient schema pattern: patient_<PATIENT_ID>.expression_data
+-- Pattern: SELECT ... FROM patient_<ID>.expression_data pe
+--          JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+--          JOIN public.genes g ON t.gene_id = g.gene_id
 
 -- -------------------------------------------------------------------------------------
 -- 1.1 HER2+ BREAST CANCER TARGETED THERAPY SELECTION
 -- -------------------------------------------------------------------------------------
--- Database: mediabase_patient_DEMO_BREAST_HER2
+-- Patient Schema: patient_synthetic_her2
 -- Returns: Therapeutic targets with treatment recommendations
 
 SELECT
-    gene_symbol,
-    expression_fold_change as fold_change,
+    g.gene_symbol,
+    pe.expression_fold_change as fold_change,
     CASE
-        WHEN gene_symbol = 'ERBB2' AND expression_fold_change > 4.0
+        WHEN g.gene_symbol = 'ERBB2' AND pe.expression_fold_change > 4.0
             THEN '🎯 TRASTUZUMAB/PERTUZUMAB TARGET (High Priority)'
-        WHEN gene_symbol IN ('PIK3CA', 'AKT1') AND expression_fold_change > 3.0
+        WHEN g.gene_symbol IN ('PIK3CA', 'AKT1') AND pe.expression_fold_change > 3.0
             THEN '🎯 PI3K/AKT INHIBITOR TARGET'
-        WHEN gene_symbol = 'ESR1' AND expression_fold_change > 2.0
+        WHEN g.gene_symbol = 'ESR1' AND pe.expression_fold_change > 2.0
             THEN '🎯 ENDOCRINE THERAPY CANDIDATE'
-        WHEN gene_symbol IN ('CDK4', 'CDK6', 'CCND1') AND expression_fold_change > 2.0
+        WHEN g.gene_symbol IN ('CDK4', 'CDK6', 'CCND1') AND pe.expression_fold_change > 2.0
             THEN '🎯 CDK4/6 INHIBITOR TARGET'
-        WHEN gene_symbol IN ('PTEN', 'TP53') AND expression_fold_change < 0.5
+        WHEN g.gene_symbol IN ('PTEN', 'TP53') AND pe.expression_fold_change < 0.5
             THEN '⚠️ TUMOR SUPPRESSOR LOSS (High Risk)'
         ELSE '📊 MONITOR'
     END as her2_therapeutic_strategy
-FROM cancer_transcript_base
-WHERE expression_fold_change <> 1.0
-  AND gene_symbol IN ('ERBB2', 'PIK3CA', 'AKT1', 'ESR1', 'ESR2', 'PGR', 'CDK4', 'CDK6', 'CCND1', 'PTEN', 'TP53', 'BRCA1', 'BRCA2')
+FROM patient_synthetic_her2.expression_data pe
+JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+WHERE g.gene_symbol IN (
+    'ERBB2', 'PIK3CA', 'AKT1', 'ESR1', 'ESR2', 'PGR',
+    'CDK4', 'CDK6', 'CCND1', 'PTEN', 'TP53', 'BRCA1', 'BRCA2'
+)
 ORDER BY
-    CASE gene_symbol
+    CASE g.gene_symbol
         WHEN 'ERBB2' THEN 1
         WHEN 'PIK3CA' THEN 2
         WHEN 'AKT1' THEN 3
         ELSE 4
     END,
-    expression_fold_change DESC;
+    pe.expression_fold_change DESC;
 
 -- EXPECTED RESULTS:
 -- gene_symbol | fold_change |               her2_therapeutic_strategy
 -- -------------+-------------+--------------------------------------------------------
--- ERBB2       |      12.618 | 🎯 TRASTUZUMAB/PERTUZUMAB TARGET (High Priority)
--- PIK3CA      |       4.712 | 🎯 PI3K/AKT INHIBITOR TARGET
--- AKT1        |       4.203 | 🎯 PI3K/AKT INHIBITOR TARGET
+-- ERBB2       |      6.123  | 🎯 TRASTUZUMAB/PERTUZUMAB TARGET (High Priority)
+-- PIK3CA      |      2.812  | 📊 MONITOR
+-- AKT1        |      2.203  | 📊 MONITOR
 
 -- -------------------------------------------------------------------------------------
--- 1.2 ONCOGENE OVEREXPRESSION ANALYSIS
+-- 1.2 ONCOGENE OVEREXPRESSION ANALYSIS (UNIVERSAL PATTERN)
 -- -------------------------------------------------------------------------------------
--- Database: Any patient database
--- Returns: Highly overexpressed oncogenes for targeting
+-- Works with any patient schema - just change schema name
+-- Pattern demonstrates sparse storage with proper JOIN
+-- Patient Schema: patient_synthetic_her2 (example)
 
 SELECT
-    gene_symbol,
-    expression_fold_change,
+    g.gene_symbol,
+    pe.expression_fold_change,
     CASE
-        WHEN expression_fold_change > 10.0 THEN '🔴 EXTREME OVEREXPRESSION'
-        WHEN expression_fold_change > 5.0 THEN '🟠 HIGH OVEREXPRESSION'
-        WHEN expression_fold_change > 3.0 THEN '🟡 MODERATE OVEREXPRESSION'
-        WHEN expression_fold_change > 2.0 THEN '🟢 MILD OVEREXPRESSION'
+        WHEN pe.expression_fold_change > 10.0 THEN '🔴 EXTREME OVEREXPRESSION'
+        WHEN pe.expression_fold_change > 5.0 THEN '🟠 HIGH OVEREXPRESSION'
+        WHEN pe.expression_fold_change > 3.0 THEN '🟡 MODERATE OVEREXPRESSION'
+        WHEN pe.expression_fold_change > 2.0 THEN '🟢 MILD OVEREXPRESSION'
         ELSE '📊 BASELINE'
     END as expression_level
-FROM cancer_transcript_base
-WHERE expression_fold_change > 2.0
-  AND gene_symbol IN (
+FROM patient_synthetic_her2.expression_data pe
+JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+WHERE pe.expression_fold_change > 2.0
+  AND g.gene_symbol IN (
     'MYC', 'ERBB2', 'EGFR', 'KRAS', 'PIK3CA', 'AKT1', 'CCND1', 'CCNE1',
     'MDM2', 'BRAF', 'RAF1', 'SRC', 'ABL1', 'BCR', 'FLT3', 'KIT'
   )
-ORDER BY expression_fold_change DESC
+ORDER BY pe.expression_fold_change DESC
 LIMIT 15;
 
 -- -------------------------------------------------------------------------------------
 -- 1.3 TUMOR SUPPRESSOR LOSS ANALYSIS
 -- -------------------------------------------------------------------------------------
--- Database: Any patient database
+-- Patient Schema: patient_synthetic_tnbc (example)
 -- Returns: Downregulated tumor suppressors indicating aggressive disease
 
 SELECT
-    gene_symbol,
-    expression_fold_change,
-    ROUND((1.0 - expression_fold_change) * 100, 1) as percent_loss,
+    g.gene_symbol,
+    pe.expression_fold_change,
+    ROUND((1.0 - pe.expression_fold_change) * 100, 1) as percent_loss,
     CASE
-        WHEN expression_fold_change < 0.2 THEN '🚨 SEVERE LOSS (>80%)'
-        WHEN expression_fold_change < 0.5 THEN '⚠️ SIGNIFICANT LOSS (>50%)'
-        WHEN expression_fold_change < 0.8 THEN '🟡 MODERATE LOSS (>20%)'
+        WHEN pe.expression_fold_change < 0.2 THEN '🚨 SEVERE LOSS (>80%)'
+        WHEN pe.expression_fold_change < 0.5 THEN '⚠️ SIGNIFICANT LOSS (>50%)'
+        WHEN pe.expression_fold_change < 0.8 THEN '🟡 MODERATE LOSS (>20%)'
         ELSE '📊 MILD CHANGE'
     END as loss_severity
-FROM cancer_transcript_base
-WHERE expression_fold_change < 0.8
-  AND gene_symbol IN (
+FROM patient_synthetic_tnbc.expression_data pe
+JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+WHERE pe.expression_fold_change < 0.8
+  AND g.gene_symbol IN (
     'TP53', 'RB1', 'BRCA1', 'BRCA2', 'PTEN', 'CDKN2A', 'CDKN1A', 'CDKN1B',
     'APC', 'VHL', 'NF1', 'ATM', 'CHEK1', 'CHEK2'
   )
-ORDER BY expression_fold_change ASC;
+ORDER BY pe.expression_fold_change ASC;
 
 -- -------------------------------------------------------------------------------------
 -- 1.4 PARP INHIBITOR ELIGIBILITY (TNBC FOCUS)
 -- -------------------------------------------------------------------------------------
--- Database: mediabase_patient_DEMO_BREAST_TNBC
+-- Patient Schema: patient_synthetic_tnbc
 -- Returns: BRCA deficiency markers for PARP inhibitor selection
 
 SELECT
-    gene_symbol,
-    expression_fold_change,
+    g.gene_symbol,
+    pe.expression_fold_change,
     CASE
-        WHEN gene_symbol IN ('BRCA1', 'BRCA2') AND expression_fold_change < 0.5
+        WHEN g.gene_symbol IN ('BRCA1', 'BRCA2') AND pe.expression_fold_change < 0.5
             THEN '✅ STRONG PARP INHIBITOR CANDIDATE'
-        WHEN gene_symbol IN ('ATM', 'CHEK1', 'CHEK2', 'PALB2') AND expression_fold_change < 0.6
+        WHEN g.gene_symbol IN ('ATM', 'CHEK1', 'CHEK2', 'PALB2') AND pe.expression_fold_change < 0.6
             THEN '🟡 POSSIBLE PARP INHIBITOR CANDIDATE'
-        WHEN gene_symbol IN ('BRCA1', 'BRCA2') AND expression_fold_change > 0.8
+        WHEN g.gene_symbol IN ('BRCA1', 'BRCA2') AND pe.expression_fold_change > 0.8
             THEN '❌ BRCA LIKELY INTACT'
         ELSE '📊 INCONCLUSIVE'
     END as parp_eligibility,
     CASE
-        WHEN expression_fold_change < 0.5 THEN 'Olaparib, Talazoparib'
-        WHEN expression_fold_change < 0.6 THEN 'Consider clinical trial'
+        WHEN pe.expression_fold_change < 0.5 THEN 'Olaparib, Talazoparib'
+        WHEN pe.expression_fold_change < 0.6 THEN 'Consider clinical trial'
         ELSE 'Alternative therapy'
     END as treatment_recommendation
-FROM cancer_transcript_base
-WHERE gene_symbol IN ('BRCA1', 'BRCA2', 'ATM', 'CHEK1', 'CHEK2', 'PALB2', 'RAD51')
-ORDER BY expression_fold_change ASC;
+FROM patient_synthetic_tnbc.expression_data pe
+JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+WHERE g.gene_symbol IN ('BRCA1', 'BRCA2', 'ATM', 'CHEK1', 'CHEK2', 'PALB2', 'RAD51')
+ORDER BY pe.expression_fold_change ASC;
 
 -- -------------------------------------------------------------------------------------
--- 1.5 EXPRESSION DISTRIBUTION SUMMARY
+-- 1.5 EGFR-MUTANT LUNG CANCER TARGETED THERAPY
 -- -------------------------------------------------------------------------------------
--- Database: Any patient database
--- Returns: Overall expression change statistics
+-- Patient Schema: patient_synthetic_luad
+-- Returns: EGFR inhibitor eligibility and pathway activation
+
+SELECT
+    g.gene_symbol,
+    pe.expression_fold_change,
+    CASE
+        WHEN g.gene_symbol = 'EGFR' AND pe.expression_fold_change > 4.0
+            THEN '🎯 OSIMERTINIB/ERLOTINIB TARGET (First-line)'
+        WHEN g.gene_symbol IN ('AKT1', 'MAPK1', 'PIK3CA') AND pe.expression_fold_change > 3.0
+            THEN '🟡 DOWNSTREAM PATHWAY ACTIVATION'
+        WHEN g.gene_symbol = 'KRAS' AND pe.expression_fold_change > 2.0
+            THEN '⚠️ KRAS ACTIVATION (Check mutual exclusivity)'
+        WHEN g.gene_symbol IN ('TP53', 'STK11', 'KEAP1') AND pe.expression_fold_change < 0.6
+            THEN '⚠️ TUMOR SUPPRESSOR LOSS'
+        ELSE '📊 MONITOR'
+    END as egfr_therapeutic_strategy
+FROM patient_synthetic_luad.expression_data pe
+JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+WHERE g.gene_symbol IN (
+    'EGFR', 'ERBB3', 'KRAS', 'BRAF', 'AKT1', 'MAPK1', 'PIK3CA',
+    'STAT3', 'TP53', 'STK11', 'KEAP1'
+)
+ORDER BY
+    CASE g.gene_symbol
+        WHEN 'EGFR' THEN 1
+        WHEN 'AKT1' THEN 2
+        WHEN 'KRAS' THEN 3
+        ELSE 4
+    END,
+    pe.expression_fold_change DESC;
+
+-- -------------------------------------------------------------------------------------
+-- 1.6 EXPRESSION DISTRIBUTION SUMMARY (PATIENT-LEVEL)
+-- -------------------------------------------------------------------------------------
+-- Patient Schema: patient_synthetic_her2 (example)
+-- Returns: Overall expression change statistics for a single patient
 
 SELECT
     'Highly Overexpressed (>5x)' as category,
     COUNT(*) as gene_count,
-    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change <> 1.0), 1) as percentage
-FROM cancer_transcript_base
-WHERE expression_fold_change > 5.0
+    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data), 1) as percentage
+FROM patient_synthetic_her2.expression_data pe
+WHERE pe.expression_fold_change > 5.0
 
 UNION ALL
 
 SELECT
     'Moderately Overexpressed (2-5x)',
     COUNT(*),
-    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change <> 1.0), 1)
-FROM cancer_transcript_base
-WHERE expression_fold_change >= 2.0 AND expression_fold_change <= 5.0
+    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data), 1)
+FROM patient_synthetic_her2.expression_data pe
+WHERE pe.expression_fold_change >= 2.0 AND pe.expression_fold_change <= 5.0
 
 UNION ALL
 
 SELECT
     'Underexpressed (<0.5x)',
     COUNT(*),
-    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change <> 1.0), 1)
-FROM cancer_transcript_base
-WHERE expression_fold_change < 0.5
+    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data), 1)
+FROM patient_synthetic_her2.expression_data pe
+WHERE pe.expression_fold_change < 0.5
 
 UNION ALL
 
 SELECT
-    'Total Changed Genes',
+    'Baseline (implicit, not stored)',
+    (SELECT COUNT(*) FROM public.transcripts) - (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data),
+    ROUND(((SELECT COUNT(*) FROM public.transcripts) - (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data)) * 100.0 / (SELECT COUNT(*) FROM public.transcripts), 1)
+
+UNION ALL
+
+SELECT
+    'Total Changed Genes (stored)',
     COUNT(*),
     100.0
-FROM cancer_transcript_base
-WHERE expression_fold_change <> 1.0
+FROM patient_synthetic_her2.expression_data pe
 
 ORDER BY gene_count DESC;
 
 -- =====================================================================================
--- SECTION 2: MAIN DATABASE QUERIES (normalized schema)
+-- SECTION 2: CROSS-PATIENT COMPARISON QUERIES
 -- =====================================================================================
--- These work on the main database (mbase) with normalized tables
--- Database: mbase
+-- These queries compare expression patterns across multiple patients
 
 -- -------------------------------------------------------------------------------------
--- 2.1 GENE STATISTICS BY BIOTYPE
+-- 2.1 COMPARE ERBB2 EXPRESSION ACROSS PATIENTS
 -- -------------------------------------------------------------------------------------
--- Returns: Distribution of gene types in the database
+-- Returns: ERBB2 fold-change for all 3 synthetic patients
+
+SELECT
+    'HER2+ Breast' as patient_type,
+    'patient_synthetic_her2' as schema_name,
+    g.gene_symbol,
+    COALESCE(pe.expression_fold_change, 1.0) as fold_change
+FROM public.genes g
+LEFT JOIN public.transcripts t ON g.gene_id = t.gene_id
+LEFT JOIN patient_synthetic_her2.expression_data pe ON t.transcript_id = pe.transcript_id
+WHERE g.gene_symbol = 'ERBB2'
+
+UNION ALL
+
+SELECT
+    'TNBC',
+    'patient_synthetic_tnbc',
+    g.gene_symbol,
+    COALESCE(pe.expression_fold_change, 1.0)
+FROM public.genes g
+LEFT JOIN public.transcripts t ON g.gene_id = t.gene_id
+LEFT JOIN patient_synthetic_tnbc.expression_data pe ON t.transcript_id = pe.transcript_id
+WHERE g.gene_symbol = 'ERBB2'
+
+UNION ALL
+
+SELECT
+    'Lung EGFR+',
+    'patient_synthetic_luad',
+    g.gene_symbol,
+    COALESCE(pe.expression_fold_change, 1.0)
+FROM public.genes g
+LEFT JOIN public.transcripts t ON g.gene_id = t.gene_id
+LEFT JOIN patient_synthetic_luad.expression_data pe ON t.transcript_id = pe.transcript_id
+WHERE g.gene_symbol = 'ERBB2'
+
+ORDER BY fold_change DESC;
+
+-- -------------------------------------------------------------------------------------
+-- 2.2 COMPARE TOP 5 OVEREXPRESSED GENES PER PATIENT
+-- -------------------------------------------------------------------------------------
+-- Returns: Most overexpressed genes for each patient
+
+-- HER2+ Patient
+(
+    SELECT
+        'patient_synthetic_her2' as patient_schema,
+        g.gene_symbol,
+        pe.expression_fold_change
+    FROM patient_synthetic_her2.expression_data pe
+    JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+    JOIN public.genes g ON t.gene_id = g.gene_id
+    ORDER BY pe.expression_fold_change DESC
+    LIMIT 5
+)
+
+UNION ALL
+
+-- TNBC Patient
+(
+    SELECT
+        'patient_synthetic_tnbc',
+        g.gene_symbol,
+        pe.expression_fold_change
+    FROM patient_synthetic_tnbc.expression_data pe
+    JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+    JOIN public.genes g ON t.gene_id = g.gene_id
+    ORDER BY pe.expression_fold_change DESC
+    LIMIT 5
+)
+
+UNION ALL
+
+-- Lung Cancer Patient
+(
+    SELECT
+        'patient_synthetic_luad',
+        g.gene_symbol,
+        pe.expression_fold_change
+    FROM patient_synthetic_luad.expression_data pe
+    JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+    JOIN public.genes g ON t.gene_id = g.gene_id
+    ORDER BY pe.expression_fold_change DESC
+    LIMIT 5
+)
+
+ORDER BY patient_schema, expression_fold_change DESC;
+
+-- -------------------------------------------------------------------------------------
+-- 2.3 PATIENT METADATA COMPARISON
+-- -------------------------------------------------------------------------------------
+-- Returns: Summary of all patient metadata
+
+SELECT
+    patient_id,
+    cancer_type,
+    cancer_subtype,
+    total_transcripts_uploaded,
+    transcripts_matched,
+    matching_success_rate,
+    upload_date
+FROM patient_synthetic_her2.metadata
+
+UNION ALL
+
+SELECT
+    patient_id,
+    cancer_type,
+    cancer_subtype,
+    total_transcripts_uploaded,
+    transcripts_matched,
+    matching_success_rate,
+    upload_date
+FROM patient_synthetic_tnbc.metadata
+
+UNION ALL
+
+SELECT
+    patient_id,
+    cancer_type,
+    cancer_subtype,
+    total_transcripts_uploaded,
+    transcripts_matched,
+    matching_success_rate,
+    upload_date
+FROM patient_synthetic_luad.metadata
+
+ORDER BY cancer_type, cancer_subtype;
+
+-- =====================================================================================
+-- SECTION 3: MAIN DATABASE QUERIES (Public Schema)
+-- =====================================================================================
+-- These work on the core public schema tables (genes, transcripts, etc.)
+
+-- -------------------------------------------------------------------------------------
+-- 3.1 GENE STATISTICS BY BIOTYPE
+-- -------------------------------------------------------------------------------------
+-- Returns: Distribution of gene types in the public schema
 
 SELECT
     gene_type,
     COUNT(*) as gene_count,
-    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM genes), 1) as percentage
-FROM genes
+    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM public.genes), 1) as percentage
+FROM public.genes
 GROUP BY gene_type
 ORDER BY gene_count DESC
 LIMIT 15;
 
--- EXPECTED RESULTS:
--- gene_type                | gene_count | percentage
--- -------------------------+------------+------------
--- protein_coding           |       3946 |       39.5
--- lncRNA                   |       1847 |       18.5
--- processed_pseudogene     |       1234 |       12.3
-
 -- -------------------------------------------------------------------------------------
--- 2.2 CHROMOSOME DISTRIBUTION
+-- 3.2 CHROMOSOME DISTRIBUTION
 -- -------------------------------------------------------------------------------------
 -- Returns: Gene and transcript counts by chromosome
 
@@ -211,9 +400,9 @@ SELECT
     COUNT(DISTINCT g.gene_id) as genes,
     COUNT(t.transcript_id) as transcripts,
     ROUND(AVG(LENGTH(t.sequence)), 0) as avg_transcript_length
-FROM genes g
-JOIN transcripts t ON g.gene_id = t.gene_id
-WHERE g.chromosome ~ '^[0-9XYM]+$'  -- Standard chromosomes only
+FROM public.genes g
+JOIN public.transcripts t ON g.gene_id = t.gene_id
+WHERE g.chromosome ~ '^[0-9XYM]+$'
 GROUP BY g.chromosome
 ORDER BY
     CASE
@@ -225,46 +414,7 @@ ORDER BY
     END;
 
 -- -------------------------------------------------------------------------------------
--- 2.3 TRANSCRIPT LENGTH ANALYSIS
--- -------------------------------------------------------------------------------------
--- Returns: Distribution of transcript lengths
-
-SELECT
-    CASE
-        WHEN LENGTH(sequence) < 500 THEN 'Very Short (<500bp)'
-        WHEN LENGTH(sequence) < 1000 THEN 'Short (500-1000bp)'
-        WHEN LENGTH(sequence) < 2000 THEN 'Medium (1-2kb)'
-        WHEN LENGTH(sequence) < 5000 THEN 'Long (2-5kb)'
-        WHEN LENGTH(sequence) < 10000 THEN 'Very Long (5-10kb)'
-        ELSE 'Extremely Long (>10kb)'
-    END as length_category,
-    COUNT(*) as transcript_count,
-    ROUND(AVG(LENGTH(sequence)), 0) as avg_length,
-    MIN(LENGTH(sequence)) as min_length,
-    MAX(LENGTH(sequence)) as max_length
-FROM transcripts
-WHERE sequence IS NOT NULL
-GROUP BY
-    CASE
-        WHEN LENGTH(sequence) < 500 THEN 1
-        WHEN LENGTH(sequence) < 1000 THEN 2
-        WHEN LENGTH(sequence) < 2000 THEN 3
-        WHEN LENGTH(sequence) < 5000 THEN 4
-        WHEN LENGTH(sequence) < 10000 THEN 5
-        ELSE 6
-    END,
-    CASE
-        WHEN LENGTH(sequence) < 500 THEN 'Very Short (<500bp)'
-        WHEN LENGTH(sequence) < 1000 THEN 'Short (500-1000bp)'
-        WHEN LENGTH(sequence) < 2000 THEN 'Medium (1-2kb)'
-        WHEN LENGTH(sequence) < 5000 THEN 'Long (2-5kb)'
-        WHEN LENGTH(sequence) < 10000 THEN 'Very Long (5-10kb)'
-        ELSE 'Extremely Long (>10kb)'
-    END
-ORDER BY 1;
-
--- -------------------------------------------------------------------------------------
--- 2.4 GENE SYMBOL SEARCH
+-- 3.3 GENE SYMBOL SEARCH
 -- -------------------------------------------------------------------------------------
 -- Returns: Find genes by symbol pattern
 
@@ -274,160 +424,303 @@ SELECT
     g.chromosome,
     COUNT(t.transcript_id) as transcript_count,
     STRING_AGG(t.transcript_id, ', ' ORDER BY t.transcript_id) as transcript_ids
-FROM genes g
-LEFT JOIN transcripts t ON g.gene_id = t.gene_id
-WHERE g.gene_symbol ILIKE '%BRCA%'  -- Change pattern as needed
+FROM public.genes g
+LEFT JOIN public.transcripts t ON g.gene_id = t.gene_id
+WHERE g.gene_symbol ILIKE '%BRCA%'
 GROUP BY g.gene_id, g.gene_symbol, g.gene_type, g.chromosome
 ORDER BY g.gene_symbol;
 
--- =====================================================================================
--- SECTION 3: CROSS-SCHEMA COMPATIBILITY QUERIES
--- =====================================================================================
--- These queries can be adapted to work on either schema
-
 -- -------------------------------------------------------------------------------------
--- 3.1 TOP CHANGED GENES (UNIVERSAL)
+-- 3.4 LIST ALL PATIENT SCHEMAS
 -- -------------------------------------------------------------------------------------
--- For patient databases (cancer_transcript_base):
-/*
-SELECT gene_symbol, expression_fold_change
-FROM cancer_transcript_base
-WHERE expression_fold_change <> 1.0
-ORDER BY ABS(expression_fold_change - 1.0) DESC
-LIMIT 20;
-*/
+-- Returns: All patient schemas in the database
 
--- For main database (normalized schema with patient data):
-/*
-SELECT g.gene_symbol, t.expression_fold_change
-FROM genes g
-JOIN transcripts t ON g.gene_id = t.gene_id
-WHERE t.expression_fold_change <> 1.0
-ORDER BY ABS(t.expression_fold_change - 1.0) DESC
-LIMIT 20;
-*/
-
--- -------------------------------------------------------------------------------------
--- 3.2 DATABASE HEALTH CHECK
--- -------------------------------------------------------------------------------------
--- For patient databases:
-/*
 SELECT
-    'Total Transcripts' as metric,
-    COUNT(*) as count
-FROM cancer_transcript_base
-UNION ALL
-SELECT
-    'Changed Expression',
-    COUNT(*)
-FROM cancer_transcript_base
-WHERE expression_fold_change <> 1.0
-UNION ALL
-SELECT
-    'Protein Coding',
-    COUNT(*)
-FROM cancer_transcript_base
-WHERE gene_type = 'protein_coding';
-*/
-
--- For main database:
-/*
-SELECT
-    'Total Genes' as metric,
-    COUNT(*) as count
-FROM genes
-UNION ALL
-SELECT
-    'Total Transcripts',
-    COUNT(*)
-FROM transcripts
-UNION ALL
-SELECT
-    'Protein Coding Genes',
-    COUNT(*)
-FROM genes
-WHERE gene_type = 'protein_coding';
-*/
+    schema_name,
+    REPLACE(schema_name, 'patient_', '') as patient_id
+FROM information_schema.schemata
+WHERE schema_name LIKE 'patient_%'
+ORDER BY schema_name;
 
 -- =====================================================================================
--- SECTION 4: TROUBLESHOOTING QUERIES
+-- SECTION 4: SPARSE STORAGE PATTERN EXAMPLES
+-- =====================================================================================
+-- Demonstrates how to query with sparse storage (baseline = 1.0 implicit)
+
+-- -------------------------------------------------------------------------------------
+-- 4.1 GET EXPRESSION FOR ALL GENES (INCLUDING BASELINE)
+-- -------------------------------------------------------------------------------------
+-- Pattern: COALESCE to provide default value of 1.0 for genes not in expression_data
+-- Patient Schema: patient_synthetic_her2 (example)
+
+SELECT
+    g.gene_symbol,
+    COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    CASE
+        WHEN pe.expression_fold_change IS NULL THEN 'Baseline (implicit)'
+        ELSE 'Changed (stored)'
+    END as storage_status
+FROM public.genes g
+JOIN public.transcripts t ON g.gene_id = t.gene_id
+LEFT JOIN patient_synthetic_her2.expression_data pe ON t.transcript_id = pe.transcript_id
+WHERE g.gene_symbol IN ('ERBB2', 'TP53', 'GAPDH', 'ACTB')
+ORDER BY g.gene_symbol;
+
+-- -------------------------------------------------------------------------------------
+-- 4.2 COMPARE STORED VS TOTAL TRANSCRIPTS (SPARSE STORAGE EFFICIENCY)
+-- -------------------------------------------------------------------------------------
+-- Shows storage savings from sparse storage
+
+SELECT
+    'patient_synthetic_her2' as patient_schema,
+    (SELECT COUNT(*) FROM public.transcripts) as total_transcripts_in_database,
+    (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data) as stored_expression_values,
+    ROUND(
+        (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data) * 100.0 /
+        (SELECT COUNT(*) FROM public.transcripts),
+        2
+    ) as storage_percentage,
+    ROUND(
+        100.0 - (
+            (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data) * 100.0 /
+            (SELECT COUNT(*) FROM public.transcripts)
+        ),
+        2
+    ) as storage_savings_percentage
+
+UNION ALL
+
+SELECT
+    'patient_synthetic_tnbc',
+    (SELECT COUNT(*) FROM public.transcripts),
+    (SELECT COUNT(*) FROM patient_synthetic_tnbc.expression_data),
+    ROUND(
+        (SELECT COUNT(*) FROM patient_synthetic_tnbc.expression_data) * 100.0 /
+        (SELECT COUNT(*) FROM public.transcripts),
+        2
+    ),
+    ROUND(
+        100.0 - (
+            (SELECT COUNT(*) FROM patient_synthetic_tnbc.expression_data) * 100.0 /
+            (SELECT COUNT(*) FROM public.transcripts)
+        ),
+        2
+    )
+
+UNION ALL
+
+SELECT
+    'patient_synthetic_luad',
+    (SELECT COUNT(*) FROM public.transcripts),
+    (SELECT COUNT(*) FROM patient_synthetic_luad.expression_data),
+    ROUND(
+        (SELECT COUNT(*) FROM patient_synthetic_luad.expression_data) * 100.0 /
+        (SELECT COUNT(*) FROM public.transcripts),
+        2
+    ),
+    ROUND(
+        100.0 - (
+            (SELECT COUNT(*) FROM patient_synthetic_luad.expression_data) * 100.0 /
+            (SELECT COUNT(*) FROM public.transcripts)
+        ),
+        2
+    );
+
+-- =====================================================================================
+-- SECTION 5: TROUBLESHOOTING AND VALIDATION QUERIES
 -- =====================================================================================
 
 -- -------------------------------------------------------------------------------------
--- 4.1 CHECK WHICH SCHEMA YOU'RE USING
+-- 5.1 CHECK DATABASE ARCHITECTURE
 -- -------------------------------------------------------------------------------------
--- Run this to determine which type of database you're connected to
+-- Verify you're using v0.6.0 shared core architecture
 
 SELECT
     CASE
+        WHEN EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name LIKE 'patient_%')
+             AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'genes')
+        THEN 'v0.6.0 Shared Core Architecture ✅'
         WHEN EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'cancer_transcript_base')
-             AND NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'genes')
-        THEN 'Patient Database (Old Schema)'
-        WHEN EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'genes')
-             AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'transcripts')
-        THEN 'Main Database (Normalized Schema)'
+        THEN 'Old Patient Database (pre-v0.6.0)'
         ELSE 'Unknown Schema'
-    END as database_type;
+    END as architecture_version;
 
 -- -------------------------------------------------------------------------------------
--- 4.2 LIST ALL TABLES
+-- 5.2 VALIDATE PATIENT SCHEMA STRUCTURE
 -- -------------------------------------------------------------------------------------
--- See what tables are available in your current database
+-- Check that patient schema has required tables
 
 SELECT
-    table_name,
-    table_type
-FROM information_schema.tables
-WHERE table_schema = 'public'
-ORDER BY table_name;
+    schema_name,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = schema_name AND table_name = 'expression_data'
+        ) THEN '✅ Has expression_data'
+        ELSE '❌ Missing expression_data'
+    END as expression_table,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = schema_name AND table_name = 'metadata'
+        ) THEN '✅ Has metadata'
+        ELSE '❌ Missing metadata'
+    END as metadata_table
+FROM information_schema.schemata
+WHERE schema_name LIKE 'patient_%'
+ORDER BY schema_name;
 
 -- -------------------------------------------------------------------------------------
--- 4.3 SAMPLE DATA PREVIEW
+-- 5.3 VALIDATE SPARSE STORAGE CONSTRAINT
 -- -------------------------------------------------------------------------------------
--- For patient databases:
-/*
-SELECT * FROM cancer_transcript_base LIMIT 5;
-*/
+-- Verify no baseline (1.0) values are stored (should return 0 rows)
 
--- For main database:
-/*
-SELECT g.gene_symbol, g.gene_type, t.transcript_id, t.expression_fold_change
-FROM genes g
-JOIN transcripts t ON g.gene_id = t.gene_id
-LIMIT 5;
-*/
+SELECT
+    'patient_synthetic_her2' as patient_schema,
+    COUNT(*) as invalid_baseline_rows
+FROM patient_synthetic_her2.expression_data
+WHERE expression_fold_change = 1.0
+
+UNION ALL
+
+SELECT
+    'patient_synthetic_tnbc',
+    COUNT(*)
+FROM patient_synthetic_tnbc.expression_data
+WHERE expression_fold_change = 1.0
+
+UNION ALL
+
+SELECT
+    'patient_synthetic_luad',
+    COUNT(*)
+FROM patient_synthetic_luad.expression_data
+WHERE expression_fold_change = 1.0;
+
+-- Expected: All counts = 0 (sparse storage working correctly)
+
+-- -------------------------------------------------------------------------------------
+-- 5.4 VALIDATE JOIN INTEGRITY
+-- -------------------------------------------------------------------------------------
+-- Verify all patient expression data references valid transcripts
+
+SELECT
+    'patient_synthetic_her2' as patient_schema,
+    COUNT(*) as orphaned_transcript_ids
+FROM patient_synthetic_her2.expression_data pe
+LEFT JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+WHERE t.transcript_id IS NULL
+
+UNION ALL
+
+SELECT
+    'patient_synthetic_tnbc',
+    COUNT(*)
+FROM patient_synthetic_tnbc.expression_data pe
+LEFT JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+WHERE t.transcript_id IS NULL
+
+UNION ALL
+
+SELECT
+    'patient_synthetic_luad',
+    COUNT(*)
+FROM patient_synthetic_luad.expression_data pe
+LEFT JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+WHERE t.transcript_id IS NULL;
+
+-- Expected: All counts = 0 (perfect referential integrity)
+
+-- -------------------------------------------------------------------------------------
+-- 5.5 SAMPLE DATA PREVIEW
+-- -------------------------------------------------------------------------------------
+-- Quick look at patient expression data with gene symbols
+
+SELECT
+    g.gene_symbol,
+    pe.expression_fold_change,
+    CASE
+        WHEN pe.expression_fold_change > 2.0 THEN 'Overexpressed'
+        WHEN pe.expression_fold_change < 0.5 THEN 'Underexpressed'
+        ELSE 'Near Baseline'
+    END as expression_status
+FROM patient_synthetic_her2.expression_data pe
+JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+ORDER BY ABS(pe.expression_fold_change - 1.0) DESC
+LIMIT 10;
 
 -- =====================================================================================
--- NOTES FOR USERS
+-- NOTES FOR USERS (v0.6.0 Architecture)
 -- =====================================================================================
 /*
-QUICK REFERENCE:
+QUICK REFERENCE - v0.6.0 SHARED CORE ARCHITECTURE:
 
-1. Patient Databases (cancer_transcript_base schema):
-   - Use for realistic cancer expression analysis
-   - Main table: cancer_transcript_base
-   - Key column: expression_fold_change
-   - Best for: Therapeutic targeting, biomarker discovery
+1. Architecture Overview:
+   - Single database: mbase
+   - Public schema: genes, transcripts (shared core data)
+   - Patient schemas: patient_<PATIENT_ID> with expression_data and metadata tables
+   - Sparse storage: Only fold_change != 1.0 stored (99.99% storage savings)
 
-2. Main Database (normalized schema):
-   - Use for comprehensive gene/transcript analysis
-   - Main tables: genes, transcripts
-   - Key relationships: genes.gene_id = transcripts.gene_id
-   - Best for: Database statistics, gene lookups
+2. Query Pattern:
+   SELECT g.gene_symbol, pe.expression_fold_change
+   FROM patient_<PATIENT_ID>.expression_data pe
+   JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+   JOIN public.genes g ON t.gene_id = g.gene_id
+   WHERE ...
 
-3. Expression Values:
-   - 1.0 = baseline expression
+3. Sparse Storage:
+   - Stored: expression_fold_change != 1.0
+   - Implicit baseline: 1.0 for all transcripts not in expression_data
+   - Use COALESCE(pe.expression_fold_change, 1.0) to get all values
+
+4. Available Patient Schemas:
+   - patient_synthetic_her2: HER2+ Breast Cancer
+   - patient_synthetic_tnbc: Triple-Negative Breast Cancer
+   - patient_synthetic_luad: Lung Adenocarcinoma (EGFR-mutant)
+
+5. Expression Values:
+   - 1.0 = baseline expression (implicit, not stored)
    - >1.0 = overexpressed
    - <1.0 = underexpressed
    - Use <> 1.0 (not != 1.0) in PostgreSQL
 
-4. Tested Databases:
-   - mediabase_patient_DEMO_BREAST_HER2
-   - mediabase_patient_DEMO_BREAST_TNBC
-   - mbase (main database)
+6. Performance Tips:
+   - Indexes exist on transcript_id for fast JOINs
+   - Sparse storage = faster queries (less data to scan)
+   - Use LIMIT for exploratory queries
+   - Patient schemas are isolated (no cross-contamination)
 
-5. Performance Tips:
-   - Index exists on gene_symbol for fast lookups
-   - Use LIMIT for large result sets
-   - Filter by expression_fold_change <> 1.0 for efficiency
+7. Storage Efficiency:
+   - v0.5.0: ~2.1GB per patient (full database copy)
+   - v0.6.0: ~2KB per patient (sparse schema only)
+   - Storage reduction: 99.99%
+
+8. Migration from Old Queries:
+   OLD (pre-v0.6.0):
+     SELECT gene_symbol, expression_fold_change
+     FROM cancer_transcript_base
+     WHERE ...
+
+   NEW (v0.6.0):
+     SELECT g.gene_symbol, pe.expression_fold_change
+     FROM patient_<ID>.expression_data pe
+     JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
+     JOIN public.genes g ON t.gene_id = g.gene_id
+     WHERE ...
+
+9. Cross-Patient Queries:
+   - Use UNION ALL to combine results from multiple patient schemas
+   - Public schema is shared across all patients
+   - Each patient schema is independent
+
+10. Validation:
+    - Run Section 5 queries to validate architecture
+    - Check sparse storage: no fold_change = 1.0 rows
+    - Verify JOIN integrity: no orphaned transcript_ids
+
+For comprehensive documentation, see:
+- docs/PATIENT_DATABASE_GUIDE.md
+- docs/MIGRATION_GUIDE_v0.6.0.md
+- src/db/patient_schema_template.sql
 */

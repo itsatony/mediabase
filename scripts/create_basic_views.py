@@ -12,12 +12,13 @@ import logging
 from pathlib import Path
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from src.db.database import get_db_manager
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
 
 def load_db_config():
     """Load database configuration from environment variables."""
@@ -25,15 +26,16 @@ def load_db_config():
     from dotenv import load_dotenv
 
     project_root = Path(__file__).parent.parent
-    load_dotenv(project_root / '.env')
+    load_dotenv(project_root / ".env")
 
     return {
         "host": os.environ.get("MB_POSTGRES_HOST", "localhost"),
         "port": int(os.environ.get("MB_POSTGRES_PORT", "5435")),
         "dbname": os.environ.get("MB_POSTGRES_DB", "mbase"),
         "user": os.environ.get("MB_POSTGRES_USER", "mbase_user"),
-        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret")
+        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret"),
     }
+
 
 def create_basic_materialized_views(db_manager) -> bool:
     """Create basic materialized views that work with current normalized schema."""
@@ -156,6 +158,7 @@ def create_basic_materialized_views(db_manager) -> bool:
         logger.error(f"❌ Failed to create basic materialized views: {e}")
         return False
 
+
 def main():
     """Create basic materialized views."""
     logger.info("🚀 Creating basic materialized views for normalized MEDIABASE...")
@@ -179,6 +182,7 @@ def main():
         logger.error("❌ Failed to create materialized views")
 
     return success
+
 
 if __name__ == "__main__":
     success = main()

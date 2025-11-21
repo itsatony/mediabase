@@ -7,7 +7,7 @@ from .base_processor import (
     DownloadError,
     ProcessingError,
     DatabaseError,
-    CacheError
+    CacheError,
 )
 
 # Avoid importing publications directly to prevent circular reference
@@ -21,6 +21,7 @@ from .go_terms import GOTermProcessor
 from .pathways import PathwayProcessor
 from .drugs import DrugProcessor
 from .id_enrichment import IDEnrichmentProcessor
+
 # Import publications last to avoid circular references
 from .publications import PublicationsProcessor
 from .drug_repurposing_hub import DrugRepurposingHubProcessor
@@ -28,14 +29,14 @@ from .pharmgkb_annotations import PharmGKBAnnotationsProcessor
 
 # Export all main processor classes
 __all__ = [
-    'TranscriptProcessor', 
-    'ProductClassifier', 
-    'ProductProcessor', 
-    'PathwayProcessor', 
-    'DrugProcessor', 
-    'GOTermProcessor',
-    'IDEnrichmentProcessor',
-    'PublicationsProcessor',
-    'DrugRepurposingHubProcessor',
-    'PharmGKBAnnotationsProcessor',
+    "TranscriptProcessor",
+    "ProductClassifier",
+    "ProductProcessor",
+    "PathwayProcessor",
+    "DrugProcessor",
+    "GOTermProcessor",
+    "IDEnrichmentProcessor",
+    "PublicationsProcessor",
+    "DrugRepurposingHubProcessor",
+    "PharmGKBAnnotationsProcessor",
 ]

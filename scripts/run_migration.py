@@ -26,7 +26,7 @@ from typing import Dict, Any
 from dotenv import load_dotenv
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from src.db.database import get_db_manager
 from src.utils.logging import get_logger
@@ -34,7 +34,7 @@ from src.migration import (
     ControlledMigration,
     MigrationTestFramework,
     MigrationController,
-    PerformanceOptimizer
+    PerformanceOptimizer,
 )
 
 logger = get_logger(__name__)
@@ -43,14 +43,21 @@ logger = get_logger(__name__)
 def load_db_config() -> Dict[str, Any]:
     """Load database configuration from environment variables."""
     project_root = Path(__file__).parent.parent
-    env_path = project_root / '.env'
+    env_path = project_root / ".env"
     load_dotenv(env_path)
 
-    required_vars = ['MB_POSTGRES_HOST', 'MB_POSTGRES_PORT', 'MB_POSTGRES_NAME',
-                    'MB_POSTGRES_USER', 'MB_POSTGRES_PASSWORD']
+    required_vars = [
+        "MB_POSTGRES_HOST",
+        "MB_POSTGRES_PORT",
+        "MB_POSTGRES_NAME",
+        "MB_POSTGRES_USER",
+        "MB_POSTGRES_PASSWORD",
+    ]
     missing_vars = [var for var in required_vars if var not in os.environ]
     if missing_vars:
-        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
         sys.exit(1)
 
     return {
@@ -58,7 +65,7 @@ def load_db_config() -> Dict[str, Any]:
         "port": int(os.environ.get("MB_POSTGRES_PORT", "5435")),
         "dbname": os.environ.get("MB_POSTGRES_NAME", "mediabase"),
         "user": os.environ.get("MB_POSTGRES_USER", "mbase_user"),
-        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret")
+        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret"),
     }
 
 
@@ -72,33 +79,37 @@ def load_migration_config(config_file: str = None) -> Dict[str, Any]:
         Migration configuration dictionary
     """
     default_config = {
-        'checkpoints_dir': './migration_checkpoints',
-        'require_user_confirmation': True,
-        'validation': {
-            'max_gene_symbol_length': 50,
-            'required_gene_fields': ['gene_id', 'gene_symbol', 'gene_type'],
-            'drug_name_min_length': 2,
-            'cross_reference_databases': ['UniProt', 'RefSeq', 'Ensembl'],
-            'go_categories': ['molecular_function', 'biological_process', 'cellular_component']
+        "checkpoints_dir": "./migration_checkpoints",
+        "require_user_confirmation": True,
+        "validation": {
+            "max_gene_symbol_length": 50,
+            "required_gene_fields": ["gene_id", "gene_symbol", "gene_type"],
+            "drug_name_min_length": 2,
+            "cross_reference_databases": ["UniProt", "RefSeq", "Ensembl"],
+            "go_categories": [
+                "molecular_function",
+                "biological_process",
+                "cellular_component",
+            ],
         },
-        'performance': {
-            'batch_size': 10000,
-            'index_creation_parallel': True,
-            'materialized_view_refresh_interval': 3600
+        "performance": {
+            "batch_size": 10000,
+            "index_creation_parallel": True,
+            "materialized_view_refresh_interval": 3600,
         },
-        'testing': {
-            'test_unit': True,
-            'test_integration': True,
-            'test_performance': True,
-            'test_data_validation': True,
-            'generate_report': True,
-            'test_timeout': 300
-        }
+        "testing": {
+            "test_unit": True,
+            "test_integration": True,
+            "test_performance": True,
+            "test_data_validation": True,
+            "generate_report": True,
+            "test_timeout": 300,
+        },
     }
 
     if config_file and Path(config_file).exists():
         try:
-            with open(config_file, 'r') as f:
+            with open(config_file, "r") as f:
                 user_config = json.load(f)
 
             # Merge user config with defaults
@@ -133,7 +144,7 @@ def run_comprehensive_tests(db_manager, config: Dict[str, Any]) -> bool:
         results = test_framework.run_comprehensive_tests()
 
         # Print summary
-        summary = results['summary']
+        summary = results["summary"]
         logger.info(f"\n{'='*60}")
         logger.info("TESTING RESULTS SUMMARY")
         logger.info(f"{'='*60}")
@@ -145,10 +156,10 @@ def run_comprehensive_tests(db_manager, config: Dict[str, Any]) -> bool:
         logger.info(f"Overall status: {summary['overall_status']}")
         logger.info(f"Total time: {results['total_time']}s")
 
-        if 'report_path' in results:
+        if "report_path" in results:
             logger.info(f"Report saved to: {results['report_path']}")
 
-        return summary['overall_status'] == 'PASS'
+        return summary["overall_status"] == "PASS"
 
     except Exception as e:
         logger.error(f"Testing failed catastrophically: {e}")
@@ -231,20 +242,24 @@ def show_migration_status(db_manager) -> None:
         logger.info(f"Current system records: {current_records:,}")
 
         # Check if new schema exists
-        db_manager.cursor.execute("""
+        db_manager.cursor.execute(
+            """
             SELECT COUNT(*) FROM information_schema.tables
             WHERE table_name IN ('genes', 'transcripts', 'drug_interactions')
-        """)
+        """
+        )
         new_tables = db_manager.cursor.fetchone()[0]
 
         if new_tables >= 3:
             logger.info("✅ New normalized schema detected")
 
             # Check materialized views
-            db_manager.cursor.execute("""
+            db_manager.cursor.execute(
+                """
                 SELECT COUNT(*) FROM information_schema.views
                 WHERE table_name LIKE '%_view'
-            """)
+            """
+            )
             views = db_manager.cursor.fetchone()[0]
             logger.info(f"Materialized views: {views}")
 
@@ -252,10 +267,12 @@ def show_migration_status(db_manager) -> None:
             logger.info("⚠️  New normalized schema not found")
 
         # Check backup schemas
-        db_manager.cursor.execute("""
+        db_manager.cursor.execute(
+            """
             SELECT COUNT(*) FROM information_schema.schemata
             WHERE schema_name LIKE 'mediabase_backup_%'
-        """)
+        """
+        )
         backups = db_manager.cursor.fetchone()[0]
         logger.info(f"Available backups: {backups}")
 
@@ -268,44 +285,40 @@ def main():
     parser = argparse.ArgumentParser(
         description="MEDIABASE Pipeline Migration Script",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
 
     parser.add_argument(
-        '--test-only',
-        action='store_true',
-        help='Run comprehensive tests without executing migration'
+        "--test-only",
+        action="store_true",
+        help="Run comprehensive tests without executing migration",
     )
 
     parser.add_argument(
-        '--skip-confirmation',
-        action='store_true',
-        help='Skip user confirmation prompts (use with caution)'
+        "--skip-confirmation",
+        action="store_true",
+        help="Skip user confirmation prompts (use with caution)",
     )
 
     parser.add_argument(
-        '--config-file',
+        "--config-file", type=str, help="Path to custom configuration file"
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and plan migration without execution",
+    )
+
+    parser.add_argument(
+        "--rollback",
         type=str,
-        help='Path to custom configuration file'
+        metavar="MIGRATION_ID",
+        help="Rollback to previous backup (requires migration ID)",
     )
 
     parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Validate and plan migration without execution'
-    )
-
-    parser.add_argument(
-        '--rollback',
-        type=str,
-        metavar='MIGRATION_ID',
-        help='Rollback to previous backup (requires migration ID)'
-    )
-
-    parser.add_argument(
-        '--status',
-        action='store_true',
-        help='Show current migration status'
+        "--status", action="store_true", help="Show current migration status"
     )
 
     args = parser.parse_args()
@@ -315,7 +328,7 @@ def main():
 
     # Apply command line overrides
     if args.skip_confirmation:
-        config['require_user_confirmation'] = False
+        config["require_user_confirmation"] = False
 
     # Initialize database manager
     try:
@@ -343,9 +356,13 @@ def main():
             # Run tests and validation without migration
             tests_passed = run_comprehensive_tests(db_manager, config)
             if tests_passed:
-                logger.info("✅ Migration validation passed - system ready for migration")
+                logger.info(
+                    "✅ Migration validation passed - system ready for migration"
+                )
             else:
-                logger.error("❌ Migration validation failed - resolve issues before migration")
+                logger.error(
+                    "❌ Migration validation failed - resolve issues before migration"
+                )
             return tests_passed
 
         else:
@@ -368,8 +385,12 @@ def main():
 
             if migration_success:
                 logger.info("🎉 MEDIABASE migration completed successfully!")
-                logger.info("The system has been transformed to the new normalized architecture.")
-                logger.info("Performance improvements and data quality enhancements are now active.")
+                logger.info(
+                    "The system has been transformed to the new normalized architecture."
+                )
+                logger.info(
+                    "Performance improvements and data quality enhancements are now active."
+                )
                 return True
             else:
                 logger.error("❌ Migration failed - check logs for details")

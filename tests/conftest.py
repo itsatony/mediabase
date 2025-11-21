@@ -8,47 +8,49 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 # Load test environment variables from .env.test
-env_test_path = Path(__file__).parent.parent / '.env.test'
+env_test_path = Path(__file__).parent.parent / ".env.test"
 if env_test_path.exists():
     load_dotenv(env_test_path, override=True)
     print(f"✓ Loaded test configuration from {env_test_path}")
 else:
     print(f"⚠ Warning: .env.test not found at {env_test_path}, using default values")
 
+
 @pytest.fixture(scope="session")
 def test_db():
     """Create and manage test database."""
     # Connection parameters from environment variables
     params = {
-        'host': os.getenv('MB_POSTGRES_HOST', 'localhost'),
-        'port': int(os.getenv('MB_POSTGRES_PORT', '5435')),
-        'user': os.getenv('MB_POSTGRES_USER', 'mbase_user'),
-        'password': os.getenv('MB_POSTGRES_PASSWORD', 'mbase_secret'),
-        'dbname': 'postgres'  # Connect to postgres to create test database
+        "host": os.getenv("MB_POSTGRES_HOST", "localhost"),
+        "port": int(os.getenv("MB_POSTGRES_PORT", "5435")),
+        "user": os.getenv("MB_POSTGRES_USER", "mbase_user"),
+        "password": os.getenv("MB_POSTGRES_PASSWORD", "mbase_secret"),
+        "dbname": "postgres",  # Connect to postgres to create test database
     }
 
-    test_db_name = os.getenv('MB_POSTGRES_NAME', 'mediabase_test')
-    
+    test_db_name = os.getenv("MB_POSTGRES_NAME", "mediabase_test")
+
     # Create test database
     conn = psycopg2.connect(**params)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
-    
+
     # Drop test database if it exists
     cur.execute(f"DROP DATABASE IF EXISTS {test_db_name}")
     cur.execute(f"CREATE DATABASE {test_db_name}")
-    
+
     cur.close()
     conn.close()
-    
+
     # Create schema in test database
     test_params = params.copy()
-    test_params['dbname'] = test_db_name
+    test_params["dbname"] = test_db_name
     conn = psycopg2.connect(**test_params)
-    
+
     with conn.cursor() as cur:
         # Create normalized schema tables for API testing
-        cur.execute("""
+        cur.execute(
+            """
             -- Genes table
             CREATE TABLE genes (
                 gene_id TEXT PRIMARY KEY,
@@ -233,13 +235,14 @@ def test_db():
             SELECT t.transcript_id, g.gene_symbol, g.gene_id, g.gene_type, g.chromosome, t.expression_fold_change
             FROM transcripts t
             INNER JOIN genes g ON t.gene_id = g.gene_id;
-        """)
+        """
+        )
 
     conn.commit()
     conn.close()
-    
+
     yield test_db_name
-    
+
     # Cleanup
     conn = psycopg2.connect(**params)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)

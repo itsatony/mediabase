@@ -16,17 +16,14 @@ import psycopg2
 from psycopg2.extras import execute_batch
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from src.db.database import get_db_manager
 from src.utils.logging import get_logger
-from src.migration import (
-    MigrationController,
-    RobustDataExtractor,
-    PerformanceOptimizer
-)
+from src.migration import MigrationController, RobustDataExtractor, PerformanceOptimizer
 
 logger = get_logger(__name__)
+
 
 def load_db_config() -> Dict[str, Any]:
     """Load database configuration from environment variables."""
@@ -34,15 +31,16 @@ def load_db_config() -> Dict[str, Any]:
     from dotenv import load_dotenv
 
     project_root = Path(__file__).parent.parent
-    load_dotenv(project_root / '.env')
+    load_dotenv(project_root / ".env")
 
     return {
         "host": os.environ.get("MB_POSTGRES_HOST", "localhost"),
         "port": int(os.environ.get("MB_POSTGRES_PORT", "5435")),
         "dbname": os.environ.get("MB_POSTGRES_DB", "mbase"),
         "user": os.environ.get("MB_POSTGRES_USER", "mbase_user"),
-        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret")
+        "password": os.environ.get("MB_POSTGRES_PASSWORD", "mbase_secret"),
     }
+
 
 def create_normalized_schema(db_manager) -> bool:
     """Create the normalized database schema."""
@@ -160,13 +158,16 @@ def create_normalized_schema(db_manager) -> bool:
         logger.error(f"❌ Schema creation failed: {e}")
         return False
 
+
 def extract_and_load_genes_chunked(db_manager, chunk_size: int = 10000) -> bool:
     """Extract gene data from cancer_transcript_base and load into normalized genes table."""
     logger.info("🧬 Extracting and loading gene data (chunked)...")
 
     try:
         # Get total count for progress tracking
-        db_manager.cursor.execute("SELECT COUNT(DISTINCT gene_id) FROM cancer_transcript_base WHERE gene_id IS NOT NULL")
+        db_manager.cursor.execute(
+            "SELECT COUNT(DISTINCT gene_id) FROM cancer_transcript_base WHERE gene_id IS NOT NULL"
+        )
         total_genes = db_manager.cursor.fetchone()[0]
         logger.info(f"Processing {total_genes:,} unique genes")
 
@@ -203,7 +204,7 @@ def extract_and_load_genes_chunked(db_manager, chunk_size: int = 10000) -> bool:
         # Process in chunks
         processed = 0
         for i in range(0, len(all_genes), chunk_size):
-            chunk = all_genes[i:i + chunk_size]
+            chunk = all_genes[i : i + chunk_size]
 
             # Insert chunk
             insert_sql = """
@@ -214,16 +215,13 @@ def extract_and_load_genes_chunked(db_manager, chunk_size: int = 10000) -> bool:
             """
 
             try:
-                execute_batch(
-                    db_manager.cursor,
-                    insert_sql,
-                    chunk,
-                    page_size=1000
-                )
+                execute_batch(db_manager.cursor, insert_sql, chunk, page_size=1000)
                 db_manager.conn.commit()
 
                 processed += len(chunk)
-                logger.info(f"  Processed {processed:,} / {len(all_genes):,} genes ({(processed/len(all_genes))*100:.1f}%)")
+                logger.info(
+                    f"  Processed {processed:,} / {len(all_genes):,} genes ({(processed/len(all_genes))*100:.1f}%)"
+                )
 
             except psycopg2.IntegrityError as e:
                 if "duplicate key value" in str(e):
@@ -244,13 +242,16 @@ def extract_and_load_genes_chunked(db_manager, chunk_size: int = 10000) -> bool:
         logger.error(f"❌ Gene extraction failed: {e}")
         return False
 
+
 def extract_and_load_transcripts_chunked(db_manager, chunk_size: int = 10000) -> bool:
     """Extract transcript data and load into normalized transcripts table."""
     logger.info("📝 Extracting and loading transcript data (chunked)...")
 
     try:
         # Get total count
-        db_manager.cursor.execute("SELECT COUNT(*) FROM cancer_transcript_base WHERE transcript_id IS NOT NULL")
+        db_manager.cursor.execute(
+            "SELECT COUNT(*) FROM cancer_transcript_base WHERE transcript_id IS NOT NULL"
+        )
         total_transcripts = db_manager.cursor.fetchone()[0]
         logger.info(f"Processing {total_transcripts:,} transcripts")
 
@@ -275,7 +276,7 @@ def extract_and_load_transcripts_chunked(db_manager, chunk_size: int = 10000) ->
         # Process in chunks
         processed = 0
         for i in range(0, len(all_transcripts), chunk_size):
-            chunk = all_transcripts[i:i + chunk_size]
+            chunk = all_transcripts[i : i + chunk_size]
 
             # Insert chunk
             insert_sql = """
@@ -286,17 +287,14 @@ def extract_and_load_transcripts_chunked(db_manager, chunk_size: int = 10000) ->
                 expression_fold_change = EXCLUDED.expression_fold_change
             """
 
-            execute_batch(
-                db_manager.cursor,
-                insert_sql,
-                chunk,
-                page_size=1000
-            )
+            execute_batch(db_manager.cursor, insert_sql, chunk, page_size=1000)
             db_manager.conn.commit()
 
             processed += len(chunk)
             if processed % (chunk_size * 5) == 0 or processed == len(all_transcripts):
-                logger.info(f"  Processed {processed:,} / {len(all_transcripts):,} transcripts ({(processed/len(all_transcripts))*100:.1f}%)")
+                logger.info(
+                    f"  Processed {processed:,} / {len(all_transcripts):,} transcripts ({(processed/len(all_transcripts))*100:.1f}%)"
+                )
 
         # Verify results
         db_manager.cursor.execute("SELECT COUNT(*) FROM transcripts")
@@ -309,6 +307,7 @@ def extract_and_load_transcripts_chunked(db_manager, chunk_size: int = 10000) ->
         logger.error(f"❌ Transcript extraction failed: {e}")
         return False
 
+
 def create_materialized_views(db_manager) -> bool:
     """Create materialized views for optimized SOTA queries."""
     logger.info("📊 Creating materialized views for SOTA query optimization...")
@@ -317,16 +316,19 @@ def create_materialized_views(db_manager) -> bool:
         optimizer = PerformanceOptimizer(db_manager)
         result = optimizer.create_all_materialized_views()
 
-        views_created = len(result.get('views_created', []))
-        views_failed = len(result.get('views_failed', []))
+        views_created = len(result.get("views_created", []))
+        views_failed = len(result.get("views_failed", []))
 
-        logger.info(f"✅ Materialized views: {views_created} created, {views_failed} failed")
+        logger.info(
+            f"✅ Materialized views: {views_created} created, {views_failed} failed"
+        )
 
         return views_created > views_failed
 
     except Exception as e:
         logger.error(f"❌ Materialized view creation failed: {e}")
         return False
+
 
 def main():
     """Execute chunked migration."""
@@ -345,7 +347,9 @@ def main():
     logger.info("💾 Creating backup...")
     migration_id = f"chunked_{int(time.time())}"
     try:
-        controller = MigrationController(db_manager, {'checkpoints_dir': './migration_checkpoints'})
+        controller = MigrationController(
+            db_manager, {"checkpoints_dir": "./migration_checkpoints"}
+        )
         controller.migration_id = migration_id
         backup_schema = controller.create_backup_schema()
         logger.info(f"✅ Backup created: {backup_schema}")
@@ -358,7 +362,7 @@ def main():
         ("Create normalized schema", create_normalized_schema),
         ("Extract and load genes", extract_and_load_genes_chunked),
         ("Extract and load transcripts", extract_and_load_transcripts_chunked),
-        ("Create materialized views", create_materialized_views)
+        ("Create materialized views", create_materialized_views),
     ]
 
     for stage_name, stage_func in stages:
@@ -385,6 +389,7 @@ def main():
     logger.info("The normalized database schema is now ready for use.")
 
     return True
+
 
 if __name__ == "__main__":
     success = main()

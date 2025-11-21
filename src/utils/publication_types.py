@@ -2,8 +2,10 @@
 
 from typing import Dict, List, Optional, TypedDict, Any
 
+
 class Publication(TypedDict, total=False):
     """Publication reference type definition."""
+
     pmid: str
     evidence_type: str
     source_db: str

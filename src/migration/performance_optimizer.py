@@ -39,22 +39,31 @@ class PerformanceOptimizer:
             logger.info("🚀 Creating materialized views for performance optimization...")
             start_time = time.time()
             results = {
-                'views_created': [],
-                'views_failed': [],
-                'performance_metrics': {},
-                'total_time': 0
+                "views_created": [],
+                "views_failed": [],
+                "performance_metrics": {},
+                "total_time": 0,
             }
 
             # Core materialized views for SOTA queries
             view_creators = [
-                ('gene_summary_view', self._create_gene_summary_view),
-                ('transcript_enrichment_view', self._create_transcript_enrichment_view),
-                ('drug_interaction_summary_view', self._create_drug_interaction_summary_view),
-                ('pathway_coverage_view', self._create_pathway_coverage_view),
-                ('publication_summary_view', self._create_publication_summary_view),
-                ('patient_query_optimized_view', self._create_patient_query_optimized_view),
-                ('go_term_hierarchy_view', self._create_go_term_hierarchy_view),
-                ('cross_reference_lookup_view', self._create_cross_reference_lookup_view)
+                ("gene_summary_view", self._create_gene_summary_view),
+                ("transcript_enrichment_view", self._create_transcript_enrichment_view),
+                (
+                    "drug_interaction_summary_view",
+                    self._create_drug_interaction_summary_view,
+                ),
+                ("pathway_coverage_view", self._create_pathway_coverage_view),
+                ("publication_summary_view", self._create_publication_summary_view),
+                (
+                    "patient_query_optimized_view",
+                    self._create_patient_query_optimized_view,
+                ),
+                ("go_term_hierarchy_view", self._create_go_term_hierarchy_view),
+                (
+                    "cross_reference_lookup_view",
+                    self._create_cross_reference_lookup_view,
+                ),
             ]
 
             for view_name, creator_func in view_creators:
@@ -65,33 +74,34 @@ class PerformanceOptimizer:
                     result = creator_func()
 
                     view_time = time.time() - view_start
-                    results['views_created'].append({
-                        'name': view_name,
-                        'creation_time': round(view_time, 2),
-                        'result': result
-                    })
+                    results["views_created"].append(
+                        {
+                            "name": view_name,
+                            "creation_time": round(view_time, 2),
+                            "result": result,
+                        }
+                    )
 
                     self.created_views.append(view_name)
                     logger.info(f"✅ Created {view_name} in {view_time:.2f}s")
 
                 except Exception as e:
                     logger.error(f"❌ Failed to create {view_name}: {e}")
-                    results['views_failed'].append({
-                        'name': view_name,
-                        'error': str(e)
-                    })
+                    results["views_failed"].append({"name": view_name, "error": str(e)})
 
             # Create indexes on materialized views
             self._create_materialized_view_indexes()
 
             # Gather performance metrics
-            results['performance_metrics'] = self._gather_performance_metrics()
+            results["performance_metrics"] = self._gather_performance_metrics()
 
             total_time = time.time() - start_time
-            results['total_time'] = round(total_time, 2)
+            results["total_time"] = round(total_time, 2)
 
             logger.info(f"✅ Materialized view creation completed in {total_time:.2f}s")
-            logger.info(f"Created: {len(results['views_created'])}, Failed: {len(results['views_failed'])}")
+            logger.info(
+                f"Created: {len(results['views_created'])}, Failed: {len(results['views_failed'])}"
+            )
 
             return results
 
@@ -219,7 +229,7 @@ class PerformanceOptimizer:
         self.db_manager.cursor.execute("SELECT COUNT(*) FROM gene_summary_view")
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'gene_summary'}
+        return {"rows": row_count, "type": "gene_summary"}
 
     def _create_transcript_enrichment_view(self) -> Dict[str, Any]:
         """Create transcript-specific enrichment view for detailed queries."""
@@ -282,10 +292,12 @@ class PerformanceOptimizer:
 
         self.db_manager.cursor.execute(view_sql)
 
-        self.db_manager.cursor.execute("SELECT COUNT(*) FROM transcript_enrichment_view")
+        self.db_manager.cursor.execute(
+            "SELECT COUNT(*) FROM transcript_enrichment_view"
+        )
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'transcript_enrichment'}
+        return {"rows": row_count, "type": "transcript_enrichment"}
 
     def _create_drug_interaction_summary_view(self) -> Dict[str, Any]:
         """Create drug interaction summary for pharmacogenomics queries."""
@@ -327,10 +339,12 @@ class PerformanceOptimizer:
 
         self.db_manager.cursor.execute(view_sql)
 
-        self.db_manager.cursor.execute("SELECT COUNT(*) FROM drug_interaction_summary_view")
+        self.db_manager.cursor.execute(
+            "SELECT COUNT(*) FROM drug_interaction_summary_view"
+        )
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'drug_interaction_summary'}
+        return {"rows": row_count, "type": "drug_interaction_summary"}
 
     def _create_pathway_coverage_view(self) -> Dict[str, Any]:
         """Create pathway coverage summary for systems biology queries."""
@@ -383,7 +397,7 @@ class PerformanceOptimizer:
         self.db_manager.cursor.execute("SELECT COUNT(*) FROM pathway_coverage_view")
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'pathway_coverage'}
+        return {"rows": row_count, "type": "pathway_coverage"}
 
     def _create_publication_summary_view(self) -> Dict[str, Any]:
         """Create publication summary for literature-based queries."""
@@ -437,7 +451,7 @@ class PerformanceOptimizer:
         self.db_manager.cursor.execute("SELECT COUNT(*) FROM publication_summary_view")
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'publication_summary'}
+        return {"rows": row_count, "type": "publication_summary"}
 
     def _create_patient_query_optimized_view(self) -> Dict[str, Any]:
         """Create the main patient-optimized view for SOTA queries.
@@ -511,10 +525,12 @@ class PerformanceOptimizer:
 
         self.db_manager.cursor.execute(view_sql)
 
-        self.db_manager.cursor.execute("SELECT COUNT(*) FROM patient_query_optimized_view")
+        self.db_manager.cursor.execute(
+            "SELECT COUNT(*) FROM patient_query_optimized_view"
+        )
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'patient_query_optimized'}
+        return {"rows": row_count, "type": "patient_query_optimized"}
 
     def _create_go_term_hierarchy_view(self) -> Dict[str, Any]:
         """Create GO term hierarchy view for ontology-based queries."""
@@ -557,7 +573,7 @@ class PerformanceOptimizer:
         self.db_manager.cursor.execute("SELECT COUNT(*) FROM go_term_hierarchy_view")
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'go_term_hierarchy'}
+        return {"rows": row_count, "type": "go_term_hierarchy"}
 
     def _create_cross_reference_lookup_view(self) -> Dict[str, Any]:
         """Create cross-reference lookup view for ID mapping queries."""
@@ -591,10 +607,12 @@ class PerformanceOptimizer:
 
         self.db_manager.cursor.execute(view_sql)
 
-        self.db_manager.cursor.execute("SELECT COUNT(*) FROM cross_reference_lookup_view")
+        self.db_manager.cursor.execute(
+            "SELECT COUNT(*) FROM cross_reference_lookup_view"
+        )
         row_count = self.db_manager.cursor.fetchone()[0]
 
-        return {'rows': row_count, 'type': 'cross_reference_lookup'}
+        return {"rows": row_count, "type": "cross_reference_lookup"}
 
     def _create_materialized_view_indexes(self):
         """Create indexes on materialized views for optimal performance."""
@@ -607,50 +625,45 @@ class PerformanceOptimizer:
                 "CREATE INDEX IF NOT EXISTS idx_gene_summary_symbol ON gene_summary_view (gene_symbol)",
                 "CREATE INDEX IF NOT EXISTS idx_gene_summary_chromosome ON gene_summary_view (chromosome)",
                 "CREATE INDEX IF NOT EXISTS idx_gene_summary_coverage ON gene_summary_view (has_go_terms, has_pathways, has_drug_interactions)",
-
                 # Transcript enrichment view indexes
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_transcript_enrichment_transcript_id ON transcript_enrichment_view (transcript_id)",
                 "CREATE INDEX IF NOT EXISTS idx_transcript_enrichment_gene_id ON transcript_enrichment_view (gene_id)",
                 "CREATE INDEX IF NOT EXISTS idx_transcript_enrichment_symbol ON transcript_enrichment_view (gene_symbol)",
-
                 # Drug interaction summary indexes
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_drug_summary_drug_id ON drug_interaction_summary_view (drug_interaction_id)",
                 "CREATE INDEX IF NOT EXISTS idx_drug_summary_name ON drug_interaction_summary_view (drug_name)",
                 "CREATE INDEX IF NOT EXISTS idx_drug_summary_mechanism ON drug_interaction_summary_view (mechanism_of_action)",
-
                 # Pathway coverage indexes
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_pathway_coverage_pathway_id ON pathway_coverage_view (pathway_id)",
                 "CREATE INDEX IF NOT EXISTS idx_pathway_coverage_name ON pathway_coverage_view (pathway_name)",
                 "CREATE INDEX IF NOT EXISTS idx_pathway_coverage_database ON pathway_coverage_view (source_database)",
-
                 # Publication summary indexes
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_publication_summary_pub_id ON publication_summary_view (publication_id)",
                 "CREATE INDEX IF NOT EXISTS idx_publication_summary_pmid ON publication_summary_view (pmid)",
                 "CREATE INDEX IF NOT EXISTS idx_publication_summary_year ON publication_summary_view (publication_year)",
                 "CREATE INDEX IF NOT EXISTS idx_publication_summary_relevance ON publication_summary_view (max_relevance_score)",
-
                 # Patient query optimized indexes (most important for performance)
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_opt_transcript_id ON patient_query_optimized_view (transcript_id)",
                 "CREATE INDEX IF NOT EXISTS idx_patient_opt_gene_id ON patient_query_optimized_view (gene_id)",
                 "CREATE INDEX IF NOT EXISTS idx_patient_opt_symbol ON patient_query_optimized_view (gene_symbol)",
                 "CREATE INDEX IF NOT EXISTS idx_patient_opt_completeness ON patient_query_optimized_view (data_completeness_score DESC)",
                 "CREATE INDEX IF NOT EXISTS idx_patient_opt_enrichment ON patient_query_optimized_view (has_drug_interactions, has_pathways, has_publications)",
-
                 # GO term hierarchy indexes
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_go_hierarchy_go_id ON go_term_hierarchy_view (go_id)",
                 "CREATE INDEX IF NOT EXISTS idx_go_hierarchy_category ON go_term_hierarchy_view (category)",
                 "CREATE INDEX IF NOT EXISTS idx_go_hierarchy_gene_count ON go_term_hierarchy_view (associated_gene_count DESC)",
-
                 # Cross reference lookup indexes
                 "CREATE INDEX IF NOT EXISTS idx_cross_ref_external_id ON cross_reference_lookup_view (external_id)",
                 "CREATE INDEX IF NOT EXISTS idx_cross_ref_database ON cross_reference_lookup_view (database_name)",
-                "CREATE INDEX IF NOT EXISTS idx_cross_ref_gene_symbol ON cross_reference_lookup_view (gene_symbol)"
+                "CREATE INDEX IF NOT EXISTS idx_cross_ref_gene_symbol ON cross_reference_lookup_view (gene_symbol)",
             ]
 
             for cmd in index_commands:
                 try:
                     self.db_manager.cursor.execute(cmd)
-                    logger.debug(f"Created index: {cmd.split('idx_')[1].split(' ')[0] if 'idx_' in cmd else 'unknown'}")
+                    logger.debug(
+                        f"Created index: {cmd.split('idx_')[1].split(' ')[0] if 'idx_' in cmd else 'unknown'}"
+                    )
                 except Exception as e:
                     logger.warning(f"Index creation failed: {cmd} - {e}")
 
@@ -680,12 +693,12 @@ class PerformanceOptimizer:
             self.db_manager.cursor.execute(size_query)
             view_sizes = self.db_manager.cursor.fetchall()
 
-            metrics['view_sizes'] = [
+            metrics["view_sizes"] = [
                 {
-                    'schema': row[0],
-                    'view': row[1],
-                    'size_pretty': row[2],
-                    'size_bytes': row[3]
+                    "schema": row[0],
+                    "view": row[1],
+                    "size_pretty": row[2],
+                    "size_bytes": row[3],
                 }
                 for row in view_sizes
             ]
@@ -693,10 +706,14 @@ class PerformanceOptimizer:
             # Row counts for each view
             row_counts = {}
             for view_name in [
-                'gene_summary_view', 'transcript_enrichment_view',
-                'drug_interaction_summary_view', 'pathway_coverage_view',
-                'publication_summary_view', 'patient_query_optimized_view',
-                'go_term_hierarchy_view', 'cross_reference_lookup_view'
+                "gene_summary_view",
+                "transcript_enrichment_view",
+                "drug_interaction_summary_view",
+                "pathway_coverage_view",
+                "publication_summary_view",
+                "patient_query_optimized_view",
+                "go_term_hierarchy_view",
+                "cross_reference_lookup_view",
             ]:
                 try:
                     self.db_manager.cursor.execute(f"SELECT COUNT(*) FROM {view_name}")
@@ -706,26 +723,28 @@ class PerformanceOptimizer:
                     logger.warning(f"Failed to count {view_name}: {e}")
                     row_counts[view_name] = 0
 
-            metrics['row_counts'] = row_counts
+            metrics["row_counts"] = row_counts
 
             # Total size of all materialized views
-            total_size_bytes = sum(view['size_bytes'] for view in metrics['view_sizes'])
-            metrics['total_size_mb'] = round(total_size_bytes / (1024 * 1024), 2)
+            total_size_bytes = sum(view["size_bytes"] for view in metrics["view_sizes"])
+            metrics["total_size_mb"] = round(total_size_bytes / (1024 * 1024), 2)
 
             # Performance comparison estimates
-            metrics['performance_improvements'] = {
-                'estimated_query_speedup': '10-100x faster than old system',
-                'data_reduction': f'Eliminated ~{(385659 - row_counts.get("patient_query_optimized_view", 0)) / 1000:.0f}k redundant records',
-                'storage_efficiency': 'Normalized schema reduces storage by ~70%'
+            metrics["performance_improvements"] = {
+                "estimated_query_speedup": "10-100x faster than old system",
+                "data_reduction": f'Eliminated ~{(385659 - row_counts.get("patient_query_optimized_view", 0)) / 1000:.0f}k redundant records',
+                "storage_efficiency": "Normalized schema reduces storage by ~70%",
             }
 
             return metrics
 
         except Exception as e:
             logger.error(f"Failed to gather performance metrics: {e}")
-            return {'error': str(e)}
+            return {"error": str(e)}
 
-    def refresh_materialized_views(self, view_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    def refresh_materialized_views(
+        self, view_names: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         """Refresh materialized views to update data.
 
         Args:
@@ -737,42 +756,42 @@ class PerformanceOptimizer:
         try:
             if view_names is None:
                 view_names = [
-                    'gene_summary_view', 'transcript_enrichment_view',
-                    'drug_interaction_summary_view', 'pathway_coverage_view',
-                    'publication_summary_view', 'patient_query_optimized_view',
-                    'go_term_hierarchy_view', 'cross_reference_lookup_view'
+                    "gene_summary_view",
+                    "transcript_enrichment_view",
+                    "drug_interaction_summary_view",
+                    "pathway_coverage_view",
+                    "publication_summary_view",
+                    "patient_query_optimized_view",
+                    "go_term_hierarchy_view",
+                    "cross_reference_lookup_view",
                 ]
 
-            results = {
-                'refreshed': [],
-                'failed': [],
-                'total_time': 0
-            }
+            results = {"refreshed": [], "failed": [], "total_time": 0}
 
             start_time = time.time()
 
             for view_name in view_names:
                 try:
                     view_start = time.time()
-                    self.db_manager.cursor.execute(f"REFRESH MATERIALIZED VIEW {view_name}")
+                    self.db_manager.cursor.execute(
+                        f"REFRESH MATERIALIZED VIEW {view_name}"
+                    )
                     refresh_time = time.time() - view_start
 
-                    results['refreshed'].append({
-                        'view': view_name,
-                        'refresh_time': round(refresh_time, 2)
-                    })
+                    results["refreshed"].append(
+                        {"view": view_name, "refresh_time": round(refresh_time, 2)}
+                    )
 
                     logger.info(f"✅ Refreshed {view_name} in {refresh_time:.2f}s")
 
                 except Exception as e:
-                    results['failed'].append({
-                        'view': view_name,
-                        'error': str(e)
-                    })
+                    results["failed"].append({"view": view_name, "error": str(e)})
                     logger.error(f"❌ Failed to refresh {view_name}: {e}")
 
-            results['total_time'] = round(time.time() - start_time, 2)
-            logger.info(f"Materialized view refresh completed in {results['total_time']}s")
+            results["total_time"] = round(time.time() - start_time, 2)
+            logger.info(
+                f"Materialized view refresh completed in {results['total_time']}s"
+            )
 
             return results
 
@@ -788,28 +807,28 @@ class PerformanceOptimizer:
         """
         try:
             view_names = [
-                'gene_summary_view', 'transcript_enrichment_view',
-                'drug_interaction_summary_view', 'pathway_coverage_view',
-                'publication_summary_view', 'patient_query_optimized_view',
-                'go_term_hierarchy_view', 'cross_reference_lookup_view'
+                "gene_summary_view",
+                "transcript_enrichment_view",
+                "drug_interaction_summary_view",
+                "pathway_coverage_view",
+                "publication_summary_view",
+                "patient_query_optimized_view",
+                "go_term_hierarchy_view",
+                "cross_reference_lookup_view",
             ]
 
-            results = {
-                'dropped': [],
-                'failed': []
-            }
+            results = {"dropped": [], "failed": []}
 
             for view_name in view_names:
                 try:
-                    self.db_manager.cursor.execute(f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE")
-                    results['dropped'].append(view_name)
+                    self.db_manager.cursor.execute(
+                        f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE"
+                    )
+                    results["dropped"].append(view_name)
                     logger.info(f"Dropped materialized view: {view_name}")
 
                 except Exception as e:
-                    results['failed'].append({
-                        'view': view_name,
-                        'error': str(e)
-                    })
+                    results["failed"].append({"view": view_name, "error": str(e)})
                     logger.error(f"Failed to drop {view_name}: {e}")
 
             self.created_views = []

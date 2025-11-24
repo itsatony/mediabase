@@ -5,6 +5,30 @@ All notable changes to MEDIABASE will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0.1] - 2025-11-24
+
+### Fixed
+- **CRITICAL**: Fixed backup script corruption bug where `pg_dump --verbose` stderr was mixed into SQL output
+  - **Root Cause**: `backup_mediabase.sh` used `2>&1` redirection, merging stderr log messages into stdout SQL
+  - **Impact**: v0.6.0 backup file (`mbase_backup_20251121_095629.sql.gz`) is CORRUPTED and cannot be restored
+  - **Fix**: Changed lines 192, 206, 220 to redirect stderr to separate `.error.log` files using `2>> "$error_log"`
+- Enhanced `validate_backup()` function to detect SQL corruption by checking for `pg_dump:` messages in SQL content
+- Created comprehensive restore instructions documenting corruption issue and providing clean alternative backup
+
+### Added
+- Automated backup/restore test suite (`tests/test_backup_restore.py`) with 14 tests validating:
+  - Backup script functionality and command-line options
+  - Gzip integrity checking and corrupted file detection
+  - SQL corruption detection (pg_dump log messages in SQL)
+  - Backup file structure and error log creation
+  - Restore documentation completeness
+- Emergency restore documentation (`docs/RESTORE_INSTRUCTIONS.md`) with step-by-step instructions
+
+### Changed
+- Backup script now creates separate error log files (`.sql.gz.error.log`) containing `pg_dump --verbose` output
+- Updated backup validation to perform both gzip and SQL content integrity checks
+- Clean v0.6.0.1 backup created: `mbase_backup_20251124_154557.sql.gz` (1.5GB, validated)
+
 ## [0.6.0] - 2025-11-21
 
 ### 🚀 Major Architecture Overhaul: Shared Core with Patient Schemas

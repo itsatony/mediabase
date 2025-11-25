@@ -1,8 +1,10 @@
 # SOTA Queries Guide
 
+**Version:** 0.6.0.2
+
 ## Overview
 
-MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer transcriptomics analysis. These queries enable clinicians and researchers to identify therapeutic targets, assess pathway dysregulation, and prioritize treatment strategies based on patient-specific gene expression data.
+MEDIABASE provides State-Of-The-Art (SOTA) SQL queries for cancer transcriptomics analysis with PMID evidence integration (47M+ gene-publication links). These queries enable clinicians and researchers to identify therapeutic targets, assess pathway dysregulation, prioritize treatment strategies, and evaluate literature support for gene-drug relationships based on patient-specific gene expression data.
 
 ## Query File Types
 
@@ -87,22 +89,32 @@ PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user \
 # 3. Execute the queries for your cancer type (copy/paste from file)
 ```
 
-**Example - HER2+ Breast Cancer**:
+**Example - HER2+ Breast Cancer with PMID Evidence (v0.6.0.2)**:
 ```sql
 SELECT
-    gene_symbol,
-    expression_fold_change as fold_change,
+    ctb.gene_symbol,
+    ctb.expression_fold_change as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
     CASE
-        WHEN gene_symbol = 'ERBB2' AND expression_fold_change > 4.0
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
+    CASE
+        WHEN ctb.gene_symbol = 'ERBB2' AND ctb.expression_fold_change > 4.0
             THEN '🎯 TRASTUZUMAB/PERTUZUMAB TARGET (High Priority)'
-        WHEN gene_symbol IN ('PIK3CA', 'AKT1') AND expression_fold_change > 3.0
+        WHEN ctb.gene_symbol IN ('PIK3CA', 'AKT1') AND ctb.expression_fold_change > 3.0
             THEN '🎯 PI3K/AKT INHIBITOR TARGET'
         -- ... more cases
     END as her2_therapeutic_strategy
-FROM cancer_transcript_base
-WHERE expression_fold_change != 1.0
-  AND gene_symbol IN ('ERBB2', 'PIK3CA', 'AKT1', 'ESR1', 'CDK4', 'CDK6', 'PTEN', 'TP53')
-ORDER BY expression_fold_change DESC;
+FROM cancer_transcript_base ctb
+JOIN genes g ON ctb.gene_symbol = g.gene_symbol
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
+WHERE ctb.expression_fold_change != 1.0
+  AND ctb.gene_symbol IN ('ERBB2', 'PIK3CA', 'AKT1', 'ESR1', 'CDK4', 'CDK6', 'PTEN', 'TP53')
+GROUP BY ctb.gene_symbol, ctb.expression_fold_change
+ORDER BY ctb.expression_fold_change DESC;
 ```
 
 ### For Advanced Analysis: Use Legacy SOTA Queries
@@ -124,7 +136,7 @@ PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user \
 
 ### Query 1: Oncogene and Tumor Suppressor Analysis
 
-**Purpose**: Identifies dysregulation of known cancer-driving genes
+**Purpose**: Identifies dysregulation of known cancer-driving genes with literature evidence (v0.6.0.2)
 
 **Key Genes Analyzed**:
 - **Oncogenes**: MYC, ERBB2, EGFR, KRAS, PIK3CA, AKT1, BRAF, NRAS
@@ -137,6 +149,7 @@ PGPASSWORD=mbase_secret psql -h localhost -p 5435 -U mbase_user \
 - 🔴 **SUPPRESSED TUMOR SUPPRESSOR**: Underexpressed suppressors (<0.5x) - high-risk markers
 - 🔴 **IMPAIRED DNA REPAIR**: Underexpressed DNA repair genes - PARP inhibitor candidates
 - 💊 **TARGETABLE**: Genes with approved drug interactions
+- 📚 **PMID EVIDENCE**: Publication count categorized as Extensively studied (100K+), Well-studied (10K+), Moderate evidence (1K+), or Limited publications (<1K)
 
 **Example Output**:
 ```
@@ -149,13 +162,14 @@ tumor_suppressor| PTEN        | 0.17               | 🔴 SUPPRESSED TUMOR SUPPR
 
 ### Query 2: Therapeutic Target Prioritization
 
-**Purpose**: Ranks therapeutic targets by expression + druggability + pathway involvement
+**Purpose**: Ranks therapeutic targets by expression + druggability + pathway involvement + literature evidence (v0.6.0.2)
 
 **Scoring System**:
 - **Expression Score**: 0-4 points (higher fold-change = more points)
 - **Druggability Score**: 0-3 points (kinases > receptors > enzymes)
 - **Pathway Score**: 0-2 points (higher pathway involvement = more points)
-- **Total Priority Score**: Sum of all scores (max ~12 points)
+- **Literature Score** (NEW in v0.6.0.2): 0-2 points (Extensively studied = 2, Well-studied = 1.5, Moderate = 1, Limited = 0.5)
+- **Total Priority Score**: Sum of all scores (max ~14 points with literature)
 
 **Priority Levels**:
 - **🎯 IMMEDIATE PRIORITY** (≥9 points): Strong expression + druggable + pathway involvement
@@ -422,6 +436,8 @@ SELECT COUNT(*) FROM cancer_transcript_base WHERE expression_fold_change != 1.0;
 
 ## Version History
 
+- **v0.6.0.2 (2025-11-25)**: Added PMID evidence integration (47M+ gene-publication links), literature strength categorization, updated query patterns with COALESCE and evidence_level
+- **v0.6.0 (2025-11-20)**: Transitioned to shared core architecture with patient-specific schemas
 - **v0.3.1 (2025-11-15)**: Fixed all 5 SQL errors, created `legacy_sota_queries_for_patients.sql`
 - **v0.3.0**: Added normalized SOTA queries, created demo patient databases
 - **v0.2.1**: Added flexible transcript ID matching

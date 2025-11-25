@@ -14,7 +14,7 @@ import psycopg2
 conn = psycopg2.connect(
     host="localhost",
     port=5435,
-    database="mbase",  # Or patient-specific: mediabase_patient_PATIENT_ID
+    database="mbase",  # v0.6.0: Single database with patient schemas (patient_PATIENT_ID)
     user="mbase_user",
     password="mbase_secret"
 )
@@ -22,7 +22,7 @@ conn = psycopg2.connect(
 
 ## Natural Language → SQL Translation Patterns
 
-### Pattern 1: Drug Recommendations
+### Pattern 1: Drug Recommendations (v0.6.0.2 with PMID Evidence)
 
 **Natural Language:** "Which FDA-approved drugs target overexpressed genes in this patient?"
 
@@ -30,20 +30,36 @@ conn = psycopg2.connect(
 ```sql
 SELECT
     g.gene_symbol,
-    ctb.expression_fold_change,
-    otd.drug_name,
-    otd.mechanism_of_action,
-    otd.phase
+    ROUND(ctb.expression_fold_change::numeric, 3) as fold_change,
+    okd.molecule_name as drug_name,
+    okd.mechanism_of_action,
+    okd.clinical_phase_label,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM cancer_transcript_base ctb
-JOIN genes g ON ctb.gene_id = g.gene_id
-JOIN opentargets_known_drugs otd ON g.gene_id = otd.gene_id
+JOIN genes g ON ctb.gene_symbol = g.gene_symbol
+JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > {threshold}
-  AND otd.phase = 'Phase IV'
+  AND okd.is_approved = true
+GROUP BY g.gene_symbol, ctb.expression_fold_change, okd.molecule_name,
+         okd.mechanism_of_action, okd.clinical_phase_label
 ORDER BY ctb.expression_fold_change DESC;
 ```
 
 **Parameters:**
 - `{threshold}`: Typically 2.0 for overexpression, 0.5 for underexpression
+
+**v0.6.0.2 Features:**
+- `COALESCE()` handles NULL publication counts
+- `LEFT JOIN` to gene_publications preserves rows without literature evidence
+- Evidence strength categorization (100K+, 10K+, 1K+, <1K publications)
+- Updated table names: `opentargets_known_drugs` with `is_approved` filter
 
 ### Pattern 2: Pathway Enrichment
 
@@ -81,7 +97,7 @@ GROUP BY od.disease_name
 ORDER BY associated_genes DESC, avg_association_score DESC;
 ```
 
-### Pattern 4: Literature Support
+### Pattern 4: Literature Support (v0.6.0.2 with Evidence Strength)
 
 **Natural Language:** "Which genes have strong literature support?"
 
@@ -89,18 +105,31 @@ ORDER BY associated_genes DESC, avg_association_score DESC;
 ```sql
 SELECT
     g.gene_symbol,
-    COUNT(gp.pmid) as publication_count,
-    SUM(gp.mention_count) as total_mentions
-FROM genes g
-JOIN gene_publications gp ON g.gene_id = gp.gene_id
-JOIN cancer_transcript_base ctb ON g.gene_id = ctb.gene_id
+    ROUND(ctb.expression_fold_change::numeric, 3) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    COALESCE(SUM(gp.mention_count), 0) as total_mentions,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied (100K+ publications)'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied (10K+ publications)'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence (1K+ publications)'
+        ELSE 'Limited publications (<1K)'
+    END as evidence_level
+FROM cancer_transcript_base ctb
+JOIN genes g ON ctb.gene_symbol = g.gene_symbol
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > {threshold}
-GROUP BY g.gene_symbol
-HAVING COUNT(gp.pmid) > 100
-ORDER BY publication_count DESC;
+GROUP BY g.gene_symbol, ctb.expression_fold_change
+HAVING COUNT(DISTINCT gp.pmid) > 100
+ORDER BY publication_count DESC, fold_change DESC;
 ```
 
-### Pattern 5: Multi-Omics Integration
+**v0.6.0.2 Features:**
+- `COALESCE()` prevents NULL values in publication_count and total_mentions
+- `LEFT JOIN` preserves genes without publication data
+- 4-tier evidence strength categorization aligned with v0.6.0.2 standards
+- 47M+ gene-publication links from PubTator Central
+
+### Pattern 5: Multi-Omics Integration (v0.6.0.2)
 
 **Natural Language:** "Give me a comprehensive profile of actionable genes"
 
@@ -109,22 +138,35 @@ ORDER BY publication_count DESC;
 SELECT
     g.gene_symbol,
     g.gene_name,
-    ctb.expression_fold_change,
-    COUNT(DISTINCT otd.drug_name) as drug_count,
-    COUNT(DISTINCT gp.pathway_name) as pathway_count,
-    COUNT(DISTINCT gpub.pmid) as publication_count,
-    MAX(ogda.overall_score) as max_disease_score
+    ROUND(ctb.expression_fold_change::numeric, 3) as fold_change,
+    COALESCE(COUNT(DISTINCT okd.molecule_name), 0) as drug_count,
+    COALESCE(array_length(g.pathways, 1), 0) as pathway_count,
+    COALESCE(COUNT(DISTINCT gpub.pmid), 0) as publication_count,
+    COALESCE(MAX(ogda.overall_association_score), 0) as max_disease_score,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM cancer_transcript_base ctb
-JOIN genes g ON ctb.gene_id = g.gene_id
-LEFT JOIN opentargets_known_drugs otd ON g.gene_id = otd.gene_id AND otd.phase IN ('Phase IV', 'Phase III')
-LEFT JOIN gene_pathways gp ON g.gene_id = gp.gene_id
+JOIN genes g ON ctb.gene_symbol = g.gene_symbol
+LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+    AND okd.is_approved = true
 LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 LEFT JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 WHERE ctb.expression_fold_change > 2.0
-GROUP BY g.gene_symbol, g.gene_name, ctb.expression_fold_change
-HAVING COUNT(DISTINCT otd.drug_name) > 0
-ORDER BY drug_count DESC, ctb.expression_fold_change DESC;
+GROUP BY g.gene_symbol, g.gene_name, ctb.expression_fold_change, g.pathways
+HAVING COUNT(DISTINCT okd.molecule_name) > 0
+ORDER BY drug_count DESC, publication_count DESC, fold_change DESC;
 ```
+
+**v0.6.0.2 Features:**
+- `COALESCE()` on all aggregate functions prevents NULL results
+- `LEFT JOIN` preserves rows without drug/publication/disease data
+- Evidence strength categorization integrated into comprehensive profile
+- Updated table/column names: `opentargets_known_drugs.molecule_name`, `opentargets_gene_disease_associations.overall_association_score`
+- Pathways accessed via `genes.pathways` array column (normalized in v0.6.0)
 
 ## Query Optimization Tips
 
@@ -163,11 +205,19 @@ LIMIT 20  -- Top 20 results typically sufficient for clinical review
 - **0.2-0.5:** Moderate association (consider as secondary target)
 - **<0.2:** Weak association (deprioritize)
 
-### Literature Count Guidelines
-- **>1000 publications:** Well-studied gene (reliable target)
-- **100-1000:** Moderate evidence (validate with other sources)
-- **10-100:** Limited evidence (requires careful evaluation)
-- **<10:** Poorly characterized (high-risk target)
+### Literature Count Guidelines (v0.6.0.2)
+
+**Evidence Strength Tiers** (47M+ gene-publication links from PubTator Central):
+- **>= 100,000 publications:** Extensively studied (highest confidence, e.g., TP53, AKT1, EGFR)
+- **>= 10,000 publications:** Well-studied (high confidence in mechanism, reliable target)
+- **>= 1,000 publications:** Moderate evidence (established target with validation)
+- **< 1,000 publications:** Limited publications (emerging target requiring careful evaluation)
+
+**Clinical Application:**
+- Extensively studied genes: Prioritize for first-line therapy selection
+- Well-studied genes: Strong candidates for clinical decision-making
+- Moderate evidence genes: Consider with additional biomarker validation
+- Limited publication genes: Require case-by-case oncologist review and literature search
 
 ## Error Handling
 
@@ -214,7 +264,7 @@ def generate_treatment_report(patient_id: str) -> dict:
     # 4. Check disease associations
     diseases = query_disease_associations(conn)
 
-    # 5. Assess literature support
+    # 5. Assess literature support (v0.6.0.2: 47M+ gene-publication links)
     literature = query_publication_support(conn, targets)
 
     # 6. Rank by actionability
@@ -263,14 +313,16 @@ def calculate_actionability_score(gene_data: dict) -> float:
     disease_score = gene_data.get('disease_score', 0)
     score += disease_score * 20
 
-    # Literature support (0-15 points)
+    # Literature support (0-15 points) - v0.6.0.2 tiers
     pub_count = gene_data.get('publication_count', 0)
-    if pub_count > 1000:
+    if pub_count >= 100000:  # Extensively studied
         score += 15
-    elif pub_count > 100:
-        score += 10
-    elif pub_count > 10:
-        score += 5
+    elif pub_count >= 10000:  # Well-studied
+        score += 12
+    elif pub_count >= 1000:  # Moderate evidence
+        score += 8
+    elif pub_count >= 100:  # Limited publications
+        score += 4
 
     # Pathway membership (0-10 points)
     pathway_count = gene_data.get('pathway_count', 0)

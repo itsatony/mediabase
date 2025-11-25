@@ -1,13 +1,13 @@
 # MEDIABASE Database Schema Reference
 
-**Version:** v1.0.0_baseline
+**Version:** v1.0.1
 **Database:** mbase
 **PostgreSQL Version:** 12+
-**Last Updated:** 2025-11-19
+**Last Updated:** 2025-11-25
 
 ## Overview
 
-MEDIABASE is a comprehensive cancer transcriptomics database system that integrates biological data from multiple authoritative sources into a unified PostgreSQL schema. The database supports both base research queries and patient-specific analysis through a sophisticated normalized architecture with extensive cross-referencing capabilities.
+MEDIABASE is a comprehensive cancer transcriptomics database system that integrates biological data from multiple authoritative sources into a unified PostgreSQL schema. The database supports both base research queries and patient-specific analysis through a sophisticated normalized architecture with extensive cross-referencing capabilities. The v0.6.0.2 release integrates 47+ million gene-publication links from PubTator Central, enabling evidence-based query filtering and literature support assessment for clinical decision-making.
 
 ### Data Sources
 - **GENCODE** - Gene transcript annotations and genomic coordinates
@@ -368,22 +368,40 @@ JOIN genes g ON gp.gene_id = g.gene_id
 WHERE g.gene_symbol = 'TP53'
 ORDER BY gp.confidence_score DESC, gp.pathway_level;
 
--- Find genes in a specific pathway
-SELECT DISTINCT g.gene_symbol, gp.gene_role, gp.confidence_score
+-- Find genes in a specific pathway with literature evidence
+SELECT DISTINCT g.gene_symbol, gp.gene_role, gp.confidence_score,
+       COALESCE(COUNT(DISTINCT gp2.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp2.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp2.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp2.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM genes g
 JOIN gene_pathways gp ON g.gene_id = gp.gene_id
+LEFT JOIN gene_publications gp2 ON g.gene_id = gp2.gene_id
 WHERE gp.pathway_name ILIKE '%DNA repair%'
   AND gp.confidence_score >= 0.8
-ORDER BY g.gene_symbol;
+GROUP BY g.gene_symbol, gp.gene_role, gp.confidence_score
+ORDER BY publication_count DESC, g.gene_symbol;
 
--- Find highly confident pathway annotations with literature support
+-- Find highly confident pathway annotations with dual literature support
 SELECT g.gene_symbol, gp.pathway_name, gp.confidence_score,
-       array_length(gp.pmids, 1) as literature_support
+       array_length(gp.pmids, 1) as pathway_pmids,
+       COALESCE(COUNT(DISTINCT gp2.pmid), 0) as total_publications,
+       CASE
+           WHEN COUNT(DISTINCT gp2.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp2.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp2.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM gene_pathways gp
 JOIN genes g ON gp.gene_id = g.gene_id
+LEFT JOIN gene_publications gp2 ON g.gene_id = gp2.gene_id
 WHERE gp.confidence_score >= 0.9
   AND array_length(gp.pmids, 1) >= 5
-ORDER BY gp.confidence_score DESC, literature_support DESC
+GROUP BY g.gene_symbol, gp.pathway_name, gp.confidence_score, gp.pmids
+ORDER BY total_publications DESC, gp.confidence_score DESC
 LIMIT 100;
 
 -- Pathway hierarchy exploration
@@ -459,35 +477,65 @@ ORDER BY gene_count DESC;
 
 **Sample Query:**
 ```sql
--- Find approved drugs targeting a gene
+-- Find approved drugs targeting a gene with literature evidence
 SELECT gdi.drug_name, gdi.clinical_phase, gdi.activity_value,
-       gdi.activity_unit, gdi.drug_class
+       gdi.activity_unit, gdi.drug_class,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM gene_drug_interactions gdi
 JOIN genes g ON gdi.gene_id = g.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol = 'EGFR'
   AND gdi.clinical_phase = 'Approved'
-ORDER BY gdi.activity_value;
+GROUP BY gdi.drug_name, gdi.clinical_phase, gdi.activity_value, gdi.activity_unit, gdi.drug_class
+ORDER BY publication_count DESC, gdi.activity_value;
 
--- Find high-affinity inhibitors (nanomolar range)
+-- Find high-affinity inhibitors with research depth
 SELECT g.gene_symbol, gdi.drug_name, gdi.activity_value,
-       gdi.activity_unit, gdi.evidence_strength
+       gdi.activity_unit, gdi.evidence_strength,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM gene_drug_interactions gdi
 JOIN genes g ON gdi.gene_id = g.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE gdi.activity_type = 'IC50'
   AND gdi.activity_unit = 'nM'
   AND gdi.activity_value < 10
   AND gdi.evidence_strength >= 4
-ORDER BY gdi.activity_value;
+GROUP BY g.gene_symbol, gdi.drug_name, gdi.activity_value, gdi.activity_unit, gdi.evidence_strength
+ORDER BY publication_count DESC, gdi.activity_value;
 
--- Drug repurposing candidates (approved for other uses)
+-- Drug repurposing candidates with evidence depth
 SELECT DISTINCT gdi.drug_name, gdi.drug_class,
-       COUNT(DISTINCT gdi.gene_id) as target_count
+       COUNT(DISTINCT gdi.gene_id) as target_count,
+       AVG(COALESCE(gp_stats.publication_count, 0)) as avg_target_publications,
+       CASE
+           WHEN AVG(COALESCE(gp_stats.publication_count, 0)) >= 100000 THEN 'Extensively studied targets'
+           WHEN AVG(COALESCE(gp_stats.publication_count, 0)) >= 10000 THEN 'Well-studied targets'
+           WHEN AVG(COALESCE(gp_stats.publication_count, 0)) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM gene_drug_interactions gdi
+LEFT JOIN (
+    SELECT gene_id, COUNT(DISTINCT pmid) as publication_count
+    FROM gene_publications
+    GROUP BY gene_id
+) gp_stats ON gdi.gene_id = gp_stats.gene_id
 WHERE gdi.approval_status = 'Approved'
   AND gdi.evidence_strength >= 3
 GROUP BY gdi.drug_name, gdi.drug_class
 HAVING COUNT(DISTINCT gdi.gene_id) > 2
-ORDER BY target_count DESC;
+ORDER BY avg_target_publications DESC, target_count DESC;
 ```
 
 **Note:** This table is currently empty (row_count = 0) and will be populated in future ETL runs.
@@ -817,15 +865,24 @@ LIMIT 20;
 
 **Sample Query:**
 ```sql
--- Find high-confidence cancer gene associations
+-- Find high-confidence cancer gene associations with publication support
 SELECT g.gene_symbol, od.disease_name,
-       ogda.overall_score, ogda.somatic_mutation_score, ogda.known_drug_score
+       ogda.overall_score, ogda.somatic_mutation_score, ogda.known_drug_score,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.is_cancer = true
   AND ogda.overall_score >= 0.7
-ORDER BY ogda.overall_score DESC
+GROUP BY g.gene_symbol, od.disease_name, ogda.overall_score, ogda.somatic_mutation_score, ogda.known_drug_score
+ORDER BY publication_count DESC, ogda.overall_score DESC
 LIMIT 50;
 
 -- Find actionable targets (high score + drug precedence)
@@ -837,16 +894,24 @@ WHERE ogda.overall_score >= 0.7
   AND ogda.tractability_clinical_precedence = true
 ORDER BY ogda.overall_score DESC;
 
--- Top cancer driver genes by mutation evidence
+-- Top cancer driver genes with research support
 SELECT g.gene_symbol, COUNT(DISTINCT ogda.disease_id) as disease_count,
-       AVG(ogda.somatic_mutation_score) as avg_mutation_score
+       AVG(ogda.somatic_mutation_score) as avg_mutation_score,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.is_cancer = true
   AND ogda.somatic_mutation_score >= 0.7
 GROUP BY g.gene_symbol
-ORDER BY avg_mutation_score DESC, disease_count DESC
+ORDER BY publication_count DESC, avg_mutation_score DESC
 LIMIT 30;
 ```
 
@@ -903,15 +968,24 @@ LIMIT 30;
 
 **Sample Query:**
 ```sql
--- Find approved drugs for a gene target
+-- Find approved drugs for a gene target with evidence depth
 SELECT okd.molecule_name, okd.mechanism_of_action,
-       okd.clinical_phase, od.disease_name
+       okd.clinical_phase, od.disease_name,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol = 'EGFR'
   AND okd.clinical_phase = 4.0
-ORDER BY okd.molecule_name;
+GROUP BY okd.molecule_name, okd.mechanism_of_action, okd.clinical_phase, od.disease_name
+ORDER BY publication_count DESC, okd.molecule_name;
 
 -- Drug repurposing candidates (approved, multiple targets)
 SELECT okd.molecule_name, okd.molecule_type, okd.approval_year,
@@ -923,16 +997,25 @@ GROUP BY okd.molecule_name, okd.molecule_type, okd.approval_year
 HAVING COUNT(DISTINCT okd.target_gene_id) > 2
 ORDER BY target_count DESC, approval_year DESC;
 
--- Drugs in late-stage development for cancer
+-- Drugs in late-stage development for cancer with research backing
 SELECT okd.molecule_name, g.gene_symbol, od.disease_name,
-       okd.clinical_phase, okd.mechanism_of_action
+       okd.clinical_phase, okd.mechanism_of_action,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.is_cancer = true
   AND okd.clinical_phase >= 2.0
   AND okd.clinical_phase < 4.0
-ORDER BY okd.clinical_phase DESC, okd.molecule_name;
+GROUP BY okd.molecule_name, g.gene_symbol, od.disease_name, okd.clinical_phase, okd.mechanism_of_action
+ORDER BY publication_count DESC, okd.clinical_phase DESC;
 ```
 
 ---
@@ -1412,52 +1495,89 @@ ORDER BY gene_count DESC, avg_fold_change DESC;
 ### 5. Drug Discovery Queries
 
 ```sql
--- Find approved drugs for a target
+-- Find approved drugs for a target with literature support
 SELECT gdi.drug_name, gdi.clinical_phase, gdi.activity_value,
-       gdi.activity_unit, gdi.mechanism_of_action
+       gdi.activity_unit, gdi.mechanism_of_action,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM gene_drug_interactions gdi
 JOIN genes g ON gdi.gene_id = g.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol = 'EGFR'
   AND gdi.clinical_phase = 'Approved'
-ORDER BY gdi.activity_value;
+GROUP BY gdi.drug_name, gdi.clinical_phase, gdi.activity_value, gdi.activity_unit, gdi.mechanism_of_action
+ORDER BY publication_count DESC, gdi.activity_value;
 
--- High-affinity drug candidates
+-- High-affinity drug candidates with research depth
 SELECT g.gene_symbol, gdi.drug_name, gdi.activity_value,
-       gdi.activity_type, gdi.evidence_strength
+       gdi.activity_type, gdi.evidence_strength,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM gene_drug_interactions gdi
 JOIN genes g ON gdi.gene_id = g.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE gdi.activity_type = 'IC50'
   AND gdi.activity_unit = 'nM'
   AND gdi.activity_value < 10
   AND gdi.evidence_strength >= 4
-ORDER BY gdi.activity_value;
+GROUP BY g.gene_symbol, gdi.drug_name, gdi.activity_value, gdi.activity_type, gdi.evidence_strength
+ORDER BY publication_count DESC, gdi.activity_value;
 ```
 
 ### 6. Open Targets Integration Queries
 
 ```sql
--- Find cancer driver genes with drug tractability
+-- Find cancer driver genes with drug tractability and evidence
 SELECT g.gene_symbol, od.disease_name,
        ogda.overall_score, ogda.somatic_mutation_score,
-       ott.sm_clinical_precedence, ott.ab_clinical_precedence
+       ott.sm_clinical_precedence, ott.ab_clinical_precedence,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 JOIN opentargets_target_tractability ott ON g.gene_id = ott.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.is_cancer = true
   AND ogda.overall_score >= 0.7
   AND (ott.sm_clinical_precedence = true OR ott.ab_clinical_precedence = true)
-ORDER BY ogda.overall_score DESC;
+GROUP BY g.gene_symbol, od.disease_name, ogda.overall_score, ogda.somatic_mutation_score,
+         ott.sm_clinical_precedence, ott.ab_clinical_precedence
+ORDER BY publication_count DESC, ogda.overall_score DESC;
 
--- Find drugs in clinical development for a disease
+-- Find drugs in clinical development with target research depth
 SELECT okd.molecule_name, g.gene_symbol,
-       okd.clinical_phase, okd.mechanism_of_action
+       okd.clinical_phase, okd.mechanism_of_action,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.disease_name ILIKE '%breast cancer%'
   AND okd.clinical_phase >= 2.0
-ORDER BY okd.clinical_phase DESC, okd.molecule_name;
+GROUP BY okd.molecule_name, g.gene_symbol, okd.clinical_phase, okd.mechanism_of_action
+ORDER BY publication_count DESC, okd.clinical_phase DESC;
 ```
 
 ### 7. Literature Mining
@@ -1631,14 +1751,25 @@ WHERE 'kinase activity' = ANY(molecular_functions)
 
 ### Common AI Agent Query Templates
 
-**Template 1: Find therapeutic targets in patient data**
+**Template 1: Find therapeutic targets in patient data with evidence**
 ```sql
-SELECT transcript_id, gene_symbol, expression_fold_change,
-       drugs, pathways, molecular_functions
-FROM cancer_transcript_base
-WHERE expression_fold_change > {THRESHOLD}
-  AND drugs IS NOT NULL
-ORDER BY expression_fold_change DESC
+SELECT ctb.transcript_id, ctb.gene_symbol, ctb.expression_fold_change,
+       ctb.drugs, ctb.pathways, ctb.molecular_functions,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
+FROM cancer_transcript_base ctb
+JOIN genes g ON ctb.gene_id = g.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
+WHERE ctb.expression_fold_change > {THRESHOLD}
+  AND ctb.drugs IS NOT NULL
+GROUP BY ctb.transcript_id, ctb.gene_symbol, ctb.gene_id, ctb.expression_fold_change,
+         ctb.drugs, ctb.pathways, ctb.molecular_functions
+ORDER BY publication_count DESC, ctb.expression_fold_change DESC
 LIMIT {LIMIT};
 ```
 
@@ -1663,16 +1794,25 @@ GROUP BY gp.pathway_name
 ORDER BY gene_count DESC;
 ```
 
-**Template 4: Drug discovery for upregulated genes**
+**Template 4: Drug discovery for upregulated genes with evidence**
 ```sql
 SELECT g.gene_symbol, t.expression_fold_change,
-       gdi.drug_name, gdi.clinical_phase, gdi.mechanism_of_action
+       gdi.drug_name, gdi.clinical_phase, gdi.mechanism_of_action,
+       COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+       CASE
+           WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+           WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+           ELSE 'Limited publications'
+       END as evidence_level
 FROM transcripts t
 JOIN genes g ON t.gene_id = g.gene_id
 JOIN gene_drug_interactions gdi ON g.gene_id = gdi.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE t.expression_fold_change > {THRESHOLD}
   AND gdi.clinical_phase IN ('Approved', 'Phase III')
-ORDER BY t.expression_fold_change DESC;
+GROUP BY g.gene_symbol, t.expression_fold_change, gdi.drug_name, gdi.clinical_phase, gdi.mechanism_of_action
+ORDER BY publication_count DESC, t.expression_fold_change DESC;
 ```
 
 ### Error Handling
@@ -1750,6 +1890,14 @@ ORDER BY n_live_tup DESC;
 ---
 
 ## Version History
+
+### v1.0.1 (2025-11-25)
+- Updated sample queries with v0.6.0.2 PMID evidence integration
+- Added publication_count and evidence_level columns to clinical queries
+- Enhanced drug discovery and disease association query examples
+- Maintained backward compatibility with existing schema
+- Updated 17 queries across 7 sections with literature evidence patterns
+- Added evidence-level categorization (Extensively studied, Well-studied, Moderate evidence, Limited publications)
 
 ### v1.0.0_baseline (2025-11-19)
 - Complete flattened baseline schema

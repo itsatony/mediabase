@@ -1,11 +1,13 @@
 # MEDIABASE Query Library
 
-**Version:** 1.0.0
-**Last Updated:** 2025-11-20
+**Version:** 1.0.1
+**Last Updated:** 2025-11-25
 **Database:** mbase (localhost:5435)
 **Total Queries:** 23 production-ready queries
 
 Comprehensive collection of production-ready SQL queries for cancer transcriptomics analysis and clinical decision support.
+
+**v0.6.0.2 Features:** PMID evidence integration with 4-tier categorization (47M+ gene-publication links)
 
 ## Table of Contents
 
@@ -61,13 +63,23 @@ SELECT
     okd.molecule_type as drug_type,
     okd.mechanism_of_action,
     od.disease_name,
-    okd.approval_year
+    okd.approval_year,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE okd.clinical_phase = 4.0  -- FDA approved
   AND od.is_cancer = true
-ORDER BY g.gene_symbol, okd.molecule_name
+GROUP BY g.gene_symbol, g.gene_name, okd.molecule_name, okd.molecule_type,
+         okd.mechanism_of_action, od.disease_name, okd.approval_year
+ORDER BY publication_count DESC, g.gene_symbol, okd.molecule_name
 LIMIT 20;
 ```
 
@@ -79,6 +91,8 @@ LIMIT 20;
 - `mechanism_of_action`: How drug works (e.g., "Tyrosine-protein kinase inhibitor")
 - `disease_name`: Approved cancer indication
 - `approval_year`: Year of FDA approval
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -96,6 +110,7 @@ LIMIT 20;
 - Consider drug combinations if patient shows overexpression/mutation of multiple druggable genes
 - Approval year indicates how established the treatment is in clinical practice
 - Cross-reference with patient's molecular profile to identify precision medicine opportunities
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~200ms (indexed joins)
 
@@ -108,23 +123,33 @@ LIMIT 20;
 **SQL Query:**
 ```sql
 -- Find drugs in Phase II/III targeting signal transduction pathways
-SELECT DISTINCT
+SELECT
     okd.molecule_name as drug_name,
     okd.clinical_phase,
     okd.clinical_phase_label,
     g.gene_symbol,
     gp.pathway_name,
     okd.mechanism_of_action,
-    od.disease_name
+    od.disease_name,
+    COALESCE(COUNT(DISTINCT gpub.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN gene_pathways gp ON g.gene_id = gp.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 WHERE gp.pathway_name ILIKE '%signal transduction%'
   AND okd.clinical_phase >= 2.0
   AND okd.clinical_phase < 4.0
   AND od.is_cancer = true
-ORDER BY okd.clinical_phase DESC, okd.molecule_name
+GROUP BY okd.molecule_name, okd.clinical_phase, okd.clinical_phase_label,
+         g.gene_symbol, gp.pathway_name, okd.mechanism_of_action, od.disease_name
+ORDER BY okd.clinical_phase DESC, publication_count DESC, okd.molecule_name
 LIMIT 20;
 ```
 
@@ -136,6 +161,8 @@ LIMIT 20;
 - `pathway_name`: Associated signaling pathway
 - `mechanism_of_action`: Drug's mode of action
 - `disease_name`: Cancer indication being studied
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -155,6 +182,7 @@ LIMIT 20;
 - Phase II drugs represent emerging therapeutics - monitor for trial opportunities
 - Consider pathway context when evaluating drug candidates
 - Signal transduction inhibitors (MEK, MAPK, PI3K) work best for pathway-driven cancers
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~500ms (complex multi-join)
 
@@ -174,10 +202,22 @@ SELECT
     COUNT(DISTINCT okd.target_gene_id) as target_count,
     COUNT(DISTINCT okd.disease_id) as disease_count,
     STRING_AGG(DISTINCT g.gene_symbol, ', ' ORDER BY g.gene_symbol) as target_genes,
-    MAX(okd.mechanism_of_action) as primary_mechanism
+    MAX(okd.mechanism_of_action) as primary_mechanism,
+    COALESCE(AVG(gpub_count.pub_count), 0)::INTEGER as avg_publication_count,
+    CASE
+        WHEN AVG(gpub_count.pub_count) >= 100000 THEN 'Extensively studied'
+        WHEN AVG(gpub_count.pub_count) >= 10000 THEN 'Well-studied'
+        WHEN AVG(gpub_count.pub_count) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN (
+    SELECT gene_id, COUNT(DISTINCT pmid) as pub_count
+    FROM gene_publications
+    GROUP BY gene_id
+) gpub_count ON g.gene_id = gpub_count.gene_id
 WHERE od.is_cancer = true
   AND okd.clinical_phase >= 2.0
 GROUP BY okd.molecule_name, okd.molecule_type, okd.clinical_phase
@@ -194,6 +234,8 @@ LIMIT 15;
 - `disease_count`: Number of cancer types studied
 - `target_genes`: Comma-separated list of target genes
 - `primary_mechanism`: Main mechanism of action
+- `avg_publication_count`: Average publications across all target genes
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -210,6 +252,7 @@ LIMIT 15;
 - Consider if patient shows overexpression/mutation in multiple targets for a single drug
 - Pan-kinase inhibitors (sunitinib, sorafenib) target angiogenesis + multiple RTKs
 - Useful for cancers with redundant signaling pathways or resistance mechanisms
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~400ms
 
@@ -230,14 +273,22 @@ SELECT
     ott.sm_predicted_tractable as sm_predicted,
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as drugs_in_development,
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase = 4.0) as approved_drugs,
-    ott.tractability_summary
+    ott.tractability_summary,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_target_tractability ott
 JOIN genes g ON ott.gene_id = g.gene_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE (ott.sm_clinical_precedence = true OR ott.ab_clinical_precedence = true)
 GROUP BY g.gene_symbol, g.gene_name, ott.sm_clinical_precedence,
          ott.ab_clinical_precedence, ott.sm_predicted_tractable, ott.tractability_summary
-ORDER BY approved_drugs DESC, drugs_in_development DESC
+ORDER BY approved_drugs DESC, drugs_in_development DESC, publication_count DESC
 LIMIT 20;
 ```
 
@@ -250,6 +301,8 @@ LIMIT 20;
 - `drugs_in_development`: Count of Phase II/III drugs
 - `approved_drugs`: Count of FDA-approved drugs
 - `tractability_summary`: Human-readable tractability assessment
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -268,6 +321,7 @@ LIMIT 20;
 - Targets with approved drugs = immediate clinical utility
 - Targets with drugs in development = monitor for clinical trial opportunities
 - Tractability assessment guides drug development strategy selection
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~300ms
 
@@ -288,10 +342,22 @@ SELECT
     COUNT(DISTINCT okd.target_gene_id) as target_count,
     STRING_AGG(DISTINCT od.disease_name, ' | ' ORDER BY od.disease_name) as cancer_indications,
     STRING_AGG(DISTINCT g.gene_symbol, ', ' ORDER BY g.gene_symbol) as target_genes,
-    MAX(okd.mechanism_of_action) as mechanism
+    MAX(okd.mechanism_of_action) as mechanism,
+    COALESCE(AVG(gpub_count.pub_count), 0)::INTEGER as avg_publication_count,
+    CASE
+        WHEN AVG(gpub_count.pub_count) >= 100000 THEN 'Extensively studied'
+        WHEN AVG(gpub_count.pub_count) >= 10000 THEN 'Well-studied'
+        WHEN AVG(gpub_count.pub_count) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN genes g ON okd.target_gene_id = g.gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN (
+    SELECT gene_id, COUNT(DISTINCT pmid) as pub_count
+    FROM gene_publications
+    GROUP BY gene_id
+) gpub_count ON g.gene_id = gpub_count.gene_id
 WHERE okd.is_approved = true
   AND od.is_cancer = true
 GROUP BY okd.molecule_name, okd.molecule_type, okd.approval_year
@@ -309,6 +375,8 @@ LIMIT 15;
 - `cancer_indications`: Pipe-separated list of approved cancers
 - `target_genes`: Comma-separated target genes
 - `mechanism`: Primary mechanism of action
+- `avg_publication_count`: Average publications across all target genes
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -329,6 +397,7 @@ LIMIT 15;
   - Insurance coverage may exist
   - Faster time to treatment
 - Imatinib example: Originally for CML, now used for GIST, ALL, and other KIT/PDGFR-driven cancers
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~350ms
 
@@ -405,7 +474,13 @@ SELECT
     gp.pathway_name,
     gp.gene_role,
     COUNT(DISTINCT gp2.pathway_id) as total_pathway_count,
-    COUNT(DISTINCT gpub.pmid) as publication_count
+    COALESCE(COUNT(DISTINCT gpub.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM gene_pathways gp
 JOIN genes g ON gp.gene_id = g.gene_id
 LEFT JOIN gene_pathways gp2 ON g.gene_id = gp2.gene_id
@@ -423,6 +498,7 @@ LIMIT 25;
 - `gene_role`: Role in pathway (member, regulator, etc.)
 - `total_pathway_count`: Number of pathways gene participates in
 - `publication_count`: Number of publications (research maturity)
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -446,6 +522,7 @@ LIMIT 25;
   - Loss of function → DNA damage sensitivity
 - High publication counts indicate well-studied, validated targets
 - Multiple pathway involvement suggests central regulatory role
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~400ms
 
@@ -464,14 +541,22 @@ SELECT
     gp.pathway_name,
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as drugs_available,
     STRING_AGG(DISTINCT okd.molecule_name, ', ') FILTER (WHERE okd.clinical_phase = 4.0) as approved_drugs,
-    COUNT(DISTINCT ogda.disease_id) as disease_associations
+    COUNT(DISTINCT ogda.disease_id) as disease_associations,
+    COALESCE(COUNT(DISTINCT gpub.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM gene_pathways gp
 JOIN genes g ON gp.gene_id = g.gene_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
 LEFT JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
+LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 WHERE gp.pathway_name ILIKE '%DNA repair%'
 GROUP BY g.gene_symbol, g.gene_name, gp.pathway_name
-ORDER BY drugs_available DESC, disease_associations DESC
+ORDER BY drugs_available DESC, disease_associations DESC, publication_count DESC
 LIMIT 25;
 ```
 
@@ -482,6 +567,8 @@ LIMIT 25;
 - `drugs_available`: Count of drugs in Phase II+ development
 - `approved_drugs`: Comma-separated list of FDA-approved drugs
 - `disease_associations`: Number of disease associations
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -511,6 +598,7 @@ LIMIT 25;
 - **Interpretation rules:**
   - Downregulated DNA repair → increased sensitivity to DNA-damaging agents
   - Overexpressed DNA repair → potential resistance, consider combination strategies
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~350ms
 
@@ -531,17 +619,25 @@ SELECT
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase = 4.0) as approved_drugs,
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0 AND okd.clinical_phase < 4.0) as trial_drugs,
     STRING_AGG(DISTINCT okd.molecule_name, ', ')
-        FILTER (WHERE okd.clinical_phase = 4.0 AND okd.molecule_name IS NOT NULL) as sample_drugs
+        FILTER (WHERE okd.clinical_phase = 4.0 AND okd.molecule_name IS NOT NULL) as sample_drugs,
+    COALESCE(COUNT(DISTINCT gpub.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 JOIN gene_pathways gp ON g.gene_id = gp.gene_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 WHERE gp.pathway_name ILIKE '%signal transduction%'
   OR gp.pathway_name ILIKE '%MAPK%'
   OR gp.pathway_name ILIKE '%PI3K%'
   OR gp.pathway_name ILIKE '%JAK-STAT%'
 GROUP BY g.gene_symbol, g.gene_name
 HAVING COUNT(DISTINCT okd.molecule_name) > 0
-ORDER BY approved_drugs DESC, trial_drugs DESC
+ORDER BY approved_drugs DESC, trial_drugs DESC, publication_count DESC
 LIMIT 25;
 ```
 
@@ -553,6 +649,8 @@ LIMIT 25;
 - `approved_drugs`: FDA-approved drug count
 - `trial_drugs`: Drugs in Phase II/III trials
 - `sample_drugs`: Examples of approved drugs
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -581,6 +679,7 @@ LIMIT 25;
   - MET inhibitors: capmatinib (MET exon 14 skipping)
 - Genes with multiple approved drugs offer treatment options and backup strategies
 - High trial drug counts indicate active research and emerging options
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~500ms
 
@@ -644,6 +743,7 @@ LIMIT 20;
   - MTHFD2 overexpression → potential target
   - Antifolates (methotrexate, pemetrexed) target this pathway
 - High avg_pubs_per_gene indicates well-studied pathways with validated biology
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~600ms (complex subquery)
 
@@ -669,15 +769,26 @@ SELECT
     ogda.literature_score,
     ogda.genetic_association_score,
     ogda.known_drug_score,
-    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as drugs_in_development
+    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as drugs_in_development,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
     AND od.disease_id = okd.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.is_cancer = true
   AND ogda.overall_score >= 0.7
-ORDER BY ogda.overall_score DESC, ogda.somatic_mutation_score DESC
+GROUP BY g.gene_symbol, g.gene_name, od.disease_name, ogda.overall_score,
+         ogda.somatic_mutation_score, ogda.literature_score,
+         ogda.genetic_association_score, ogda.known_drug_score
+ORDER BY ogda.overall_score DESC, ogda.somatic_mutation_score DESC, publication_count DESC
 LIMIT 25;
 ```
 
@@ -691,6 +802,8 @@ LIMIT 25;
 - `genetic_association_score`: GWAS evidence (0-1)
 - `known_drug_score`: Drug evidence (0-1)
 - `drugs_in_development`: Count of drugs in pipeline
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -721,6 +834,7 @@ LIMIT 25;
   - Prioritize sequencing targets
   - Guide therapy selection based on patient's mutation profile
   - Cross-reference with opentargets_known_drugs for treatment availability
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~250ms
 
@@ -740,7 +854,13 @@ SELECT
     COUNT(DISTINCT gpub.pmid) as publication_count,
     COUNT(DISTINCT gp.pathway_id) as pathway_count,
     COUNT(DISTINCT okd.molecule_name) as drug_count,
-    MAX(gpub.mention_count) as max_mentions_in_paper
+    MAX(gpub.mention_count) as max_mentions_in_paper,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 LEFT JOIN gene_pathways gp ON g.gene_id = gp.gene_id
@@ -760,6 +880,7 @@ LIMIT 30;
 - `pathway_count`: Number of pathways involved
 - `drug_count`: Number of associated drugs
 - `max_mentions_in_paper`: Maximum mentions in single paper
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -796,6 +917,7 @@ LIMIT 30;
   - Primary biomarker selection (prefer literature-rich genes)
   - Variant interpretation (more data = better annotation)
   - Patient report generation (extensive literature for context)
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~800ms (large join with 47M publication records)
 
@@ -817,18 +939,26 @@ SELECT
     ott.sm_predicted_tractable,
     COUNT(DISTINCT ogda.disease_id) as cancer_type_count,
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase = 4.0) as approved_drugs,
-    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as pipeline_drugs
+    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as pipeline_drugs,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 JOIN opentargets_target_tractability ott ON g.gene_id = ott.gene_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.is_cancer = true
   AND ogda.overall_score >= 0.6
   AND (ott.sm_clinical_precedence = true OR ott.ab_clinical_precedence = true)
 GROUP BY g.gene_symbol, g.gene_name, ogda.overall_score,
          ott.sm_clinical_precedence, ott.ab_clinical_precedence, ott.sm_predicted_tractable
-ORDER BY ogda.overall_score DESC, approved_drugs DESC
+ORDER BY ogda.overall_score DESC, approved_drugs DESC, publication_count DESC
 LIMIT 25;
 ```
 
@@ -842,6 +972,8 @@ LIMIT 25;
 - `cancer_type_count`: Number of cancer types associated
 - `approved_drugs`: FDA-approved drug count
 - `pipeline_drugs`: Drugs in development (Phase II+)
+- `publication_count`: Number of publications mentioning this gene
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -874,6 +1006,7 @@ LIMIT 25;
 - **Multiple cancer types:** Broader therapeutic utility
   - Pan-cancer drivers (TP53, KRAS, PIK3CA)
   - Same drug may work across different cancer types
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~350ms
 
@@ -895,7 +1028,13 @@ SELECT
     COUNT(DISTINCT gpub.pmid) as publication_count,
     COUNT(DISTINCT gp.pathway_id) as pathway_involvement,
     STRING_AGG(DISTINCT od.disease_name, ' | ' ORDER BY od.disease_name)
-        FILTER (WHERE od.disease_name IS NOT NULL) as cancer_types
+        FILTER (WHERE od.disease_name IS NOT NULL) as cancer_types,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
@@ -919,6 +1058,7 @@ LIMIT 25;
 - `publication_count`: Number of publications
 - `pathway_involvement`: Number of pathways
 - `cancer_types`: Pipe-separated list of cancers
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -953,6 +1093,7 @@ LIMIT 25;
 - **Liquid biopsy markers:**
   - Pan-cancer markers: TP53, KRAS, PIK3CA
   - Monitor via ctDNA for recurrence/treatment response
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~600ms
 
@@ -974,7 +1115,13 @@ SELECT
     BOOL_OR(ga.annotation_value ILIKE '%oncogene%') as has_oncogene_annotation,
     BOOL_OR(tg.go_term ILIKE '%negative regulation of cell proliferation%') as negative_growth_regulation,
     BOOL_OR(tg.go_term ILIKE '%positive regulation of cell proliferation%') as positive_growth_regulation,
-    BOOL_OR(tg.go_term ILIKE '%apoptotic process%') as apoptosis_involved
+    BOOL_OR(tg.go_term ILIKE '%apoptotic process%') as apoptosis_involved,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 LEFT JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
@@ -997,6 +1144,7 @@ ORDER BY publication_count DESC;
 - `negative_growth_regulation`: Inhibits proliferation (TS feature)
 - `positive_growth_regulation`: Promotes proliferation (oncogene feature)
 - `apoptosis_involved`: Involved in cell death (often TS)
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -1054,6 +1202,7 @@ ORDER BY publication_count DESC;
     - Pathway restoration (difficult)
     - Synthetic lethality (e.g., PARP inhibitors for BRCA loss)
     - Target compensatory pathways
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~400ms
 
@@ -1125,6 +1274,7 @@ LIMIT 30;
   - Automatically fetch and summarize high-mention papers
   - Extract key findings, methods, and clinical relevance
   - Cross-reference with patient's molecular profile
+- Consider total_papers_for_gene as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~400ms
 
@@ -1204,6 +1354,7 @@ LIMIT 30;
   - Build gene interaction networks from co-occurrence data
   - Identify hub genes (high co-occurrence with many genes)
   - Detect functional modules (clusters of co-occurring genes)
+- Consider shared_publications as evidence strength for functional relationships (1000+ = strong relationship, 100+ = moderate, <100 = exploratory)
 
 **Performance:** ~1500ms (complex self-join on large publication table)
 
@@ -1224,7 +1375,13 @@ SELECT
     AVG(gpub.mention_count) as avg_mentions_per_paper,
     MAX(gpub.mention_count) as max_mentions,
     COUNT(DISTINCT gp.pathway_id) as pathway_count,
-    COUNT(DISTINCT ogda.disease_id) as disease_association_count
+    COUNT(DISTINCT ogda.disease_id) as disease_association_count,
+    CASE
+        WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
 LEFT JOIN gene_pathways gp ON g.gene_id = gp.gene_id
@@ -1245,6 +1402,7 @@ LIMIT 40;
 - `max_mentions`: Maximum mentions in single paper
 - `pathway_count`: Number of pathways
 - `disease_association_count`: Number of disease associations
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -1291,6 +1449,7 @@ LIMIT 40;
   - **Variant interpretation**: More data = better functional annotation
   - **Drug target validation**: High publications = mature target
   - **AI agent training**: Use publication counts for confidence weighting
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~1000ms (large publication table join)
 
@@ -1318,7 +1477,13 @@ WITH gene_stats AS (
         COUNT(DISTINCT gpub.pmid) as publication_count,
         COUNT(DISTINCT gp.pathway_id) as pathway_count,
         COUNT(DISTINCT okd.molecule_name) as drug_count,
-        MAX(ogda.overall_score) as max_disease_score
+        MAX(ogda.overall_score) as max_disease_score,
+        CASE
+            WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+            WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+            WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+            ELSE 'Limited publications'
+        END as evidence_level
     FROM genes g
     LEFT JOIN transcripts t ON g.gene_id = t.gene_id
     LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
@@ -1338,7 +1503,7 @@ FROM gene_stats gs
 LEFT JOIN gene_annotations ga ON gs.gene_id = ga.gene_id
 GROUP BY gs.gene_id, gs.gene_symbol, gs.gene_name, gs.gene_type, gs.chromosome,
          gs.transcript_count, gs.publication_count, gs.pathway_count,
-         gs.drug_count, gs.max_disease_score
+         gs.drug_count, gs.max_disease_score, gs.evidence_level
 ORDER BY gs.gene_symbol;
 ```
 
@@ -1354,6 +1519,7 @@ ORDER BY gs.gene_symbol;
 - `max_disease_score`: Highest disease association
 - `molecular_functions`: Pipe-separated functions
 - `cellular_locations`: Pipe-separated locations
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 
 **Example Results (from mbase):**
 ```
@@ -1391,6 +1557,7 @@ gene_symbol | gene_name           | chromosome | transcript_count | publication_
   - High pathway_count: Central regulatory role, multiple biological functions
   - TP53 (85 pathways): "Guardian of genome" - cell cycle, apoptosis, DNA repair
   - EGFR (78 pathways): Growth signaling, proliferation, survival
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~200ms
 
@@ -1672,7 +1839,13 @@ WITH gene_metrics AS (
         COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 2.0) as pipeline_drugs,
         BOOL_OR(ott.sm_clinical_precedence) as has_sm_precedence,
         BOOL_OR(ott.ab_clinical_precedence) as has_ab_precedence,
-        COUNT(DISTINCT gp.pathway_id) as pathway_count
+        COUNT(DISTINCT gp.pathway_id) as pathway_count,
+        CASE
+            WHEN COUNT(DISTINCT gpub.pmid) >= 100000 THEN 'Extensively studied'
+            WHEN COUNT(DISTINCT gpub.pmid) >= 10000 THEN 'Well-studied'
+            WHEN COUNT(DISTINCT gpub.pmid) >= 1000 THEN 'Moderate evidence'
+            ELSE 'Limited publications'
+        END as evidence_level
     FROM genes g
     LEFT JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
     LEFT JOIN gene_publications gpub ON g.gene_id = gpub.gene_id
@@ -1692,6 +1865,7 @@ SELECT
     has_sm_precedence,
     has_ab_precedence,
     pathway_count,
+    evidence_level,
     -- Calculate composite actionability score (max 100 points)
     (
         COALESCE(max_disease_score, 0) * 30 +
@@ -1723,6 +1897,7 @@ LIMIT 50;
 - `has_sm_precedence`: Small molecule druggability
 - `has_ab_precedence`: Antibody druggability
 - `pathway_count`: Pathway memberships
+- `evidence_level`: Research maturity (Extensively studied / Well-studied / Moderate evidence / Limited publications)
 - `actionability_score`: Composite score (0-100)
 
 **Example Results (from mbase):**
@@ -1803,6 +1978,7 @@ LIMIT 50;
   - Generate ranked list of therapeutic targets
   - Cross-reference with approved drugs
   - Produce clinical recommendations with evidence levels
+- Consider publication count as evidence strength (100K+ = extensively studied, 10K+ = well-studied, 1K+ = moderate, <1K = limited)
 
 **Performance:** ~1200ms (complex multi-source aggregation)
 

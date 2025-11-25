@@ -1,6 +1,6 @@
 # Clinical Interpretation Guidelines for MEDIABASE
 
-**Version:** 0.4.1
+**Version:** 0.6.0.2
 **Purpose:** Guide for interpreting gene expression, drug, and disease association data in clinical oncology contexts
 
 ---
@@ -65,19 +65,29 @@ MEDIABASE integrates OpenTargets drug data with clinical phase information in `o
 
 ### 2.2 Approved Drug Prioritization
 
-**Query pattern for FDA-approved drugs:**
+**Query pattern for FDA-approved drugs (v0.6.0.2 with PMID evidence):**
 ```sql
 SELECT
     g.gene_symbol,
-    ctb.expression_fold_change,
+    ROUND(ctb.expression_fold_change::numeric, 3) as fold_change,
     okd.molecule_name,
     okd.mechanism_of_action,
-    okd.clinical_phase_label
+    okd.clinical_phase_label,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM cancer_transcript_base ctb
 JOIN genes g ON ctb.gene_symbol = g.gene_symbol
 JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > 2.0
   AND okd.is_approved = true
+GROUP BY g.gene_symbol, ctb.expression_fold_change, okd.molecule_name,
+         okd.mechanism_of_action, okd.clinical_phase_label
 ORDER BY ctb.expression_fold_change DESC;
 ```
 
@@ -326,26 +336,36 @@ ORDER BY dysregulated_genes DESC
 LIMIT 10;
 ```
 
-### 6.2 Literature Evidence Evaluation
+### 6.2 Literature Evidence Evaluation (v0.6.0.2)
 
-**Publication Count Interpretation:**
-- **> 1,000 publications:** Well-studied target - high confidence in mechanism
-- **100-1,000:** Moderate evidence - review key publications
-- **< 100:** Emerging target - may lack clinical validation
+**Publication Count Interpretation with Evidence Strength:**
+- **>= 100,000 publications:** Extensively studied - highest confidence (e.g., TP53, AKT1, EGFR)
+- **>= 10,000 publications:** Well-studied - high confidence in mechanism
+- **>= 1,000 publications:** Moderate evidence - established target with validation
+- **< 1,000 publications:** Limited publications - emerging target requiring review
 
-**Query for literature-supported targets:**
+**Query for literature-supported targets (v0.6.0.2):**
 ```sql
 SELECT
     g.gene_symbol,
-    COUNT(gp.pmid) as publication_count
+    ROUND(ctb.expression_fold_change::numeric, 3) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied (100K+ publications)'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied (10K+ publications)'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence (1K+ publications)'
+        ELSE 'Limited publications (<1K)'
+    END as evidence_level
 FROM cancer_transcript_base ctb
 JOIN genes g ON ctb.gene_symbol = g.gene_symbol
-JOIN gene_publications gp ON g.gene_id = gp.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > 2.0
-GROUP BY g.gene_symbol
-HAVING COUNT(gp.pmid) > 100
-ORDER BY publication_count DESC;
+GROUP BY g.gene_symbol, ctb.expression_fold_change
+HAVING COUNT(DISTINCT gp.pmid) > 100
+ORDER BY publication_count DESC, fold_change DESC;
 ```
+
+**v0.6.0.2 Note:** MEDIABASE now includes 47M+ gene-publication links from PubTator Central, providing comprehensive literature evidence for clinical decision-making.
 
 ### 6.3 Target Tractability Assessment
 
@@ -531,6 +551,7 @@ Complement MEDIABASE findings with:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.6.0.2 | 2025-11-25 | **Major update:** PMID evidence integration (47M+ gene-publication links), v0.6.0.2 query patterns with COALESCE/LEFT JOIN, evidence strength categorization (100K+/10K+/1K+ publications), updated literature support scoring, query examples updated throughout |
 | 0.4.1 | 2025-01-20 | Initial clinical interpretation guidelines with OpenTargets integration |
 
 ---

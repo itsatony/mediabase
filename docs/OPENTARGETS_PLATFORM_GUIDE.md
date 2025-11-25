@@ -1,7 +1,7 @@
 # OpenTargets Platform Integration Guide
 
-**Version:** v0.4.1
-**Last Updated:** November 2025
+**Version:** v0.6.0.2
+**Last Updated:** 2025-11-25
 **Status:** Production-Ready
 
 ---
@@ -20,7 +20,7 @@
 
 ## Overview
 
-OpenTargets Platform is a comprehensive, open-source resource that integrates genetic, genomic, transcriptomic, and chemical data to support systematic identification and prioritization of potential therapeutic drug targets. MEDIABASE integrates four core OpenTargets datasets to provide:
+OpenTargets Platform is a comprehensive, open-source resource that integrates genetic, genomic, transcriptomic, and chemical data to support systematic identification and prioritization of potential therapeutic drug targets. MEDIABASE integrates four core OpenTargets datasets with 47M+ gene-publication links from PubTator Central to provide:
 
 - **Disease associations**: Gene-disease relationships with evidence scores
 - **Known drugs**: FDA-approved and experimental drugs with target information
@@ -130,13 +130,22 @@ CREATE TABLE opentargets_gene_disease_associations (
 SELECT
     g.gene_symbol,
     od.disease_name,
-    ogda.overall_score
+    ogda.overall_score,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ogda.overall_score > 0.7
   AND od.disease_name ILIKE '%cancer%'
-ORDER BY ogda.overall_score DESC
+GROUP BY g.gene_symbol, od.disease_name, ogda.overall_score
+ORDER BY publication_count DESC, ogda.overall_score DESC
 LIMIT 10;
 ```
 
@@ -187,12 +196,21 @@ SELECT
     okd.molecule_name as drug_name,
     okd.mechanism_of_action,
     od.disease_name,
-    okd.clinical_phase_label
+    okd.clinical_phase_label,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON okd.target_gene_id = gp.gene_id
 WHERE okd.target_gene_id = 'ENSG00000146648'  -- EGFR gene
   AND okd.is_approved = true
-ORDER BY okd.clinical_phase DESC
+GROUP BY okd.molecule_name, okd.mechanism_of_action, od.disease_name, okd.clinical_phase_label, okd.clinical_phase
+ORDER BY publication_count DESC, okd.clinical_phase DESC
 LIMIT 10;
 ```
 
@@ -238,13 +256,22 @@ SELECT
     ogda.overall_score,
     ott.small_molecule_tractable,
     ott.antibody_tractable,
-    ott.tractability_category
+    ott.tractability_category,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_target_tractability ott ON g.gene_id = ott.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ogda.overall_score > 0.7
   AND (ott.small_molecule_tractable = true OR ott.antibody_tractable = true)
-ORDER BY ogda.overall_score DESC
+GROUP BY g.gene_symbol, ogda.overall_score, ott.small_molecule_tractable, ott.antibody_tractable, ott.tractability_category
+ORDER BY publication_count DESC, ogda.overall_score DESC
 LIMIT 10;
 ```
 
@@ -270,16 +297,24 @@ SELECT
     ogda.overall_score,
     COUNT(DISTINCT okd.molecule_name) as drug_count,
     ott.small_molecule_tractable,
-    ott.antibody_tractable
+    ott.antibody_tractable,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
 LEFT JOIN opentargets_target_tractability ott ON g.gene_id = ott.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE od.disease_name = 'colorectal cancer'
   AND ogda.overall_score > 0.5
 GROUP BY g.gene_symbol, ogda.overall_score, ott.small_molecule_tractable, ott.antibody_tractable
-ORDER BY ogda.overall_score DESC, drug_count DESC
+ORDER BY publication_count DESC, ogda.overall_score DESC, drug_count DESC
 LIMIT 20;
 ```
 
@@ -292,16 +327,25 @@ SELECT
     od_approved.disease_name as approved_for,
     od_target.disease_name as potential_repurposing,
     ogda.overall_score as target_score,
-    okd.mechanism_of_action
+    okd.mechanism_of_action,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_known_drugs okd
 JOIN opentargets_diseases od_approved ON okd.disease_id = od_approved.disease_id
 JOIN opentargets_gene_disease_associations ogda ON okd.target_gene_id = ogda.gene_id
 JOIN opentargets_diseases od_target ON ogda.disease_id = od_target.disease_id
+LEFT JOIN gene_publications gp ON okd.target_gene_id = gp.gene_id
 WHERE okd.is_approved = true
   AND od_approved.disease_id != od_target.disease_id
   AND ogda.overall_score > 0.7
   AND od_target.disease_name = 'breast carcinoma'
-ORDER BY ogda.overall_score DESC
+GROUP BY okd.molecule_name, od_approved.disease_name, od_target.disease_name, ogda.overall_score, okd.mechanism_of_action
+ORDER BY publication_count DESC, ogda.overall_score DESC
 LIMIT 20;
 ```
 
@@ -316,20 +360,28 @@ SELECT
     COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.is_approved = true) as approved_drugs,
     COUNT(DISTINCT okd.molecule_name) as total_drugs,
     ott.small_molecule_tractable,
-    ott.antibody_tractable
+    ott.antibody_tractable,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM cancer_transcript_base ctb
 JOIN genes g ON ctb.gene_symbol = g.gene_symbol
 JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
 LEFT JOIN opentargets_target_tractability ott ON g.gene_id = ott.gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > 2.0
   AND od.disease_name = 'breast carcinoma'
   AND ogda.overall_score > 0.6
 GROUP BY ctb.gene_symbol, ctb.expression_fold_change, ogda.overall_score,
          ott.small_molecule_tractable, ott.antibody_tractable
 HAVING COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.is_approved = true) > 0
-ORDER BY ogda.overall_score DESC, approved_drugs DESC
+ORDER BY publication_count DESC, ogda.overall_score DESC, approved_drugs DESC
 LIMIT 20;
 ```
 
@@ -347,15 +399,23 @@ SELECT
     g.gene_symbol,
     ogda.overall_score,
     COUNT(DISTINCT od.disease_name) as disease_count,
-    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 3.0) as drug_count
+    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.clinical_phase >= 3.0) as drug_count,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM opentargets_gene_disease_associations ogda
 JOIN genes g ON ogda.gene_id = g.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE 'neoplasm' = ANY(od.therapeutic_areas)
   AND ogda.overall_score > 0.75
 GROUP BY g.gene_symbol, ogda.overall_score
-ORDER BY ogda.overall_score DESC, disease_count DESC
+ORDER BY publication_count DESC, ogda.overall_score DESC, disease_count DESC
 LIMIT 50;
 ```
 
@@ -371,17 +431,26 @@ SELECT
     okd.molecule_name,
     okd.mechanism_of_action,
     okd.clinical_phase_label,
-    ogda.overall_score
+    ogda.overall_score,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM cancer_transcript_base ctb
 JOIN genes g ON ctb.gene_symbol = g.gene_symbol
 JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
 JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > 3.0
   AND od.disease_name = 'lung cancer'
   AND okd.is_approved = true
   AND ogda.overall_score > 0.7
-ORDER BY ogda.overall_score DESC, okd.clinical_phase DESC;
+GROUP BY ctb.gene_symbol, ctb.expression_fold_change, okd.molecule_name, okd.mechanism_of_action, okd.clinical_phase_label, ogda.overall_score, okd.clinical_phase
+ORDER BY publication_count DESC, ogda.overall_score DESC, okd.clinical_phase DESC;
 ```
 
 ### 3. Clinical Trial Matching
@@ -395,14 +464,23 @@ SELECT
     okd.molecule_name,
     okd.mechanism_of_action,
     okd.clinical_phase_label,
-    od.disease_name
+    od.disease_name,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM genes g
 JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
 JOIN opentargets_diseases od ON okd.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN ('BRAF', 'KRAS', 'EGFR', 'ALK', 'ROS1')
   AND okd.clinical_phase BETWEEN 2.0 AND 3.0
   AND od.disease_name = 'lung cancer'
-ORDER BY okd.clinical_phase DESC, g.gene_symbol;
+GROUP BY g.gene_symbol, okd.molecule_name, okd.mechanism_of_action, okd.clinical_phase_label, od.disease_name, okd.clinical_phase
+ORDER BY publication_count DESC, okd.clinical_phase DESC, g.gene_symbol;
 ```
 
 ---
@@ -504,13 +582,23 @@ SELECT
     ctb.gene_symbol,
     ctb.expression_fold_change,
     ogda.overall_score,
-    od.disease_name
+    od.disease_name,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM cancer_transcript_base ctb
 JOIN genes g ON ctb.gene_symbol = g.gene_symbol
 JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 JOIN opentargets_diseases od ON ogda.disease_id = od.disease_id
+LEFT JOIN gene_publications gp ON g.gene_id = gp.gene_id
 WHERE ctb.expression_fold_change > 2.0
-  AND ogda.overall_score > 0.7;
+  AND ogda.overall_score > 0.7
+GROUP BY ctb.gene_symbol, ctb.expression_fold_change, ogda.overall_score, od.disease_name
+ORDER BY publication_count DESC;
 ```
 
 ### With Pathway Data
@@ -521,15 +609,23 @@ SELECT
     gp.pathway_name,
     COUNT(DISTINCT g.gene_symbol) as gene_count,
     AVG(ogda.overall_score) as avg_disease_score,
-    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.is_approved = true) as approved_drugs
+    COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.is_approved = true) as approved_drugs,
+    COALESCE(AVG(pub_counts.pmid_count), 0) as avg_publication_count,
+    CASE
+        WHEN AVG(pub_counts.pmid_count) >= 100000 THEN 'Extensively studied'
+        WHEN AVG(pub_counts.pmid_count) >= 10000 THEN 'Well-studied'
+        WHEN AVG(pub_counts.pmid_count) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM gene_pathways gp
 JOIN genes g ON gp.gene_id = g.gene_id
 JOIN opentargets_gene_disease_associations ogda ON g.gene_id = ogda.gene_id
 LEFT JOIN opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN (SELECT gene_id, COUNT(DISTINCT pmid) as pmid_count FROM gene_publications GROUP BY gene_id) pub_counts ON g.gene_id = pub_counts.gene_id
 WHERE ogda.overall_score > 0.6
 GROUP BY gp.pathway_name
 HAVING COUNT(DISTINCT okd.molecule_name) FILTER (WHERE okd.is_approved = true) > 0
-ORDER BY avg_disease_score DESC, approved_drugs DESC
+ORDER BY avg_publication_count DESC, avg_disease_score DESC, approved_drugs DESC
 LIMIT 20;
 ```
 

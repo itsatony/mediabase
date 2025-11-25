@@ -1,13 +1,18 @@
 -- ============================================================================
 -- CANCER-SPECIFIC STATE-OF-THE-ART QUERIES FOR PATIENT DATABASES
 -- ============================================================================
--- Version: v0.6.0 (Shared Core Architecture)
+-- Version: v0.6.0.2 (PMID Evidence Integration)
 -- Purpose: Cancer-type-specific therapeutic queries for clinical decision support
 --
 -- Architecture: v0.6.0 Shared Core
 --   - Single database (mbase) with public schema (core transcriptome data)
 --   - Patient-specific schemas: patient_<PATIENT_ID>
 --   - Sparse storage: Only expression_fold_change != 1.0 stored
+--
+-- v0.6.0.2 Enhancements:
+--   - PMID evidence integration via gene_publications table (47M+ gene-publication links)
+--   - Publication count and evidence level for all therapeutic targets
+--   - Evidence tiers: Extensively studied (100K+), Well-studied (10K+), Moderate (1K+), Limited (<1K)
 --
 -- Usage: Connect to mbase database, queries automatically reference correct schemas
 --
@@ -39,9 +44,9 @@
 -- Resistance mechanisms: PI3K/AKT activation, HER2 mutations
 
 -- ----------------------------------------------------------------------------
--- Query 1.1: HER2+ Therapeutic Target Stratification
+-- Query 1.1: HER2+ Therapeutic Target Stratification (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify primary HER2 amplification and co-amplified genes
+-- Purpose: Identify primary HER2 amplification and co-amplified genes with publication evidence
 -- Clinical Value: Confirms HER2 target and identifies potential co-targeting opportunities
 
 SELECT
@@ -49,6 +54,13 @@ SELECT
     g.gene_name,
     pe.expression_fold_change,
     g.chromosome,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'ERBB2' AND pe.expression_fold_change >= 5.0
             THEN '🎯 PRIMARY TARGET: Trastuzumab + Pertuzumab (High Priority)'
@@ -63,10 +75,12 @@ SELECT
 FROM patient_synthetic_her2.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE
     (g.gene_symbol IN ('ERBB2', 'GRB7', 'PGAP3', 'PNMT', 'STARD3', 'CDK12')
     OR (g.chromosome = '17' AND pe.expression_fold_change > 3.0))
-ORDER BY pe.expression_fold_change DESC
+GROUP BY g.gene_symbol, g.gene_name, pe.expression_fold_change, g.chromosome
+ORDER BY publication_count DESC, pe.expression_fold_change DESC
 LIMIT 20;
 
 -- Expected Results:
@@ -76,15 +90,22 @@ LIMIT 20;
 
 
 -- ----------------------------------------------------------------------------
--- Query 1.2: HER2+ Resistance Pathway Analysis (PI3K/AKT/mTOR)
+-- Query 1.2: HER2+ Resistance Pathway Analysis (PI3K/AKT/mTOR) (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify PI3K pathway activation (common trastuzumab resistance mechanism)
+-- Purpose: Identify PI3K pathway activation (common trastuzumab resistance mechanism) with evidence
 -- Clinical Value: Guides addition of PI3K/mTOR inhibitors
 
 SELECT
     g.gene_symbol,
     g.gene_name,
     pe.expression_fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'PIK3CA' AND pe.expression_fold_change > 2.5
             THEN '🔴 RESISTANCE RISK: Consider Alpelisib (PI3K inhibitor)'
@@ -108,13 +129,15 @@ SELECT
 FROM patient_synthetic_her2.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'PIK3CA', 'PIK3CB', 'PIK3CD', 'PIK3CG',
     'AKT1', 'AKT2', 'AKT3',
     'MTOR', 'RICTOR', 'RAPTOR',
     'PTEN', 'TSC1', 'TSC2'
 )
-ORDER BY pe.expression_fold_change DESC;
+GROUP BY g.gene_symbol, g.gene_name, pe.expression_fold_change
+ORDER BY publication_count DESC, pe.expression_fold_change DESC;
 
 -- Expected Results:
 -- - PIK3CA >2.5x → 40% of HER2+ have PIK3CA mutations/activation
@@ -123,14 +146,21 @@ ORDER BY pe.expression_fold_change DESC;
 
 
 -- ----------------------------------------------------------------------------
--- Query 1.3: HER2+ Endocrine Therapy Eligibility (ER/PR Status)
+-- Query 1.3: HER2+ Endocrine Therapy Eligibility (ER/PR Status) (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Assess ER/PR expression to determine hormone therapy eligibility
+-- Purpose: Assess ER/PR expression to determine hormone therapy eligibility with evidence
 -- Clinical Value: ~50% of HER2+ are also ER+ (dual therapy candidates)
 
 SELECT
     g.gene_symbol,
     pe.expression_fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'ESR1' AND pe.expression_fold_change >= 2.0
             THEN '✅ ER-POSITIVE: Add Endocrine Therapy (Letrozole/Tamoxifen)'
@@ -150,7 +180,9 @@ SELECT
 FROM patient_synthetic_her2.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN ('ESR1', 'PGR', 'GATA3', 'FOXA1')
+GROUP BY g.gene_symbol, pe.expression_fold_change
 ORDER BY g.gene_symbol;
 
 -- Expected Results:
@@ -204,14 +236,21 @@ ORDER BY g.gene_symbol;
 
 
 -- ----------------------------------------------------------------------------
--- Query 2.2: TNBC PARP Inhibitor Eligibility (BRCA1/2 Assessment)
+-- Query 2.2: TNBC PARP Inhibitor Eligibility (BRCA1/2 Assessment) (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify DNA repair deficiency → PARP inhibitor candidacy
+-- Purpose: Identify DNA repair deficiency → PARP inhibitor candidacy with evidence
 -- Clinical Value: Olaparib/Talazoparib approved for germline BRCA1/2-mutant TNBC
 
 SELECT
     g.gene_symbol,
     COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'BRCA1' AND COALESCE(pe.expression_fold_change, 1.0) < 0.5
             THEN '🎯 BRCA1 DEFICIENCY: PARP inhibitor (Olaparib/Talazoparib) HIGH PRIORITY'
@@ -234,12 +273,14 @@ SELECT
 FROM public.genes g
 JOIN public.transcripts t ON g.gene_id = t.gene_id
 LEFT JOIN patient_synthetic_tnbc.expression_data pe ON t.transcript_id = pe.transcript_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'BRCA1', 'BRCA2', 'PALB2',
     'RAD51', 'RAD51C', 'RAD51D',
     'FANCA', 'FANCF', 'ATM', 'ATR',
     'TP53', 'CHEK2'
 )
+GROUP BY g.gene_symbol, pe.expression_fold_change
 ORDER BY COALESCE(pe.expression_fold_change, 1.0) ASC;
 
 -- Expected Results:
@@ -249,14 +290,21 @@ ORDER BY COALESCE(pe.expression_fold_change, 1.0) ASC;
 
 
 -- ----------------------------------------------------------------------------
--- Query 2.3: TNBC Immunotherapy Eligibility (PD-L1/Immune Infiltration)
+-- Query 2.3: TNBC Immunotherapy Eligibility (PD-L1/Immune Infiltration) (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Assess tumor immune microenvironment for checkpoint inhibitor therapy
+-- Purpose: Assess tumor immune microenvironment for checkpoint inhibitor therapy with evidence
 -- Clinical Value: Pembrolizumab approved for PD-L1+ TNBC (CPS ≥10)
 
 SELECT
     g.gene_symbol,
     COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'CD274' AND COALESCE(pe.expression_fold_change, 1.0) >= 2.0
             THEN '🎯 PD-L1 HIGH: Pembrolizumab + Chemotherapy (FDA approved)'
@@ -279,6 +327,7 @@ SELECT
 FROM public.genes g
 JOIN public.transcripts t ON g.gene_id = t.gene_id
 LEFT JOIN patient_synthetic_tnbc.expression_data pe ON t.transcript_id = pe.transcript_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'CD274',  -- PD-L1
     'PDCD1',  -- PD-1
@@ -286,7 +335,8 @@ WHERE g.gene_symbol IN (
     'CTLA4', 'LAG3', 'TIM3',  -- Immune checkpoints
     'IFNG', 'GZMB'  -- Immune activation
 )
-ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC;
+GROUP BY g.gene_symbol, pe.expression_fold_change
+ORDER BY publication_count DESC, COALESCE(pe.expression_fold_change, 1.0) DESC;
 
 -- Expected Results:
 -- - CD274 ≥2.0x → PD-L1+ (40% of TNBC) → Pembrolizumab + chemo
@@ -302,15 +352,22 @@ ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC;
 -- Resistance: T790M (osimertinib), MET amplification, BRAF mutations
 
 -- ----------------------------------------------------------------------------
--- Query 3.1: EGFR-Mutant LUAD Primary Target Confirmation
+-- Query 3.1: EGFR-Mutant LUAD Primary Target Confirmation (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Confirm EGFR pathway activation and identify mutation signature
+-- Purpose: Confirm EGFR pathway activation and identify mutation signature with evidence
 -- Clinical Value: Validates EGFR TKI therapy (osimertinib first-line)
 
 SELECT
     g.gene_symbol,
     g.gene_name,
     pe.expression_fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'EGFR' AND pe.expression_fold_change >= 4.0
             THEN '🎯 PRIMARY TARGET: Osimertinib 80mg daily (first-line)'
@@ -325,11 +382,13 @@ SELECT
 FROM patient_synthetic_luad.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'EGFR', 'ERBB2', 'ERBB3', 'ERBB4',
     'KRAS', 'BRAF', 'ALK', 'ROS1'  -- Exclusionary markers
 )
-ORDER BY pe.expression_fold_change DESC;
+GROUP BY g.gene_symbol, g.gene_name, pe.expression_fold_change
+ORDER BY publication_count DESC, pe.expression_fold_change DESC;
 
 -- Expected Results:
 -- - EGFR ≥4.0x → Confirms EGFR-driven tumor → Osimertinib
@@ -338,14 +397,21 @@ ORDER BY pe.expression_fold_change DESC;
 
 
 -- ----------------------------------------------------------------------------
--- Query 3.2: EGFR TKI Resistance Mechanism Surveillance
+-- Query 3.2: EGFR TKI Resistance Mechanism Surveillance (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify resistance pathways (MET, BRAF, PIK3CA, EMT)
+-- Purpose: Identify resistance pathways (MET, BRAF, PIK3CA, EMT) with evidence
 -- Clinical Value: Guides salvage therapy or combination strategies
 
 SELECT
     g.gene_symbol,
     pe.expression_fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'MET' AND pe.expression_fold_change >= 3.0
             THEN '🔴 MET AMPLIFICATION: Add Crizotinib or Capmatinib (MET inhibitor)'
@@ -369,12 +435,14 @@ SELECT
 FROM patient_synthetic_luad.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'MET', 'BRAF', 'PIK3CA', 'AKT1',
     'VIM', 'CDH1', 'CDH2',  -- EMT markers
     'AXL', 'TWIST1'  -- EMT transcription factors
 )
-ORDER BY pe.expression_fold_change DESC;
+GROUP BY g.gene_symbol, pe.expression_fold_change
+ORDER BY publication_count DESC, pe.expression_fold_change DESC;
 
 -- Expected Results:
 -- - MET ≥3.0x → MET amplification (10-15% of TKI resistance) → Add crizotinib
@@ -383,14 +451,21 @@ ORDER BY pe.expression_fold_change DESC;
 
 
 -- ----------------------------------------------------------------------------
--- Query 3.3: EGFR-Mutant Angiogenesis Pathway (Bevacizumab Combination)
+-- Query 3.3: EGFR-Mutant Angiogenesis Pathway (Bevacizumab Combination) (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Assess VEGF pathway activation for anti-angiogenic combination
+-- Purpose: Assess VEGF pathway activation for anti-angiogenic combination with evidence
 -- Clinical Value: Osimertinib + Bevacizumab improves PFS (NEJ026, ARTEMIS-CTONG1509)
 
 SELECT
     g.gene_symbol,
     pe.expression_fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'VEGFA' AND pe.expression_fold_change >= 3.5
             THEN '🎯 HIGH VEGFA: Add Bevacizumab to Osimertinib (NEJ026 trial)'
@@ -406,13 +481,15 @@ SELECT
 FROM patient_synthetic_luad.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'VEGFA', 'VEGFB', 'VEGFC',
     'KDR',  -- VEGFR2
     'ANGPT1', 'ANGPT2',
     'FGF2', 'PDGFB'
 )
-ORDER BY pe.expression_fold_change DESC;
+GROUP BY g.gene_symbol, pe.expression_fold_change
+ORDER BY publication_count DESC, pe.expression_fold_change DESC;
 
 -- Expected Results:
 -- - VEGFA ≥3.5x → High angiogenesis (50% of EGFR+ LUAD)
@@ -427,14 +504,21 @@ ORDER BY pe.expression_fold_change DESC;
 -- Biomarker: MSI-H/dMMR status, high tumor mutational burden (TMB)
 
 -- ----------------------------------------------------------------------------
--- Query 4.1: MSI-H CRC Mismatch Repair Deficiency Signature
+-- Query 4.1: MSI-H CRC Mismatch Repair Deficiency Signature (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify MMR gene loss and immune infiltration
+-- Purpose: Identify MMR gene loss and immune infiltration with evidence
 -- Clinical Value: Confirms immunotherapy eligibility (pembrolizumab FDA approved)
 
 SELECT
     g.gene_symbol,
     COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol IN ('MLH1', 'MSH2', 'MSH6', 'PMS2')
              AND COALESCE(pe.expression_fold_change, 1.0) < 0.4
@@ -452,6 +536,7 @@ SELECT
 FROM public.genes g
 JOIN public.transcripts t ON g.gene_id = t.gene_id
 LEFT JOIN patient_synthetic_her2.expression_data pe ON t.transcript_id = pe.transcript_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'MLH1', 'MSH2', 'MSH6', 'PMS2',  -- MMR genes
     'CD274', 'PDCD1',  -- PD-L1/PD-1
@@ -459,6 +544,7 @@ WHERE g.gene_symbol IN (
     'IFNG', 'GZMB', 'PRF1',  -- Cytotoxic markers
     'CTLA4', 'LAG3'  -- Alternative checkpoints
 )
+GROUP BY g.gene_symbol, pe.expression_fold_change
 ORDER BY g.gene_symbol;
 
 -- Expected Results:
@@ -505,14 +591,21 @@ ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC;
 -- Emerging: KRAS G12C inhibitors (sotorasib, adagrasib)
 
 -- ----------------------------------------------------------------------------
--- Query 5.1: PDAC KRAS Pathway Activation and Targeting
+-- Query 5.1: PDAC KRAS Pathway Activation and Targeting (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify KRAS and downstream effector activation
+-- Purpose: Identify KRAS and downstream effector activation with evidence
 -- Clinical Value: KRAS G12C inhibitor eligibility (if G12C mutation confirmed)
 
 SELECT
     g.gene_symbol,
     pe.expression_fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol = 'KRAS' AND pe.expression_fold_change >= 3.0
             THEN '🎯 KRAS HIGH: Confirm G12C mutation for sotorasib/adagrasib eligibility'
@@ -531,6 +624,7 @@ SELECT
 FROM patient_synthetic_luad.expression_data pe
 JOIN public.transcripts t ON pe.transcript_id = t.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'KRAS', 'NRAS', 'HRAS',
     'MAPK1', 'MAPK3',  -- ERK1/2
@@ -538,7 +632,8 @@ WHERE g.gene_symbol IN (
     'RAF1', 'BRAF',
     'MYC', 'TP53'
 )
-ORDER BY pe.expression_fold_change DESC;
+GROUP BY g.gene_symbol, pe.expression_fold_change
+ORDER BY publication_count DESC, pe.expression_fold_change DESC;
 
 -- Expected Results:
 -- - KRAS ≥3.0x → KRAS-driven PDAC (90% have KRAS mutation)
@@ -547,14 +642,21 @@ ORDER BY pe.expression_fold_change DESC;
 
 
 -- ----------------------------------------------------------------------------
--- Query 5.2: PDAC DNA Damage Response and Synthetic Lethality
+-- Query 5.2: PDAC DNA Damage Response and Synthetic Lethality (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify ATM/BRCA2 deficiency → PARP inhibitor or platinum sensitivity
+-- Purpose: Identify ATM/BRCA2 deficiency → PARP inhibitor or platinum sensitivity with evidence
 -- Clinical Value: 5-10% of PDAC have germline BRCA1/2 → Olaparib maintenance
 
 SELECT
     g.gene_symbol,
     COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol IN ('BRCA1', 'BRCA2')
              AND COALESCE(pe.expression_fold_change, 1.0) < 0.5
@@ -573,12 +675,14 @@ SELECT
 FROM public.genes g
 JOIN public.transcripts t ON g.gene_id = t.gene_id
 LEFT JOIN patient_synthetic_luad.expression_data pe ON t.transcript_id = pe.transcript_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     'BRCA1', 'BRCA2', 'PALB2',
     'ATM', 'ATR', 'CHEK1', 'CHEK2',
     'RAD51', 'RAD51C',
     'FANCA', 'FANCF'
 )
+GROUP BY g.gene_symbol, pe.expression_fold_change
 ORDER BY COALESCE(pe.expression_fold_change, 1.0) ASC;
 
 -- Expected Results:
@@ -640,14 +744,21 @@ IMPORTANT NOTES:
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- Cross-Cancer Actionable Target Summary
+-- Cross-Cancer Actionable Target Summary (v0.6.0.2 PMID Evidence)
 -- ----------------------------------------------------------------------------
--- Purpose: Identify all potential therapeutic targets across cancer types
+-- Purpose: Identify all potential therapeutic targets across cancer types with evidence
 -- Clinical Value: Quick overview of druggable alterations for trial matching
 
 SELECT
     g.gene_symbol,
     COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level,
     CASE
         WHEN g.gene_symbol IN ('ERBB2', 'EGFR', 'MET', 'ALK', 'ROS1', 'RET', 'NTRK1', 'NTRK2', 'NTRK3')
              AND COALESCE(pe.expression_fold_change, 1.0) >= 3.0
@@ -660,7 +771,7 @@ SELECT
         WHEN g.gene_symbol IN ('PIK3CA', 'AKT1', 'MTOR', 'PTEN')
              AND COALESCE(pe.expression_fold_change, 1.0) != 1.0
             THEN '📍 PI3K/AKT PATHWAY: Clinical trial targets'
-        WHEN g.gene_symbol IN ('KRAS', 'BRAF', 'MEK1')
+        WHEN g.gene_symbol IN ('KRAS', 'BRAF', 'MAP2K1')
              AND COALESCE(pe.expression_fold_change, 1.0) >= 2.5
             THEN '📍 MAPK PATHWAY: Emerging targets'
     END as actionable_target_class,
@@ -679,6 +790,7 @@ SELECT
 FROM public.genes g
 JOIN public.transcripts t ON g.gene_id = t.gene_id
 LEFT JOIN patient_synthetic_her2.expression_data pe ON t.transcript_id = pe.transcript_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE g.gene_symbol IN (
     -- Receptor tyrosine kinases
     'ERBB2', 'EGFR', 'MET', 'ALK', 'ROS1', 'RET',
@@ -696,7 +808,9 @@ AND (
     COALESCE(pe.expression_fold_change, 1.0) >= 2.5
     OR COALESCE(pe.expression_fold_change, 1.0) < 0.6
 )
+GROUP BY g.gene_symbol, pe.expression_fold_change
 ORDER BY
+    publication_count DESC,
     CASE
         WHEN COALESCE(pe.expression_fold_change, 1.0) >= 3.0 THEN 1
         WHEN COALESCE(pe.expression_fold_change, 1.0) < 0.5 THEN 2

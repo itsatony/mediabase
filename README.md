@@ -1,6 +1,6 @@
 # MEDIABASE: Cancer Transcriptome Database
 
-**Version:** 0.6.0 | **Status:** Production-Ready | [CHANGELOG](CHANGELOG.md)
+**Version:** 0.6.0.2 | **Status:** Production-Ready | [CHANGELOG](CHANGELOG.md)
 
 Comprehensive PostgreSQL database for cancer transcriptomics analysis, integrating gene expression data with biological annotations, drug information, disease associations, and scientific literature.
 
@@ -33,7 +33,8 @@ MEDIABASE uses a **shared core architecture** for optimal storage efficiency:
 - **DESeq2 Support**: Automatic conversion of DESeq2 output (`log2FoldChange` → linear fold-change)
 - **RESTful API**: Query endpoints with patient_id parameter support
 - **Production Queries**: 25 validated SQL queries for common analyses
-- **Clinical Guides**: HER2+ breast cancer and MSS colorectal cancer examples
+- **Clinical Guides**: HER2+ breast cancer (100% query validation) and MSS colorectal cancer examples
+- **PMID Evidence Integration**: 47M+ gene-publication links with evidence strength categorization
 - **Storage Efficient**: Baseline expression implicit, only store deviations
 
 ---
@@ -125,20 +126,30 @@ conn = psycopg2.connect(
     password="your_password"
 )
 
-# Find FDA-approved drugs for overexpressed genes (patient-specific)
+# Find FDA-approved drugs for overexpressed genes (patient-specific with evidence)
 query = """
 SELECT
     g.gene_symbol,
     COALESCE(pe.expression_fold_change, 1.0) as fold_change,
     okd.molecule_name as drug_name,
     okd.mechanism_of_action,
-    okd.clinical_phase_label
+    okd.clinical_phase_label,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
 FROM public.transcripts t
 LEFT JOIN patient_PATIENT123.expression_data pe ON t.transcript_id = pe.transcript_id
 JOIN public.genes g ON t.gene_id = g.gene_id
 JOIN public.opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
 WHERE COALESCE(pe.expression_fold_change, 1.0) > 2.0
   AND okd.is_approved = true
+GROUP BY g.gene_symbol, pe.expression_fold_change, okd.molecule_name,
+         okd.mechanism_of_action, okd.clinical_phase_label
 ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC
 LIMIT 10;
 """

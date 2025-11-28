@@ -104,7 +104,7 @@ LIMIT 15;
 SELECT
     g.gene_symbol,
     pe.expression_fold_change,
-    ROUND((1.0 - pe.expression_fold_change) * 100, 1) as percent_loss,
+    ROUND(((1.0 - pe.expression_fold_change) * 100)::NUMERIC, 1) as percent_loss,
     CASE
         WHEN pe.expression_fold_change < 0.2 THEN '🚨 SEVERE LOSS (>80%)'
         WHEN pe.expression_fold_change < 0.5 THEN '⚠️ SIGNIFICANT LOSS (>50%)'
@@ -334,39 +334,40 @@ ORDER BY patient_schema, expression_fold_change DESC;
 -- 2.3 PATIENT METADATA COMPARISON
 -- -------------------------------------------------------------------------------------
 -- Returns: Summary of all patient metadata
+-- Note: v0.6.0 metadata uses key/value structure
 
 SELECT
-    patient_id,
-    cancer_type,
-    cancer_subtype,
-    total_transcripts_uploaded,
-    transcripts_matched,
-    matching_success_rate,
-    upload_date
+    'patient_synthetic_her2' as schema_name,
+    MAX(CASE WHEN key = 'patient_id' THEN value END) as patient_id,
+    MAX(CASE WHEN key = 'cancer_type' THEN value END) as cancer_type,
+    MAX(CASE WHEN key = 'cancer_subtype' THEN value END) as cancer_subtype,
+    MAX(CASE WHEN key = 'upload_date' THEN value END) as upload_date,
+    MAX(CASE WHEN key = 'data_source' THEN value END) as data_source,
+    (SELECT COUNT(*) FROM patient_synthetic_her2.expression_data) as stored_values
 FROM patient_synthetic_her2.metadata
 
 UNION ALL
 
 SELECT
-    patient_id,
-    cancer_type,
-    cancer_subtype,
-    total_transcripts_uploaded,
-    transcripts_matched,
-    matching_success_rate,
-    upload_date
+    'patient_synthetic_tnbc',
+    MAX(CASE WHEN key = 'patient_id' THEN value END),
+    MAX(CASE WHEN key = 'cancer_type' THEN value END),
+    MAX(CASE WHEN key = 'cancer_subtype' THEN value END),
+    MAX(CASE WHEN key = 'upload_date' THEN value END),
+    MAX(CASE WHEN key = 'data_source' THEN value END),
+    (SELECT COUNT(*) FROM patient_synthetic_tnbc.expression_data)
 FROM patient_synthetic_tnbc.metadata
 
 UNION ALL
 
 SELECT
-    patient_id,
-    cancer_type,
-    cancer_subtype,
-    total_transcripts_uploaded,
-    transcripts_matched,
-    matching_success_rate,
-    upload_date
+    'patient_synthetic_luad',
+    MAX(CASE WHEN key = 'patient_id' THEN value END),
+    MAX(CASE WHEN key = 'cancer_type' THEN value END),
+    MAX(CASE WHEN key = 'cancer_subtype' THEN value END),
+    MAX(CASE WHEN key = 'upload_date' THEN value END),
+    MAX(CASE WHEN key = 'data_source' THEN value END),
+    (SELECT COUNT(*) FROM patient_synthetic_luad.expression_data)
 FROM patient_synthetic_luad.metadata
 
 ORDER BY cancer_type, cancer_subtype;
@@ -398,18 +399,17 @@ LIMIT 15;
 SELECT
     g.chromosome,
     COUNT(DISTINCT g.gene_id) as genes,
-    COUNT(t.transcript_id) as transcripts,
-    ROUND(AVG(LENGTH(t.sequence)), 0) as avg_transcript_length
+    COUNT(t.transcript_id) as transcripts
 FROM public.genes g
 JOIN public.transcripts t ON g.gene_id = t.gene_id
-WHERE g.chromosome ~ '^[0-9XYM]+$'
+WHERE g.chromosome ~ '^chr[0-9XYM]+$'
 GROUP BY g.chromosome
 ORDER BY
     CASE
-        WHEN g.chromosome ~ '^[0-9]+$' THEN CAST(g.chromosome AS INTEGER)
-        WHEN g.chromosome = 'X' THEN 23
-        WHEN g.chromosome = 'Y' THEN 24
-        WHEN g.chromosome = 'M' THEN 25
+        WHEN g.chromosome ~ '^chr[0-9]+$' THEN CAST(SUBSTRING(g.chromosome FROM 4) AS INTEGER)
+        WHEN g.chromosome = 'chrX' THEN 23
+        WHEN g.chromosome = 'chrY' THEN 24
+        WHEN g.chromosome = 'chrM' THEN 25
         ELSE 26
     END;
 

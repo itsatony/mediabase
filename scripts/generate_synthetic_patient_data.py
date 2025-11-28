@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import random
 import sys
 from pathlib import Path
@@ -150,7 +151,14 @@ class SyntheticPatientGenerator:
     def __init__(self, seed: int = 42):
         """Initialize generator."""
         # Initialize database manager with environment variables
-        self.db_manager = get_db_manager(config={})
+        config = {
+            "host": os.getenv("MB_POSTGRES_HOST", "localhost"),
+            "port": int(os.getenv("MB_POSTGRES_PORT", "5435")),
+            "dbname": os.getenv("MB_POSTGRES_NAME", os.getenv("MB_POSTGRES_DB", "mbase")),
+            "user": os.getenv("MB_POSTGRES_USER", "mbase_user"),
+            "password": os.getenv("MB_POSTGRES_PASSWORD", "mbase_secret"),
+        }
+        self.db_manager = get_db_manager(config=config)
         self.seed = seed
         random.seed(seed)
         np.random.seed(seed)
@@ -184,6 +192,45 @@ class SyntheticPatientGenerator:
         logger.info(f"Retrieved {len(transcripts)} transcripts")
         return transcripts
 
+    def get_signature_gene_transcripts(self, gene_symbols: List[str]) -> pd.DataFrame:
+        """
+        Get transcript IDs for specific signature genes.
+
+        Ensures that all key cancer genes are included in synthetic data.
+        """
+        logger.info(f"Fetching transcripts for {len(gene_symbols)} signature genes")
+
+        # Use array parameter for efficient IN clause
+        query = """
+            SELECT DISTINCT ON (g.gene_symbol)
+                t.transcript_id,
+                g.gene_symbol
+            FROM public.transcripts t
+            JOIN public.genes g ON t.gene_id = g.gene_id
+            WHERE g.gene_symbol = ANY(%s)
+            ORDER BY g.gene_symbol, t.transcript_id
+        """
+
+        # Ensure database connection
+        if not self.db_manager.cursor:
+            self.db_manager.connect()
+
+        cursor = self.db_manager.cursor
+        cursor.execute(query, (gene_symbols,))
+        transcripts = pd.DataFrame(
+            cursor.fetchall(), columns=["transcript_id", "gene_symbol"]
+        )
+
+        logger.info(f"Found transcripts for {len(transcripts)}/{len(gene_symbols)} signature genes")
+
+        # Warn about missing genes
+        found_genes = set(transcripts["gene_symbol"].tolist())
+        missing_genes = set(gene_symbols) - found_genes
+        if missing_genes:
+            logger.warning(f"Could not find transcripts for {len(missing_genes)} genes: {sorted(missing_genes)}")
+
+        return transcripts
+
     def generate_baseline_expression(self, n: int) -> np.ndarray:
         """
         Generate baseline expression for non-signature genes.
@@ -208,6 +255,9 @@ class SyntheticPatientGenerator:
         """
         Generate synthetic patient data for specified cancer type.
 
+        ALWAYS includes all signature genes for the cancer type, then fills
+        remaining slots with random genes.
+
         Args:
             cancer_type: One of 'HER2_POSITIVE', 'TNBC', 'LUAD_EGFR'
             num_genes: Total number of genes to include
@@ -226,17 +276,38 @@ class SyntheticPatientGenerator:
         console.print(f"Cancer type: [cyan]{cancer_type}[/cyan]")
         console.print(f"Number of genes: {num_genes:,}")
 
-        # Get random transcripts
-        transcripts = self.get_random_transcripts(num_genes)
-
         # Get signature for this cancer type
         signature = CANCER_SIGNATURES[cancer_type]
+        signature_gene_symbols = list(signature.keys())
+
+        # STEP 1: Always get transcripts for ALL signature genes first
+        console.print(f"\nFetching {len(signature_gene_symbols)} signature genes...")
+        signature_transcripts = self.get_signature_gene_transcripts(signature_gene_symbols)
+
+        # STEP 2: Get random transcripts to fill remaining slots
+        remaining_slots = num_genes - len(signature_transcripts)
+        if remaining_slots > 0:
+            console.print(f"Fetching {remaining_slots} additional random genes...")
+            random_transcripts = self.get_random_transcripts(remaining_slots)
+
+            # Filter out any signature genes from random selection (avoid duplicates)
+            random_transcripts = random_transcripts[
+                ~random_transcripts["gene_symbol"].isin(signature_transcripts["gene_symbol"])
+            ]
+
+            # Combine signature genes + random genes
+            transcripts = pd.concat([signature_transcripts, random_transcripts], ignore_index=True)
+        else:
+            # If signature genes >= num_genes, just use signature genes
+            transcripts = signature_transcripts.head(num_genes)
+
+        console.print(f"Total genes: {len(transcripts)} ({len(signature_transcripts)} signature + {len(transcripts) - len(signature_transcripts)} random)")
 
         # Generate baseline expression
         fold_changes = self.generate_baseline_expression(len(transcripts))
 
-        # Apply cancer signature
-        signature_genes_found = 0
+        # Apply cancer signature to all signature genes
+        signature_genes_applied = 0
         for idx, row in transcripts.iterrows():
             gene_symbol = row["gene_symbol"]
 
@@ -246,7 +317,7 @@ class SyntheticPatientGenerator:
                 fc = np.random.normal(mean_fc, std_fc)
                 fc = max(0.05, fc)  # Ensure positive
                 fold_changes[idx] = fc
-                signature_genes_found += 1
+                signature_genes_applied += 1
 
         # Create output dataframe
         output_df = pd.DataFrame(
@@ -256,16 +327,19 @@ class SyntheticPatientGenerator:
         # Statistics
         console.print(f"\n[bold green]Generation complete![/bold green]")
         console.print(
-            f"Signature genes found: {signature_genes_found}/{len(signature)}"
+            f"Signature genes applied: {signature_genes_applied}/{len(signature)} "
+            f"([green]100% coverage![/green])" if signature_genes_applied == len(signature)
+            else f"([yellow]{signature_genes_applied}/{len(signature)}[/yellow])"
         )
         console.print(f"Mean fold-change: {fold_changes.mean():.2f}")
         console.print(f"Median fold-change: {np.median(fold_changes):.2f}")
 
         # Show signature gene values
-        table = Table(title="Signature Gene Expression")
+        table = Table(title="Signature Gene Expression (First 10)")
         table.add_column("Gene", style="cyan")
         table.add_column("Expected FC", style="yellow")
         table.add_column("Generated FC", style="green")
+        table.add_column("Status", style="magenta")
 
         for gene_symbol in list(signature.keys())[:10]:
             mask = transcripts["gene_symbol"] == gene_symbol
@@ -273,14 +347,22 @@ class SyntheticPatientGenerator:
                 idx = transcripts[mask].index[0]
                 expected_fc = signature[gene_symbol][0]
                 generated_fc = fold_changes[idx]
-                table.add_row(gene_symbol, f"{expected_fc:.2f}", f"{generated_fc:.2f}")
+                status = "✓" if abs(generated_fc - expected_fc) < expected_fc * 0.5 else "~"
+                table.add_row(
+                    gene_symbol,
+                    f"{expected_fc:.2f}",
+                    f"{generated_fc:.2f}",
+                    status
+                )
+            else:
+                table.add_row(gene_symbol, f"{signature[gene_symbol][0]:.2f}", "MISSING", "✗")
 
         console.print(table)
 
         # Write output
         if output_file:
             output_df.to_csv(output_file, index=False)
-            console.print(f"\nWritten to: {output_file}")
+            console.print(f"\n[bold]Written to:[/bold] {output_file}")
 
         return output_df
 

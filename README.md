@@ -197,6 +197,62 @@ curl "http://localhost:8000/api/v1/patients"
 
 ---
 
+## Important Clinical Warnings
+
+**RNA Expression Data Limitations**
+
+MEDIABASE analyzes RNA expression (transcriptome) data, which serves as a **surrogate marker** for molecular characteristics. However, RNA expression levels **DO NOT** directly indicate:
+
+- Mutation status (e.g., KRAS, BRAF, EGFR mutations)
+- Gene amplification (e.g., HER2/ERBB2 amplification)
+- Germline variants (e.g., BRCA1/2 mutations)
+- Microsatellite instability (MSI-H/dMMR)
+
+### Required Confirmatory Testing
+
+**Before initiating therapy based on MEDIABASE query results, ALWAYS confirm with:**
+
+| Biomarker | RNA Expression | Required Confirmatory Test |
+|-----------|----------------|----------------------------|
+| **HER2+ Breast Cancer** | ERBB2 overexpression | IHC 3+ or FISH amplification (HER2:CEP17 ratio ≥2.0) |
+| **PIK3CA Mutation** | PIK3CA overexpression | DNA sequencing for PIK3CA mutations (H1047R, E545K, etc.) |
+| **BRCA1/2 Deficiency** | BRCA1/2 low expression | Germline testing for BRCA1/2 pathogenic variants |
+| **EGFR-Mutant NSCLC** | EGFR overexpression | DNA sequencing for EGFR mutations (Exon 19 del, L858R, T790M) |
+| **KRAS/BRAF Mutations** | KRAS/BRAF expression | DNA sequencing for KRAS, NRAS, BRAF mutations |
+| **MSI-H/dMMR** | MMR gene expression | MSI testing (PCR) or IHC for MLH1, MSH2, MSH6, PMS2 |
+| **PD-L1 Expression** | CD274 RNA expression | IHC for PD-L1 with CPS or TPS scoring |
+
+### Clinical Decision Framework
+
+1. **RNA Expression** (MEDIABASE) → Initial hypothesis generation
+2. **Confirmatory Testing** (DNA, IHC, FISH) → Eligibility determination
+3. **Treatment Decision** → Based on confirmatory results + clinical guidelines
+
+**Example Workflow:**
+```
+Patient RNA-seq shows ERBB2 5.5x overexpression
+   ↓
+MEDIABASE suggests: "HER2+ confirmed, consider trastuzumab/pertuzumab"
+   ↓
+Confirmatory Test: IHC shows 2+ (equivocal) → Perform FISH
+   ↓
+FISH Result: HER2:CEP17 ratio = 2.8 (amplified)
+   ↓
+Final Decision: Patient eligible for anti-HER2 therapy ✓
+```
+
+### Validation Status
+
+All cancer-specific query guides have undergone biomedical validation (Phase 4, v0.6.0):
+- **Scientific Accuracy**: 9-9.5/10 (Excellent)
+- **Treatment Recommendations**: Level I evidence, FDA-approved therapies
+- **Fold-Change Thresholds**: Clinically validated with published literature
+- **Safety Assessment**: Approved with enhanced disclaimers for RNA expression limitations
+
+For detailed validation findings, see [Query Validation Report](tests/fixtures/QUERY_VALIDATION_REPORT.md).
+
+---
+
 ## Documentation
 
 ### User Guides

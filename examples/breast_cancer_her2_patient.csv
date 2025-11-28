@@ -1,0 +1,201 @@
+gene_symbol,transcript_id,expression_fold_change,chromosome,pathways,go_biological_process,drug_count
+ABRAXAS1,ENST00000321945,0.313,chr4,Cell Cycle|Cell Cycle Checkpoints|Deubiquitination|DNA Double-Strand Break Repair|DNA Double Strand Break Response|DNA Repair|G2/M Checkpoints|G2/M DNA damage checkpoint|HDR through Homologous Recombination (HRR) or Single Strand Annealing (SSA)|Homology Directed Repair|Metabolism of proteins|Metalloprotease DUBs|Nonhomologous End-Joining (NHEJ)|Post-translational protein modification|Processing of DNA double-strand break ends|Recruitment and ATM-mediated phosphorylation of repair and signaling ,attachment of spindle microtubules to kinetochore,0
+ACAP3,ENST00000353662,2.781,chr1,,,0
+ACTRT2,ENST00000378404,1.29,chr1,,cytoskeleton organization,0
+ADRA2A,ENST00000280155,0.907,chr10,"Adrenaline,noradrenaline inhibits insulin secretion|Adrenaline signalling through Alpha-2 adrenergic receptor|Adrenoceptors|Amine ligand-binding receptors|Class A/1 (Rhodopsin-like receptors)|G alpha (i) signalling events|G alpha (z) signalling events|GPCR downstream signalling|GPCR ligand binding|Hemostasis|Integration of energy metabolism|Metabolism|Metabolism of proteins|Platelet activation, signaling and aggregation|Platelet Aggregation (Plug Formation)|Regulation of insulin secretion|Signal",actin cytoskeleton organization,5
+ADRA2B,ENST00000620793,0.315,chr2,"Adrenaline signalling through Alpha-2 adrenergic receptor|Adrenoceptors|Amine ligand-binding receptors|Class A/1 (Rhodopsin-like receptors)|G alpha (i) signalling events|G alpha (z) signalling events|GPCR downstream signalling|GPCR ligand binding|Hemostasis|Platelet activation, signaling and aggregation|Platelet Aggregation (Plug Formation)|Signaling by GPCR|Signal Transduction",adenylate cyclase-inhibiting adrenergic receptor signaling pathway,5
+ADRA2C,ENST00000330055,3.769,chr4,"Adrenaline,noradrenaline inhibits insulin secretion|Adrenaline signalling through Alpha-2 adrenergic receptor|Adrenoceptors|Amine ligand-binding receptors|Class A/1 (Rhodopsin-like receptors)|G alpha (i) signalling events|G alpha (z) signalling events|GPCR downstream signalling|GPCR ligand binding|Hemostasis|Integration of energy metabolism|Metabolism|Metabolism of proteins|Platelet activation, signaling and aggregation|Platelet Aggregation (Plug Formation)|Regulation of insulin secretion|Signal",adenylate cyclase-inhibiting adrenergic receptor signaling pathway,5
+AGRN,ENST00000379370,2.696,chr1,,cell differentiation,0
+AJAP1,ENST00000378190,0.572,chr1,,cell adhesion,0
+ANKRD65,ENST00000427211,4.062,chr1,,,0
+ANKRD65-AS1,ENST00000428932,0.854,chr1,,,0
+AR,ENST00000374690,1.304,chrX,Activated PKN1 stimulates transcription of AR (androgen receptor) regulated genes KLK2 and KLK3|Cellular responses to stimuli|Cellular responses to stress|Deubiquitination|Gene expression (Transcription)|Generic Transcription Pathway|HSP90 chaperone cycle for steroid hormone receptors (SHR) in the presence of ligand|Metabolism of proteins|Nuclear Receptor transcription pathway|Post-translational protein modification|RHO GTPase Effectors|RHO GTPases activate PKNs|RNA Polymerase II Transcription|R,androgen receptor signaling pathway,13
+ARHGEF16,ENST00000378371,2.544,chr1,"CDC42 GTPase cycle|Cell death signalling via NRAGE, NRIF and NADE|Death Receptor Signaling|G alpha (12/13) signalling events|GPCR downstream signalling|NRAGE signals death through JNK|p75 NTR receptor-mediated signalling|RHOG GTPase cycle|RHO GTPase cycle|Signaling by GPCR|Signaling by Rho GTPases|Signaling by Rho GTPases, Miro GTPases and RHOBTB3|Signal Transduction",activation of GTPase activity,0
+ATAD3A,ENST00000378755,1.069,chr1,,antiviral innate immune response,0
+ATAD3B,ENST00000308647,2.339,chr1,Immune System|Innate Immune System|Neutrophil degranulation,mitochondrion organization,0
+ATAD3C,ENST00000378785,1.242,chr1,,mitochondrion organization,0
+ATM,ENST00000278616,1.324,chr11,Autodegradation of the E3 ubiquitin ligase COP1|Autophagy|Cell Cycle|Cell Cycle Checkpoints|Cellular responses to stimuli|Cellular responses to stress|Cellular response to heat stress|Cellular Senescence|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA1 binding function|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA2/RAD51/RAD51C binding function|Defective homologous recombination repair (HRR) due to BRCA1 loss of functi,cellular response to gamma radiation,0
+AURKAIP1,ENST00000321751,0.787,chr1,Metabolism of proteins|Mitochondrial ribosome-associated quality control|Mitochondrial translation|Mitochondrial translation elongation|Mitochondrial translation initiation|Mitochondrial translation termination|Translation,mitochondrial translation,0
+B3GALT6,ENST00000379198,3.932,chr1,Defective B3GALT6 causes EDSP2 and SEMDJL1|Disease|Diseases associated with glycosaminoglycan metabolism|Diseases of glycosylation|Diseases of metabolism|Glycosaminoglycan metabolism|Glycosaminoglycan-protein linkage region biosynthesis|Metabolism|Metabolism of carbohydrates and carbohydrate derivatives,chondroitin sulfate proteoglycan biosynthetic process,0
+BARD1,ENST00000260947,1.252,chr2,,cellular response to ionizing radiation,0
+BRCA1,ENST00000352993,0.812,chr17,,cellular response to indole-3-methanol,0
+BRCA2,ENST00000380152,0.891,chr13,Cell Cycle|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA1 binding function|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA2/RAD51/RAD51C binding function|Defective homologous recombination repair (HRR) due to BRCA1 loss of function|Defective homologous recombination repair (HRR) due to BRCA2 loss of function|Defective homologous recombination repair (HRR) due to PALB2 loss of function|Disease|Diseases of DNA Double-Str,cellular response to ionizing radiation,0
+BRIP1,ENST00000259008,1.225,chr17,Cell Cycle|Cell Cycle Checkpoints|Cytosolic iron-sulfur cluster assembly|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA1 binding function|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA2/RAD51/RAD51C binding function|Defective homologous recombination repair (HRR) due to BRCA1 loss of function|Defective homologous recombination repair (HRR) due to BRCA2 loss of function|Defective homologous recombination repair (HRR) du,DNA damage checkpoint signaling,0
+C11orf65,ENST00000393084,0.88,chr11,,,0
+C1QTNF12,ENST00000330388,3.013,chr1,,negative regulation of gluconeogenesis,0
+C1orf159,ENST00000379319,2.815,chr1,,,0
+C1orf174,ENST00000361605,2.973,chr1,,,0
+CALML6,ENST00000307786,0.482,chr1,,microtubule cytoskeleton organization,0
+CCDC27,ENST00000294600,2.733,chr1,,,0
+CCNL2,ENST00000400809,5.278,chr1,,regulation of apoptotic process,0
+CD274,ENST00000381573,0.605,chr9,,adaptive immune response,4
+CDH1,ENST00000261769,4.552,chr16,,adherens junction organization,0
+CDK11A,ENST00000356200,3.328,chr1,,apoptotic process,0
+CDK11B,ENST00000340677,1.266,chr1,"Cell Cycle|Cell Cycle, Mitotic|Centrosome maturation|G2/M Transition|Mitotic G2-G2/M phases|Recruitment of mitotic centrosome proteins and complexes",apoptotic process,0
+CDK4,ENST00000257904,2.845,chr12,"Aberrant regulation of mitotic cell cycle due to RB1 defects|Aberrant regulation of mitotic G1/S transition in cancer due to RB1 defects|Adaptive Immune System|Adipogenesis|Cell Cycle|Cell Cycle, Mitotic|Cellular responses to stimuli|Cellular responses to stress|Cellular Senescence|Chromatin modifying enzymes|Chromatin organization|Co-inhibition by PD-1|Cyclin A:Cdk2-associated events at S phase entry|Cyclin D associated events in G1|Cyclin E associated events during G1/S transition|Defective bi",cell division,6
+CDK6,ENST00000265734,2.512,chr7,"Aberrant regulation of mitotic cell cycle due to RB1 defects|Aberrant regulation of mitotic G1/S transition in cancer due to RB1 defects|Cell Cycle|Cell Cycle, Mitotic|Cellular responses to stimuli|Cellular responses to stress|Cellular Senescence|Cyclin D associated events in G1|Defective binding of RB1 mutants to E2F1,(E2F2, E2F3)|Disease|Diseases of cellular response to stress|Diseases of Cellular Senescence|Diseases of mitotic cell cycle|Drug-mediated inhibition of CDK4/CDK6 activity|Evasion ",astrocyte development,6
+CEP104,ENST00000378223,0.642,chr1,,,0
+CFAP74,ENST00000493964,1.354,chr1,,axoneme assembly,0
+CHEK2,ENST00000348295,2.112,chr22,Cell Cycle|Cell Cycle Checkpoints|Chk1/Chk2(Cds1) mediated inactivation of Cyclin B:Cdk1 complex|DNA Double-Strand Break Repair|DNA Double Strand Break Response|DNA Repair|G1/S DNA Damage Checkpoints|G2/M Checkpoints|G2/M DNA damage checkpoint|Gene expression (Transcription)|Generic Transcription Pathway|p53-Dependent G1 DNA Damage Response|p53-Dependent G1/S DNA damage checkpoint|p53-Independent G1/S DNA Damage Checkpoint|Recruitment and ATM-mediated phosphorylation of repair and signaling prot,apoptotic process,0
+CICP27,ENST00000442987,2.937,chr1,,,0
+CICP3,ENST00000440782,5.3,chr1,,,0
+CICP7,ENST00000432723,1.055,chr1,,,0
+CPTP,ENST00000343938,0.498,chr1,Glycosphingolipid transport|Transport of small molecules,ceramide 1-phosphate transport,0
+CSF3R,ENST00000373103,1.148,chr1,Cytokine Signaling in Immune system|Developmental Biology|Immune System|Inactivation of CSF3 (G-CSF) signaling|Other interleukin signaling|Signaling by CSF3 (G-CSF)|Signaling by Interleukins|Transcriptional regulation of granulopoiesis,amelogenesis,6
+CYP19A1,ENST00000396402,2.863,chr15,Biological oxidations|Cytochrome P450 - arranged by substrate type|Defective CYP19A1 causes AEXS|Disease|Diseases of metabolism|Endogenous sterols|Estrogen biosynthesis|Metabolic disorders of biological oxidation enzymes|Metabolism|Metabolism of lipids|Metabolism of steroid hormones|Metabolism of steroids|Phase I - Functionalization of compounds,androgen catabolic process,4
+DDX11L1,ENST00000450305,0.431,chr1,,,0
+DDX11L16,ENST00000507418,0.749,chrX,,,0
+DDX11L17,ENST00000624431,2.768,chr1,,,0
+DDX11L2,ENST00000437401,1.181,chr2,,,0
+DFFB,ENST00000338895,2.165,chr1,,apoptotic chromosome condensation,0
+DHFR,ENST00000439211,4.196,chr5,"Cell Cycle|Cell Cycle, Mitotic|G1/S-Specific Transcription|G1/S Transition|Metabolism|Metabolism of cofactors|Metabolism of folate and pterines|Metabolism of vitamins and cofactors|Metabolism of water-soluble vitamins and cofactors|Mitotic G1 phase and G1/S transition|Tetrahydrobiopterin (BH4) synthesis, recycling, salvage and regulation",axon regeneration,7
+DVL1,ENST00000378888,1.124,chr1,,canonical Wnt signaling pathway,0
+EEF1DP6,ENST00000449232,3.336,chr1,,,0
+EGFR,ENST00000275493,6.368,chr7,,cell-cell adhesion,25
+ENSG00000217801,ENST00000412397,1.194,chr1,,,0
+ENSG00000224387,ENST00000424657,1.41,chr1,,,0
+ENSG00000224969,ENST00000458555,4.523,chr1,,,0
+ENSG00000225931,ENST00000456687,0.568,chr1,,,0
+ENSG00000226286,ENST00000440516,4.243,chr1,,,0
+ENSG00000227169,ENST00000438791,3.522,chr1,,,0
+ENSG00000227775,ENST00000418950,0.777,chr1,,,0
+ENSG00000228037,ENST00000424215,1.021,chr1,,,0
+ENSG00000228327,ENST00000428504,0.389,chr1,,,0
+ENSG00000228463,ENST00000450734,1.416,chr1,,,0
+ENSG00000229393,ENST00000442305,4.236,chr1,,,0
+ENSG00000229905,ENST00000422528,0.376,chr1,,,0
+ENSG00000230021,ENST00000636676,1.201,chr1,,,0
+ENSG00000230092,ENST00000590817,1.195,chr1,,,0
+ENSG00000231630,ENST00000429389,3.135,chr1,,,0
+ENSG00000231702,ENST00000423619,5.252,chr1,,,0
+ENSG00000233234,ENST00000457440,1.391,chr1,,,0
+ENSG00000233542,ENST00000443930,2.203,chr1,,,0
+ENSG00000234396,ENST00000442483,1.466,chr1,,,0
+ENSG00000235146,ENST00000781831,3.701,chr1,,,0
+ENSG00000236601,ENST00000635159,4.662,chr1,,,0
+ENSG00000237094,ENST00000445840,0.933,chr1,,,0
+ENSG00000238260,ENST00000688510,0.575,chr1,,,0
+ENSG00000239906,ENST00000493797,5.054,chr1,,,0
+ENSG00000239945,ENST00000495576,0.406,chr1,,,0
+ENSG00000240731,ENST00000444968,0.665,chr1,,,0
+ENSG00000241599,ENST00000496488,3.091,chr1,,,0
+ENSG00000241860,ENST00000477740,1.272,chr1,,,0
+ENSG00000242590,ENST00000418300,0.559,chr1,,,0
+ENSG00000250575,ENST00000514436,2.786,chr1,,,0
+ENSG00000260179,ENST00000565563,4.059,chr1,,,0
+ENSG00000268575,ENST00000598846,2.771,chr1,,,0
+ENSG00000268903,ENST00000494149,4.209,chr1,,,0
+ENSG00000269737,ENST00000597891,5.169,chr1,,,0
+ENSG00000269896,ENST00000417061,0.896,chr1,,,0
+ENSG00000269981,ENST00000595919,4.341,chr1,,,0
+ENSG00000271806,ENST00000606533,2.463,chr1,,,0
+ENSG00000272004,ENST00000607013,1.221,chr1,,,0
+ENSG00000272088,ENST00000606489,0.692,chr1,,,0
+ENSG00000272106,ENST00000607222,0.974,chr1,,,0
+ENSG00000272141,ENST00000606993,3.509,chr1,,,0
+ENSG00000272153,ENST00000607459,0.534,chr1,,,0
+ENSG00000272161,ENST00000607720,1.288,chr1,,,0
+ENSG00000272235,ENST00000607061,0.914,chr1,,,0
+ENSG00000272420,ENST00000607858,0.47,chr1,,,0
+ENSG00000272438,ENST00000715285,1.012,chr1,,,0
+ENSG00000272449,ENST00000644246,3.57,chr1,,,0
+ENSG00000272512,ENST00000606034,0.439,chr1,,,0
+ENSG00000273443,ENST00000442292,5.231,chr1,,,0
+ENSG00000274481,ENST00000621860,0.731,chr1,,,0
+ENSG00000276189,ENST00000611447,0.325,chr1,,,0
+ENSG00000278791,ENST00000621981,1.393,chr1,,,0
+ENSG00000279839,ENST00000624175,1.452,chr1,,,0
+ENSG00000283040,ENST00000635557,0.958,chr1,,,0
+ENSG00000283259,ENST00000638002,0.407,chr1,,,0
+ERBB2,ENST00000269571,12.618,chr17,Axon guidance|Constitutive Signaling by Aberrant PI3K in Cancer|Constitutive Signaling by Overexpressed ERBB2|Developmental Biology|Developmental Cell Lineages|Developmental Cell Lineages of the Integumentary System|Developmental Lineage of Mammary Gland Luminal Epithelial Cells|Developmental Lineage of Mammary Gland Myoepithelial Cells|Developmental Lineage of Mammary Stem Cells|Developmental Lineages of the Mammary Gland|Disease|Diseases of signal transduction by growth factor receptors and se,cell population proliferation,17
+ERBB4,ENST00000260943,0.329,chr2,Activation of NMDA receptors and postsynaptic events|Disease|Diseases of signal transduction by growth factor receptors and second messengers|Downregulation of ERBB2 signaling|Downregulation of ERBB4 signaling|ERBB2 Activates PTK6 Signaling|ERBB2 Regulates Cell Motility|ESR-mediated signaling|Estrogen-dependent gene expression|GRB2 events in ERBB2 signaling|Long-term potentiation|MAPK1/MAPK3 signaling|MAPK family signaling cascades|Neuronal System|Neurotransmitter receptors and postsynaptic sign,apoptotic process,7
+ESR1,ENST00000206249,0.659,chr6,,cellular response to estradiol stimulus,14
+ESR2,ENST00000267525,5.449,chr14,,cell-cell signaling,11
+FAAP20,ENST00000378546,4.744,chr1,,DNA damage response,0
+FAM138A,ENST00000834251,0.512,chr1,,,0
+FAM41C,ENST00000745843,1.497,chr1,,,0
+FAM87B,ENST00000326734,0.659,chr1,,,0
+FBXO11,ENST00000402508,3.038,chr2,Adaptive Immune System|Antigen processing: Ubiquitination & Proteasome degradation|Class I MHC mediated antigen processing & presentation|Immune System|Metabolism of proteins|Neddylation|Post-translational protein modification,negative regulation of epithelial to mesenchymal transition,0
+FDPS,ENST00000356657,1.226,chr1,Activation of gene expression by SREBF (SREBP)|Cholesterol biosynthesis|Metabolism|Metabolism of lipids|Metabolism of steroids|Regulation of cholesterol biosynthesis by SREBP (SREBF),cholesterol biosynthetic process,6
+FKBP1A,ENST00000381715,0.674,chr20,Adaptive Immune System|Calcineurin activates NFAT|Disease|Diseases of signal transduction by growth factor receptors and second messengers|Downstream signaling events of B Cell Receptor (BCR)|Immune System|Infectious disease|Loss of Function of TGFBR1 in Cancer|mTORC1-mediated signalling|MTOR signalling|Potential therapeutics for SARS|SARS-CoV-1 activates/modulates innate immune responses|SARS-CoV-1-host interactions|SARS-CoV-1 Infection|SARS-CoV Infections|Signaling by TGF-beta Receptor Complex,amyloid fibril formation,4
+FNDC10,ENST00000422725,4.045,chr1,,,0
+GABRD,ENST00000378585,0.726,chr1,,cell-cell signaling,3
+GFOD3P,ENST00000637775,5.363,chr1,,,0
+GNB1,ENST00000378609,2.65,chr1,,adenylate cyclase-activating dopamine receptor signaling pathway,0
+GNB1-DT,ENST00000689170,0.638,chr1,,,0
+GNRHR,ENST00000226413,2.42,chr4,Class A/1 (Rhodopsin-like receptors)|G alpha (q) signalling events|GPCR downstream signalling|GPCR ligand binding|Hormone ligand-binding receptors|Signaling by GPCR|Signal Transduction,cellular response to gonadotropin-releasing hormone,14
+GPD2,ENST00000310454,1.01,chr2,Glycerophospholipid biosynthesis|Metabolism|Metabolism of lipids|Phospholipid metabolism|Synthesis of PA|Triglyceride catabolism|Triglyceride metabolism,glycerol-3-phosphate metabolic process,2
+HES4,ENST00000304952,0.61,chr1,,anterior/posterior pattern specification,0
+HES5,ENST00000378453,0.592,chr1,Constitutive Signaling by NOTCH1 HD+PEST Domain Mutants|Constitutive Signaling by NOTCH1 PEST Domain Mutants|Disease|Diseases of signal transduction by growth factor receptors and second messengers|NOTCH1 Intracellular Domain Regulates Transcription|NOTCH2 intracellular domain regulates transcription|NOTCH3 Intracellular Domain Regulates Transcription|NOTCH4 Intracellular Domain Regulates Transcription|Signaling by NOTCH|Signaling by NOTCH1|Signaling by NOTCH1 HD+PEST Domain Mutants in Cancer|Si,animal organ development,0
+HSPG2,ENST00000374695,0.767,chr1,,angiogenesis,0
+INTS11,ENST00000411962,4.507,chr1,Gene expression (Transcription)|RNA polymerase II transcribes snRNA genes|RNA Polymerase II Transcription,regulation of transcription elongation by RNA polymerase II,0
+ISG15,ENST00000624697,3.385,chr1,Antiviral mechanism by IFN-stimulated genes|Cytokine Signaling in Immune system|DDX58/IFIH1-mediated induction of interferon-alpha/beta|Disease|DNA Damage Bypass|DNA Repair|Immune System|Infectious disease|Influenza Infection|Innate Immune System|Interferon alpha/beta signaling|Interferon Signaling|ISG15 antiviral mechanism|Modulation of host responses by IFN-stimulated genes|Negative regulators of DDX58/IFIH1 signaling|NS1 Mediated Effects on Host Pathways|PKR-mediated signaling|Respiratory Syn,defense response to bacterium,0
+KLHL17,ENST00000338591,0.45,chr1,,actin cytoskeleton organization,0
+LINC00115,ENST00000419394,4.632,chr1,,,0
+LINC01128,ENST00000445118,3.604,chr1,,,0
+LINC01134,ENST00000439488,1.497,chr1,,,0
+LINC01342,ENST00000416774,2.746,chr1,,,0
+LINC01345,ENST00000635247,5.266,chr1,,,0
+LINC01346,ENST00000412674,1.422,chr1,,,0
+LINC01409,ENST00000429505,2.552,chr1,,,0
+LINC01646,ENST00000420522,1.307,chr1,,,0
+LINC01770,ENST00000417917,0.794,chr1,,,0
+LINC01777,ENST00000423197,0.304,chr1,,,0
+LINC01786,ENST00000434139,1.045,chr1,,,0
+LINC02593,ENST00000417705,0.769,chr1,,,0
+LINC02782,ENST00000443270,2.404,chr1,,,0
+LRRC47,ENST00000378251,3.936,chr1,,phenylalanyl-tRNA aminoacylation,0
+MEGF6,ENST00000294599,4.117,chr1,,vesicle-mediated transport,0
+MIB2,ENST00000355826,0.982,chr1,Activated NOTCH1 Transmits Signal to the Nucleus|Adaptive Immune System|Antigen processing: Ubiquitination & Proteasome degradation|Class I MHC mediated antigen processing & presentation|Co-inhibition by PD-1|Constitutive Signaling by NOTCH1 HD Domain Mutants|Constitutive Signaling by NOTCH1 HD+PEST Domain Mutants|Constitutive Signaling by NOTCH1 PEST Domain Mutants|Death Receptor Signaling|Disease|Diseases of signal transduction by growth factor receptors and second messengers|Immune System|NOT,Notch signaling pathway,0
+MIR1302-2HG,ENST00000469289,0.432,chr1,,,0
+MIR200A,ENST00000384875,0.753,chr1,,,0
+MIR200B,ENST00000384997,0.91,chr1,,,0
+MIR429,ENST00000362106,0.438,chr1,,,0
+MIR551A,ENST00000385042,4.699,chr1,,,0
+MIR6726,ENST00000613751,0.431,chr1,,,0
+MIR6859-1,ENST00000619216,1.209,chr1,,,0
+MIR6859-2,ENST00000612080,0.305,chr1,,,0
+MLH1,ENST00000231790,5.091,chr3,Cell Cycle|Defective Mismatch Repair Associated With MLH1|Defective Mismatch Repair Associated With PMS2|Disease|Diseases of DNA repair|Diseases of Mismatch Repair (MMR)|DNA Repair|Gene expression (Transcription)|Generic Transcription Pathway|Meiosis|Meiotic recombination|Mismatch Repair|Mismatch repair (MMR) directed by MSH2:MSH3 (MutSbeta)|Mismatch repair (MMR) directed by MSH2:MSH6 (MutSalpha)|Reproduction|RNA Polymerase II Transcription|TP53 Regulates Transcription of DNA Repair Genes|Transc,DNA damage response,0
+MMEL1,ENST00000378412,1.205,chr1,,protein processing,0
+MMEL1-AS1,ENST00000723522,1.229,chr1,,,0
+MMP23A,ENST00000234610,2.446,chr1,,,0
+MMP23B,ENST00000356026,5.146,chr1,,collagen catabolic process,0
+MORN1,ENST00000378529,1.409,chr1,,,0
+MRPL20,ENST00000344843,0.987,chr1,Metabolism of proteins|Mitochondrial ribosome-associated quality control|Mitochondrial translation|Mitochondrial translation elongation|Mitochondrial translation initiation|Mitochondrial translation termination|Translation,mitochondrial translation,0
+MRPL20-AS1,ENST00000780221,2.36,chr1,,,0
+MRPL20-DT,ENST00000607307,1.425,chr1,,,0
+MSH6,ENST00000234420,0.61,chr2,Defective Mismatch Repair Associated With MSH2|Defective Mismatch Repair Associated With MSH6|Disease|Diseases of DNA repair|Diseases of Mismatch Repair (MMR)|DNA Repair|Mismatch Repair|Mismatch repair (MMR) directed by MSH2:MSH6 (MutSalpha),chromatin organization,0
+MT-ND1,ENST00000361390,5.255,chrM,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial protein degradation|Mitochondrial translation|Mitochondrial translation termination|Respiratory electron transport|Translation,aerobic respiration,2
+MT-ND2,ENST00000361453,1.485,chrM,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial protein degradation|Mitochondrial translation|Mitochondrial translation termination|Respiratory electron transport|Translation,aerobic respiration,2
+MT-ND3,ENST00000361227,1.423,chrM,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial translation|Mitochondrial translation termination|Respiratory electron transport|Translation,aerobic respiration,2
+MT-ND4,ENST00000361381,4.578,chrM,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial translation|Mitochondrial translation termination|Respiratory electron transport|Translation,aerobic respiration,2
+MT-ND4L,ENST00000361335,5.258,chrM,Metabolism of proteins|Mitochondrial translation|Mitochondrial translation termination|Translation,aerobic respiration,2
+MT-ND5,ENST00000361567,1.412,chrM,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial protein degradation|Mitochondrial translation|Mitochondrial translation termination|Respiratory electron transport|Translation,aerobic respiration,2
+MT-ND6,ENST00000361681,1.023,chrM,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial protein degradation|Mitochondrial translation|Mitochondrial translation termination|Respiratory electron transport|Translation,aerobic respiration,2
+MTATP6P1,ENST00000514057,0.92,chr1,,,0
+MTATP8P1,ENST00000467115,1.408,chr1,,,0
+MTCO1P12,ENST00000414273,4.858,chr1,,,0
+MTCO2P12,ENST00000427426,0.453,chr1,,,0
+MTCO3P12,ENST00000416718,0.998,chr1,,,0
+MTND1P23,ENST00000416931,2.676,chr1,,,0
+MTND2P28,ENST00000457540,5.025,chr1,,,0
+MXRA8,ENST00000309212,1.031,chr1,Metabolism of proteins|Post-translational protein modification|Post-translational protein phosphorylation|Regulation of Insulin-like Growth Factor (IGF) transport and uptake by Insulin-like Growth Factor Binding Proteins (IGFBPs),cell adhesion,0
+NADK,ENST00000341426,0.5,chr1,Metabolism|Metabolism of vitamins and cofactors|Metabolism of water-soluble vitamins and cofactors|Nicotinate metabolism,ATP metabolic process,0
+NBN,ENST00000265433,1.199,chr8,Cell Cycle|Cell Cycle Checkpoints|Cellular responses to stimuli|Cellular responses to stress|Cellular Senescence|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA1 binding function|Defective HDR through Homologous Recombination Repair (HRR) due to PALB2 loss of BRCA2/RAD51/RAD51C binding function|Defective homologous recombination repair (HRR) due to BRCA1 loss of function|Defective homologous recombination repair (HRR) due to BRCA2 loss of function|Defective ,blastocyst growth,0
+NDUFA1,ENST00000371437,0.925,chrX,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA10,ENST00000252711,0.966,chr2,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA11,ENST00000308961,1.023,chr19,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA12,ENST00000327772,3.521,chr12,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA13,ENST00000428459,1.054,chr19,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial protein degradation|Respiratory electron transport,aerobic respiration,2
+NDUFA2,ENST00000252102,0.556,chr5,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Metabolism of proteins|Mitochondrial protein degradation|Respiratory electron transport,aerobic respiration,2
+NDUFA3,ENST00000303553,4.018,chr19,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA4,ENST00000339600,4.481,chr7,Aerobic respiration and respiratory electron transport|Cellular responses to stimuli|Cellular responses to stress|Cellular response to chemical stress|Complex IV assembly|Cytoprotection by HMOX1|Gene expression (Transcription)|Generic Transcription Pathway|Metabolism|Respiratory electron transport|RNA Polymerase II Transcription|TP53 Regulates Metabolic Genes|Transcriptional Regulation by TP53,cellular respiration,2
+NDUFA4L2,ENST00000393825,5.24,chr12,,cellular response to hypoxia,2
+NDUFA5,ENST00000355749,0.66,chr7,"Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport|RHOG GTPase cycle|RHO GTPase cycle|Signaling by Rho GTPases|Signaling by Rho GTPases, Miro GTPases and RHOBTB3|Signal Transduction",aerobic respiration,2
+NDUFA6,ENST00000470753,1.286,chr22,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA7,ENST00000301457,2.245,chr19,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA8,ENST00000373768,0.465,chr9,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFA9,ENST00000266544,4.968,chr12,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,aerobic respiration,2
+NDUFAB1,ENST00000007516,1.045,chr16,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Fatty acid metabolism|Metabolism|Metabolism of lipids|Metabolism of proteins|Mitochondrial Fatty Acid Beta-Oxidation|Mitochondrial ribosome-associated quality control|Mitochondrial translation|Post-translational protein modification|Protein lipoylation|Respiratory electron transport|Translation,[2Fe-2S] cluster assembly,2
+NDUFAF1,ENST00000260361,3.429,chr15,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,chaperone-mediated protein complex assembly,2
+NDUFAF2,ENST00000296597,0.448,chr5,Aerobic respiration and respiratory electron transport|Complex I biogenesis|Metabolism|Respiratory electron transport,cell projection organization,2

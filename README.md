@@ -1,638 +1,393 @@
-# MEDIA / Cancer Transcriptome Base
+# MEDIABASE: Cancer Transcriptome Database
 
-A comprehensive database system for cancer transcriptome analysis with LLM-agent assistance. The system provides a unified PostgreSQL-based resource for querying relationships between transcripts, pathways, and drug interactions.
+**Version:** 0.6.0.2 | **Status:** Production-Ready | [CHANGELOG](CHANGELOG.md)
+
+Comprehensive PostgreSQL database for cancer transcriptomics analysis, integrating gene expression data with biological annotations, drug information, disease associations, and scientific literature.
+
+---
 
 ## Overview
 
-This project creates a pre-joined database table optimized for LLM-agent queries about cancer transcriptome data, enabling:
+MEDIABASE combines multiple biological data sources into a unified, queryable database for cancer research:
 
-- Fast pathway analysis
-- Drug interaction lookups
-- Gene product classification
-- Literature-backed insights
-- Patient-specific expression analysis
+- **Gene Expression** - GENCODE transcripts with patient-specific fold-change data
+- **Biological Context** - GO terms, Reactome pathways, UniProt products
+- **Disease Associations** - OpenTargets gene-disease relationships (484K records)
+- **Drug Information** - ChEMBL drugs with targets and mechanisms
+- **Literature Evidence** - PubMed/PubTator Central (47M+ gene-publication links)
+- **Cross-References** - ID mappings across UniProt, NCBI, RefSeq, Ensembl
 
-## Setup
+### Architecture (v0.6.0)
 
-### Prerequisites
+MEDIABASE uses a **shared core architecture** for optimal storage efficiency:
 
-- Python 3.10 or higher
-- Python venv module (`python3-venv` package)
-- Git
-- PostgreSQL 12+
+- **Single Database**: One PostgreSQL database (`mbase`) contains all data
+- **Public Schema**: Core transcriptome and biological data shared across all patients
+- **Patient Schemas**: Isolated schemas (`patient_<ID>`) for patient-specific expression data
+- **Sparse Storage**: Only stores expression values ≠ 1.0 (99.75% storage reduction vs v0.5.0)
+- **Query Pattern**: Simple LEFT JOIN between public and patient schemas
 
-### Environment Setup
+### Key Features
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/itsatony/mediabase.git
-   cd mediabase
-   ```
+- **Patient-Specific Analysis**: Create isolated patient schemas with transcriptomics data
+- **DESeq2 Support**: Automatic conversion of DESeq2 output (`log2FoldChange` → linear fold-change)
+- **RESTful API**: Query endpoints with patient_id parameter support
+- **Production Queries**: 25 validated SQL queries for common analyses
+- **Clinical Guides**: HER2+ breast cancer (100% query validation) and MSS colorectal cancer examples
+- **PMID Evidence Integration**: 47M+ gene-publication links with evidence strength categorization
+- **Storage Efficient**: Baseline expression implicit, only store deviations
 
-2. Set up the virtual environment:
-   ```bash
-   # Make the setup script executable
-   chmod +x setup_venv.sh
-   
-   # Run the setup script
-   ./setup_venv.sh
-   
-   # Activate the virtual environment
-   source mbase/bin/activate
-   ```
-
-3. Initialize the project:
-   ```bash
-   # Make the setup script executable
-   chmod +x setup_project.sh
-   
-   # Run the project setup script
-   ./setup_project.sh
-   ```
-
-4. Configure the environment:
-   ```bash
-   # Copy the example environment file
-   cp .env.example .env
-   
-   # Edit the .env file with your settings
-   nano .env
-   ```
-
-### Development
-
-1. Ensure the virtual environment is activated:
-   ```bash
-   source mbase/bin/activate
-   ```
-
-2. Install dependencies:
-   ```bash
-   poetry install
-   ```
-
-3. Run tests:
-   ```bash
-   poetry run pytest
-   ```
+---
 
 ## Quick Start
 
-After completing the setup, you can:
+### Prerequisites
 
-1. Run the ETL pipeline:
-   ```bash
-   poetry run python scripts/run_etl.py
-   ```
+- Python 3.10+
+- Poetry 2.0.1+
+- PostgreSQL 12+
 
-2. Start the API server:
-   ```bash
-   poetry run python -m src.api.server
-   ```
+### Installation
 
-3. Explore example notebooks:
-   ```bash
-   poetry run jupyter lab notebooks/01_data_exploration.ipynb
-   ```
+```bash
+# Clone repository
+git clone https://github.com/itsatony/mediabase.git
+cd mediabase
+
+# Install dependencies
+poetry install
+
+# Activate environment
+poetry shell
+```
+
+### Database Setup
+
+```bash
+# Configure environment variables
+cp .env.example .env
+# Edit .env with your PostgreSQL credentials
+
+# Create database and load schema
+poetry run python scripts/manage_db.py --create-db --apply-schema
+```
+
+### Run ETL Pipeline
+
+```bash
+# Full ETL (downloads ~25 GB data, takes 2-4 hours)
+poetry run python scripts/run_etl.py --reset-db --log-level INFO
+
+# Quick test with 100 transcripts (~5 minutes)
+poetry run python scripts/run_etl.py --reset-db --limit-transcripts 100 --log-level INFO
+```
+
+---
+
+## Usage Examples
+
+### Create Patient Schema (v0.6.0)
+
+```bash
+# From DESeq2 results - creates schema in shared database
+poetry run python scripts/create_patient_copy.py \
+  --patient-id PATIENT123 \
+  --csv-file deseq2_results.csv \
+  --source-db mbase
+
+# Validate CSV format (dry-run)
+poetry run python scripts/create_patient_copy.py \
+  --patient-id PATIENT123 \
+  --csv-file data.csv \
+  --source-db mbase \
+  --dry-run
+```
+
+**v0.6.0 Architecture:**
+- Creates `patient_PATIENT123` schema in existing `mbase` database
+- Schema contains `expression_data` (sparse) and `metadata` tables
+- Shared `public` schema provides core transcriptome data
+- Storage efficient: Only non-baseline expression values stored
+
+**CSV Requirements:**
+- Columns: `transcript_id` (or `SYMBOL`) and `cancer_fold` (or `log2FoldChange`)
+- Format: Standard CSV with header row
+- Example: `examples/patient_data_example.csv`
+
+### Query Database (v0.6.0)
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="localhost",
+    database="mbase",
+    user="your_user",
+    password="your_password"
+)
+
+# Find FDA-approved drugs for overexpressed genes (patient-specific with evidence)
+query = """
+SELECT
+    g.gene_symbol,
+    COALESCE(pe.expression_fold_change, 1.0) as fold_change,
+    okd.molecule_name as drug_name,
+    okd.mechanism_of_action,
+    okd.clinical_phase_label,
+    COALESCE(COUNT(DISTINCT gp.pmid), 0) as publication_count,
+    CASE
+        WHEN COUNT(DISTINCT gp.pmid) >= 100000 THEN 'Extensively studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 10000 THEN 'Well-studied'
+        WHEN COUNT(DISTINCT gp.pmid) >= 1000 THEN 'Moderate evidence'
+        ELSE 'Limited publications'
+    END as evidence_level
+FROM public.transcripts t
+LEFT JOIN patient_PATIENT123.expression_data pe ON t.transcript_id = pe.transcript_id
+JOIN public.genes g ON t.gene_id = g.gene_id
+JOIN public.opentargets_known_drugs okd ON g.gene_id = okd.target_gene_id
+LEFT JOIN public.gene_publications gp ON g.gene_id = gp.gene_id
+WHERE COALESCE(pe.expression_fold_change, 1.0) > 2.0
+  AND okd.is_approved = true
+GROUP BY g.gene_symbol, pe.expression_fold_change, okd.molecule_name,
+         okd.mechanism_of_action, okd.clinical_phase_label
+ORDER BY COALESCE(pe.expression_fold_change, 1.0) DESC
+LIMIT 10;
+"""
+
+cursor = conn.cursor()
+cursor.execute(query)
+results = cursor.fetchall()
+```
+
+### Start API Server (v0.6.0)
+
+```bash
+# Launch RESTful API
+poetry run python -m src.api.server
+
+# API Documentation
+open http://localhost:8000/docs
+
+# Search public schema (baseline expression)
+curl "http://localhost:8000/api/v1/transcripts?gene_symbols=EGFR"
+
+# Search patient-specific data
+curl "http://localhost:8000/api/v1/transcripts?patient_id=PATIENT123&gene_symbols=ERBB2&fold_change_min=4.0"
+
+# List available patient schemas
+curl "http://localhost:8000/api/v1/patients"
+```
+
+---
+
+## Database Contents
+
+| Data Source | Records | Size | Purpose |
+|------------|---------|------|---------|
+| **Gene Transcripts** | 78K genes | ~2 GB | Base gene/transcript information |
+| **GO Terms** | 1.26M associations | 297 MB | Functional annotations |
+| **Pathways** | 113K associations | 39 MB | Reactome pathway memberships |
+| **Gene Publications** | 47.4M links | 12 GB | PubMed/PubTator literature |
+| **OpenTargets Drugs** | 391K records | 208 MB | Drug-target relationships |
+| **OpenTargets Diseases** | 28K diseases | 44 MB | Disease ontology |
+| **Gene-Disease Links** | 2.7K associations | 2.2 MB | Evidence-based associations |
+| **Target Tractability** | 62K assessments | 66 MB | Druggability scores |
+
+**Total Database Size:** ~23 GB
+
+---
 
 ## Documentation
 
-Comprehensive documentation is available in the `docs/` directory:
+### User Guides
+- **[Quick Start](docs/QUICKSTART.md)** - 10-minute hands-on tutorial *(coming soon)*
+- **[Schema Reference](docs/MEDIABASE_SCHEMA_REFERENCE.md)** - Complete table documentation
+- **[Query Library](docs/MEDIABASE_QUERY_LIBRARY.md)** - 25 validated production queries
+- **[OpenTargets Guide](docs/OPENTARGETS_PLATFORM_GUIDE.md)** - Disease associations and drug data
+- **[AI Agent Integration](docs/AI_AGENT_INTEGRATION_GUIDE.md)** - LLM integration patterns
 
-- [Architecture Overview](docs/architecture.md)
-- [API Documentation](docs/api.md)
-- [Deployment Guide](docs/deployment.md)
+### Clinical Examples
+- **[HER2+ Breast Cancer](docs/BREAST_CANCER_HER2_GUIDE.md)** - Clinical workflow and queries
+- **[MSS Colorectal Cancer](docs/COLORECTAL_CANCER_GUIDE.md)** - Treatment selection examples
 
-## Project Status
+### Developer Documentation
+- **[CLAUDE.md](CLAUDE.md)** - Development guidelines and common commands
+- **[Architecture](docs/architecture.md)** - System design and ETL pipeline
+- **[API Documentation](http://localhost:8000/docs)** - Interactive API docs (when server running)
 
-Current development status and upcoming milestones:
-- [x] Initial project setup (2025-02-02)
-- [x] Basic schema design
-- [ ] Project structure implementation
-- [ ] Data source validation
-- [ ] ETL pipeline - Transcript module
-- [ ] ETL pipeline - Product Classification
-- [ ] ETL pipeline - Pathway Integration
-- [ ] ETL pipeline - Drug Integration
-- [ ] ETL pipeline - Publication Integration
-- [ ] Query optimization
-- [ ] LLM-agent integration tests
-- [ ] Documentation
-- [ ] Production deployment
+---
 
-## Version History
+## Data Sources
 
-- v0.1.0: Initial MVP plan with public data sources
-- v0.1.1: Added publications, patient fold-change support, and ETL sequence
-- Repository: [mediabase](https://github.com/itsatony/mediabase)
+MEDIABASE integrates data from the following sources:
 
-## Data Flow and Dependencies
+- **GENCODE v47** - Human gene transcripts
+- **UniProt 2024_06** - Protein annotations
+- **Gene Ontology 2024-09-08** - Functional annotations
+- **Reactome v89** - Pathway data
+- **OpenTargets Platform v24.09** - Disease associations, drugs, tractability
+- **ChEMBL v35** - Drug-target interactions
+- **PubTator Central** - Gene-publication associations
+- **PubMed** - Scientific literature metadata
 
-```mermaid
-graph TD
-    A[Gencode GTF] --> B[Base Transcript Table]
-    B --> C[Gene Products]
-    C --> D[Product Classifications]
-    D --> E[Pathways/Processes]
-    E --> F[Drug Interactions]
-    G[GO Terms] --> E
-    H[DrugCentral] --> F
-    I[PubMed] --> J[Publications]
-    J --> F
-    K[Patient Data] --> L[Expression Levels]
-    L --> B
+---
+
+## Development
+
+### Run Tests
+
+```bash
+# All tests
+poetry run pytest
+
+# With coverage
+poetry run pytest --cov=src
+
+# Specific test suite
+poetry run pytest tests/test_deseq2_core_functionality.py -v
 ```
 
-## Enhanced Database Schema v0.1.1
+### Code Quality
 
-```sql
-CREATE TABLE cancer_transcript_base (
-    -- Core identifiers
-    transcript_id TEXT PRIMARY KEY,
-    gene_symbol TEXT,
-    gene_id TEXT,
-    
-    -- Genomic information
-    gene_type TEXT,
-    chromosome TEXT,
-    coordinates JSONB,  -- {start: int, end: int, strand: int}
-    
-    -- Classifications
-    product_type TEXT[], -- ['enzyme', 'kinase', 'transcription_factor', etc]
-    cellular_location TEXT[], -- ['membrane', 'nucleus', 'cytoplasm', etc]
-    
-    -- Biological context
-    go_terms JSONB,    -- {go_id: {term: "", evidence: "", aspect: ""}}
-    pathways TEXT[],   -- array of pathway identifiers
-    
-    -- Drug interactions
-    drugs JSONB,       -- {drug_id: {name: "", mechanism: "", evidence: ""}}
-    drug_scores JSONB, -- {drug_id: score}
-    
-    -- Literature
-    publications JSONB, -- [{pmid: "", year: "", type: "", relevance: ""}]
-    
-    -- Expression data
-    expression_fold_change FLOAT DEFAULT 1.0,  -- Patient-specific
-    expression_freq JSONB DEFAULT '{"high": [], "low": []}',
-    
-    -- Cancer associations
-    cancer_types TEXT[] DEFAULT '{}'
-);
+```bash
+# Format code
+poetry run black .
 
--- Indices
-CREATE INDEX idx_gene_symbol ON cancer_transcript_base(gene_symbol);
-CREATE INDEX idx_gene_id ON cancer_transcript_base(gene_id);
-CREATE INDEX idx_drugs ON cancer_transcript_base USING GIN(drugs);
-CREATE INDEX idx_product_type ON cancer_transcript_base USING GIN(product_type);
-CREATE INDEX idx_pathways ON cancer_transcript_base USING GIN(pathways);
+# Type checking
+poetry run mypy src
+
+# Lint code
+poetry run flake8 src
 ```
 
-## ETL Pipeline Implementation
+### Common Commands
 
-### 1. Base Transcript Setup
+```bash
+# Reset database
+poetry run python scripts/manage_db.py --reset
 
-```python
-import gtfparse
-import pandas as pd
+# Run specific ETL modules
+poetry run python scripts/run_etl.py --modules transcripts go_terms drugs
 
-def load_gencode_gtf(file_path):
-    df = gtfparse.read_gtf(file_path)
-    transcripts = df[df['feature'] == 'transcript']
-    return transcripts[['transcript_id', 'gene_id', 'gene_name', 'gene_type']]
+# Debug mode
+poetry run python scripts/run_etl.py --log-level DEBUG
 
-def create_base_entries(conn, transcripts_df):
-    # Implementation of base table population
-    pass
+# Update database to latest schema
+poetry run python scripts/manage_db.py --apply-schema
 ```
 
-### 2. Product Classification
-
-```python
-def classify_gene_products(conn):
-    """
-    Adds product classifications based on GO terms and UniProt features
-    """
-    sql = """
-    UPDATE cancer_transcript_base
-    SET product_type = array_append(product_type, 'kinase')
-    WHERE gene_symbol IN (
-        SELECT DISTINCT gene_symbol 
-        FROM cancer_transcript_base 
-        WHERE go_terms ? 'GO:0016301'  -- kinase activity
-    );
-    """
-    # Additional classification logic
-```
-
-### 3. Pipeline Orchestration
-
-```python
-class CancerBaseETL:
-    def __init__(self, db_params):
-        self.conn = psycopg2.connect(**db_params)
-    
-    def run_pipeline(self):
-        self.load_transcripts()
-        self.classify_products()
-        self.add_pathways()
-        self.add_drugs()
-        self.add_publications()
-        self.validate()
-```
-
-## LLM-Agent Query Examples
-
-### Example 1: Patient-Specific Drug Recommendations
-
-```sql
--- Query: "For my patient's upregulated genes, what drugs might be relevant?"
-WITH upregulated_genes AS (
-    SELECT gene_symbol, expression_fold_change, drugs
-    FROM cancer_transcript_base
-    WHERE expression_fold_change > 2.0
-),
-drug_candidates AS (
-    SELECT 
-        gene_symbol,
-        expression_fold_change,
-        jsonb_object_keys(drugs) as drug_id,
-        drugs->jsonb_object_keys(drugs)::text as drug_info
-    FROM upregulated_genes
-    WHERE drugs != '{}'::jsonb
-)
-SELECT 
-    drug_id,
-    array_agg(gene_symbol) as target_genes,
-    avg(expression_fold_change) as avg_expression_change
-FROM drug_candidates
-GROUP BY drug_id
-ORDER BY avg_expression_change DESC
-LIMIT 10;
-```
-
-### Example 2: Pathway Analysis
-
-```sql
--- Query: "Which pathways are most affected in my patient's sample?"
-WITH affected_pathways AS (
-    SELECT 
-        unnest(pathways) as pathway,
-        expression_fold_change
-    FROM cancer_transcript_base
-    WHERE expression_fold_change != 1.0
-)
-SELECT 
-    pathway,
-    count(*) as gene_count,
-    avg(expression_fold_change) as avg_change,
-    array_agg(gene_symbol) as genes
-FROM affected_pathways
-GROUP BY pathway
-HAVING count(*) > 3
-ORDER BY abs(avg_change) DESC
-LIMIT 10;
-```
-
-### Example 3: Complex Treatment Insight
-
-```sql
--- Query: "Find drugs that target the most disrupted pathways 
---         and have supporting recent publications"
-WITH disrupted_pathways AS (
-    -- First find significantly changed pathways
-    SELECT unnest(pathways) as pathway_id
-    FROM cancer_transcript_base
-    WHERE expression_fold_change > 2.0
-    GROUP BY pathway_id
-    HAVING count(*) > 5
-),
-relevant_drugs AS (
-    -- Find drugs targeting these pathways
-    SELECT DISTINCT 
-        d.key as drug_id,
-        d.value->>'name' as drug_name,
-        t.publications
-    FROM cancer_transcript_base t,
-    jsonb_each(t.drugs) d
-    WHERE EXISTS (
-        SELECT 1 FROM disrupted_pathways dp
-        WHERE dp.pathway_id = ANY(t.pathways)
-    )
-)
-SELECT 
-    drug_id,
-    drug_name,
-    count(DISTINCT p->>'pmid') as recent_publications
-FROM relevant_drugs,
-jsonb_array_elements(publications) p
-WHERE (p->>'year')::int >= 2022
-GROUP BY drug_id, drug_name
-HAVING count(DISTINCT p->>'pmid') > 2
-ORDER BY recent_publications DESC;
-```
-
-## Advanced Usage Patterns
-
-### Pattern 1: Multi-Level Drug Discovery
-
-This pattern combines direct drug targets with second-degree pathway interactions:
-```sql
-WITH target_genes AS (
-    SELECT gene_symbol, pathways
-    FROM cancer_transcript_base
-    WHERE expression_fold_change > 2.0
-),
-pathway_genes AS (
-    SELECT DISTINCT t2.gene_symbol
-    FROM target_genes t1
-    JOIN cancer_transcript_base t2
-    ON t1.pathways && t2.pathways
-),
-drug_candidates AS (
-    SELECT 
-        t.gene_symbol as target,
-        d.key as drug_id,
-        d.value as drug_info
-    FROM pathway_genes t,
-    jsonb_each(drugs) d
-)
-SELECT 
-    drug_id,
-    count(DISTINCT target) as affected_targets,
-    array_agg(DISTINCT target) as target_list
-FROM drug_candidates
-GROUP BY drug_id
-ORDER BY affected_targets DESC;
-```
-
-### Pattern 2: Mechanistic Insight Query
-
-```sql
--- Find molecular mechanisms potentially explaining expression changes
-WITH changed_genes AS (
-    SELECT 
-        gene_symbol,
-        product_type,
-        expression_fold_change
-    FROM cancer_transcript_base
-    WHERE abs(expression_fold_change - 1.0) > 1.0
-),
-mechanism_analysis AS (
-    SELECT 
-        unnest(product_type) as mechanism,
-        CASE 
-            WHEN expression_fold_change > 1.0 THEN 'up'
-            ELSE 'down'
-        END as direction,
-        count(*) as gene_count
-    FROM changed_genes
-    GROUP BY mechanism, direction
-)
-SELECT 
-    mechanism,
-    sum(CASE WHEN direction = 'up' THEN gene_count ELSE 0 END) as upregulated,
-    sum(CASE WHEN direction = 'down' THEN gene_count ELSE 0 END) as downregulated
-FROM mechanism_analysis
-GROUP BY mechanism
-HAVING sum(gene_count) > 5
-ORDER BY sum(gene_count) DESC;
-```
-
-## Known Limitations and Mitigations
-
-1. Expression Fold-Change Sensitivity
-   - Issue: Single fold-change value may oversimplify
-   - Mitigation: Use confidence intervals in future versions
-
-2. Drug-Target Confidence
-   - Issue: Varying levels of evidence
-   - Mitigation: Include evidence scores in drug JSONB
-
-3. Pathway Completeness
-   - Issue: Missing pathway relationships
-   - Mitigation: Regular updates from multiple sources
-
-## Future Query Optimizations
-
-1. Materialized views for common pathway analyses
-2. Pre-computed drug rankings
-3. Patient cohort comparison views
-
-## Code Style Guide
-
-### General Principles
-
-1. **Clarity Over Cleverness**
-   - Code should be immediately comprehensible
-   - Avoid complex one-liners
-   - Use descriptive names over abbreviated ones
-
-2. **Type Safety**
-   - Use Python type hints everywhere
-   - Enforce with mypy in strict mode
-   ```python
-   from typing import List, Dict, Optional
-   
-   def process_genes(genes: List[str]) -> Dict[str, float]:
-       ...
-   ```
-
-3. **Documentation**
-   - Every module starts with a docstring explaining its purpose
-   - Every function/class has a docstring following Google style
-   ```python
-   def calculate_fold_change(
-       base_expression: float,
-       sample_expression: float
-   ) -> float:
-       """Calculate expression fold change between sample and base.
-       
-       Args:
-           base_expression: Base expression level
-           sample_expression: Sample expression level
-           
-       Returns:
-           float: Calculated fold change
-           
-       Raises:
-           ValueError: If base_expression is 0
-       """
-   ```
-
-### Python Specific Rules
-1. **Imports**
-   ```python
-   # Standard library
-   from typing import List, Dict
-   import json
-   
-   # Third party
-   import pandas as pd
-   import numpy as np
-   
-   # Local
-   from src.etl.transcript import TranscriptProcessor
-   from src.utils.validation import validate_expression
-   ```
-
-2. **Classes**
-   ```python
-   class GeneProcessor:
-       """Process gene-related data and transformations."""
-       
-       def __init__(self, config: Dict[str, Any]) -> None:
-           """Initialize processor with configuration.
-           
-           Args:
-               config: Configuration dictionary
-           """
-           self.config = config
-           self._validate_config()
-           
-       def _validate_config(self) -> None:
-           """Validate configuration settings."""
-           ...
-   ```
-
-3. **Error Handling**
-   ```python
-   class ETLError(Exception):
-       """Base class for ETL-related errors."""
-       
-   def process_data(data: pd.DataFrame) -> pd.DataFrame:
-       try:
-           validated_data = validate_input(data)
-           processed_data = transform_data(validated_data)
-           return processed_data
-       except ValidationError as e:
-           logger.error(f"Validation failed: {e}")
-           raise ETLError(f"Processing failed: {e}") from e
-   ```
-
-4. **Testing**
-   ```python
-   import pytest
-   from src.etl.transcript import TranscriptProcessor
-   
-   @pytest.fixture
-   def processor():
-       return TranscriptProcessor(config={'threshold': 0.5})
-   
-   def test_fold_change_calculation(processor):
-       """Test fold change calculation with valid inputs."""
-       result = processor.calculate_fold_change(base=1.0, sample=2.0)
-       assert result == pytest.approx(2.0)
-   ```
-
-### SQL Style
-
-1. **Naming**
-   - Tables: singular, lower_snake_case
-   - Columns: lower_snake_case
-   - Indexes: idx_table_column
-
-2. **Queries**
-   ```sql
-   -- Multiple lines for complex queries
-   SELECT 
-       t.gene_symbol,
-       t.expression_fold_change,
-       jsonb_object_keys(t.drugs) as drug_id
-   FROM 
-       cancer_transcript_base t
-   WHERE 
-       t.expression_fold_change > 2.0
-   ORDER BY 
-       t.expression_fold_change DESC;
-   ```
-
-### Version Control
-
-1. **Commit Messages**
-   ```
-   <type>(<scope>): <description>
-   
-   [optional body]
-   
-   [optional footer]
-   ```
-   Types: feat, fix, docs, style, refactor, test, chore
-
-2. **Branching**
-   - main: production code
-   - develop: integration branch
-   - feature/: new features
-   - fix/: bug fixes
-   - release/: release preparation
-
+---
 
 ## Project Structure
 
-```tree
+```
 mediabase/
-├── .github/
-│   └── workflows/
-│       └── tests.yml
+├── docs/                   # Documentation and guides
+├── examples/               # Example patient datasets
+├── scripts/                # ETL and management scripts
 ├── src/
-│   ├── etl/
-│   │   ├── __init__.py
-│   │   ├── transcript.py
-│   │   ├── products.py
-│   │   ├── pathways.py
-│   │   ├── drugs.py
-│   │   └── publications.py
-│   ├── db/
-│   │   ├── __init__.py
-│   │   ├── schema.py
-│   │   ├── migrations/
-│   │   └── connection.py
-│   ├── utils/
-│   │   ├── __init__.py
-│   │   ├── logging.py
-│   │   └── validation.py
-│   └── api/
-│       ├── __init__.py
-│       └── queries.py
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py
-│   ├── test_etl/
-│   ├── test_db/
-│   └── test_api/
-├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   └── 02_query_examples.ipynb
-├── config/
-│   ├── __init__.py
-│   ├── settings.py
-│   └── logging.yml
-├── scripts/
-│   ├── setup_db.py
-│   └── run_etl.py
-├── docs/
-│   ├── architecture.md
-│   ├── api.md
-│   └── deployment.md
-├── .env.example
-├── pyproject.toml
-├── poetry.lock
-└── README.md
+│   ├── api/               # RESTful API server
+│   ├── db/                # Database management and schema
+│   ├── etl/               # Data extraction, transformation, loading
+│   └── utils/             # Shared utilities and logging
+├── tests/                 # Test suite
+├── .env.example           # Environment configuration template
+├── pyproject.toml         # Poetry dependencies
+└── README.md              # This file
 ```
 
+---
 
-## LLM-Agent Integration
+## Troubleshooting
 
-The database is optimized for LLM-agent queries. Example usage patterns and common queries are documented in `notebooks/02_query_examples.ipynb`.
+### Database Connection Issues
+
+```bash
+# Check PostgreSQL is running
+systemctl status postgresql
+
+# Test connection
+psql -h localhost -p 5432 -U your_user -d mbase -c "\dt"
+```
+
+### ETL Errors
+
+```bash
+# Check logs for specific module
+tail -f logs/etl.log | grep "ERROR"
+
+# Re-run failed module
+poetry run python scripts/run_etl.py --modules opentargets --log-level DEBUG
+```
+
+### Missing Dependencies
+
+```bash
+# Update poetry lock file
+poetry lock
+
+# Reinstall all dependencies
+rm -rf .venv
+poetry install
+```
+
+For more troubleshooting guidance, see [CLAUDE.md](CLAUDE.md#troubleshooting).
+
+---
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes and add tests
+4. Run tests and code quality checks
+5. Commit your changes (`git commit -m 'Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+**Code Standards:**
+- Follow PEP 8 style guidelines
+- Add type hints to all functions
+- Write tests for new functionality
+- Update documentation as needed
+
+---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## Citation
+
+If you use MEDIABASE in your research, please cite:
+
+```
+MEDIABASE: Cancer Transcriptome Database (2025)
+Version 0.6.0
+https://github.com/itsatony/mediabase
+```
+
+---
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/itsatony/mediabase/issues)
+- **Documentation**: [docs/](docs/)
+- **Examples**: [examples/](examples/)
+
+---
+
+## Acknowledgments
+
+- OpenTargets Platform for disease associations and drug data
+- GENCODE for human gene annotations
+- UniProt for protein function data
+- Reactome for pathway information
+- PubTator Central for literature associations
+- ChEMBL for drug-target information
+
+---
+
+*Generated with [Claude Code](https://claude.com/claude-code)*

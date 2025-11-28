@@ -1,0 +1,15 @@
+{
+  "sqltools.connections": [
+    {
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5435,
+      "driver": "PostgreSQL",
+      "name": "mediabase",
+      "group": "media",
+      "database": "mbase",
+      "username": "mbase_user",
+      "password": "mbase_secret"
+    }
+  ]
+}

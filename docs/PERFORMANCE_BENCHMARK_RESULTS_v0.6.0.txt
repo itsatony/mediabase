@@ -1,0 +1,54 @@
+
+MEDIABASE v0.6.0 Patient Schema Performance Benchmarks
+======================================================================
+
+Found 3 patient schemas: patient_synthetic_her2, patient_synthetic_luad, 
+patient_synthetic_tnbc
+
+Benchmark 1: Single Patient Baseline Expression (patient_synthetic_her2)
+  Avg: 14.78ms | Median: 14.11ms | Rows: 1
+
+Benchmark 2: Single Patient Sparse Storage (patient_synthetic_her2)
+  Avg: 0.33ms | Median: 0.27ms | Rows: 399
+
+Benchmark 5: Therapeutic Targeting Query (patient_synthetic_her2)
+  Avg: 14.40ms | Median: 14.35ms | Rows: 0
+
+Benchmark 6: Baseline-Only Expression Access
+  Avg: 43.47ms | Median: 43.75ms | Rows: 100
+
+Benchmark 3: Cross-Patient Comparison (n=3)
+  Avg: 2.00ms | Median: 1.83ms | Rows: 195
+
+Benchmark 4: Common Overexpression Analysis (n=3)
+  Avg: 19.81ms | Median: 19.93ms | Rows: 0
+
+
+╭────────────────────────────────────────────────╮
+│ MEDIABASE v0.6.0 Performance Benchmark Results │
+╰────────────────────────────────────────────────╯
+┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳┳┳┓
+┃ Benchmark              ┃ Schema             ┃ Query                       ┃┃┃┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇╇╇┩
+│ Single Patient         │ patient_synthetic… │ Overexpressed genes (>2.0x) ││││
+│ Baseline               │                    │                             ││││
+│ Sparse Storage Access  │ patient_synthetic… │ All non-baseline values     ││││
+│ Therapeutic Targeting  │ patient_synthetic… │ Approved drugs for          ││││
+│                        │                    │ overexpressed genes         ││││
+│ Baseline-Only Access   │ public             │ Protein-coding genes        ││││
+│ Cross-Patient          │ 3 schemas          │ Compare 5 key genes         ││││
+│ Comparison             │                    │                             ││││
+│ Common Overexpression  │ 3 schemas          │ Genes >2.0x in all patients ││││
+└────────────────────────┴────────────────────┴─────────────────────────────┴┴┴┘
+
+Performance Analysis:
+  Average Query Time: 15.80ms
+  Fastest: Sparse Storage Access (0.33ms)
+  Slowest: Baseline-Only Access (43.47ms)
+
+  Cross-Patient Overhead: -86.5% slower than single patient
+
+Storage Efficiency:
+  Sparse storage: Only expression_fold_change != 1.0 stored
+  Baseline implicit: COALESCE(pe.expression_fold_change, 1.0) pattern
+  Schema isolation: Each patient in separate schema within single DB
